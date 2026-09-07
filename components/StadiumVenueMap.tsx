@@ -13,6 +13,7 @@ import { asArray } from '../lib/format';
 import { PremiumSpacesDirectory } from './stadium-map/PremiumSpacesDirectory';
 import { groupPremiumSpaces } from './stadium-map/premium-spaces';
 import { MobileStadiumNavigator } from './stadium-map/MobileStadiumNavigator';
+import { useAuthStore } from '../lib/auth-store';
 
 // Static stadium zone/unit data and component styles were split out into
 // components/stadium-map/ to keep this file to the actual component logic —
@@ -40,6 +41,7 @@ export function StadiumVenueMap({
 }) {
   const palette = useDesignTheme();
   const { width: windowWidth, isMobile } = useResponsive();
+  const venueName = useAuthStore((state) => state.venue?.name);
 
   const [mobileTab, setMobileTab] = useState<'map' | 'directory'>('map');
   const [searchQuery, setSearchQuery] = useState('');
@@ -264,6 +266,7 @@ export function StadiumVenueMap({
                 setActiveModalUnit(unit);
               }}
               onOpenOperationsMap={() => setViewPerspective('2d_plan')}
+              venueName={venueName}
             />
           </View>
         ) : (
@@ -696,6 +699,7 @@ export function StadiumVenueMap({
                     setActiveModalUnit(unit);
                   }}
                   onOpenOperationsMap={() => setViewPerspective('2d_plan')}
+                  venueName={venueName}
                 />
               </View>
             ) : (

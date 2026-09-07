@@ -649,3 +649,75 @@ export function generateSuggestedStaffRoster(
 
   return roster;
 }
+
+export const BANQUET_LAYOUT_START = '<!-- BANQUET_LAYOUT_START -->';
+export const BANQUET_LAYOUT_END = '<!-- BANQUET_LAYOUT_END -->';
+export const BANQUET_DATA_PREFIX = '<!-- BANQUET_DATA_JSON:';
+export const BANQUET_DATA_SUFFIX = ':END_BANQUET_DATA -->';
+
+export interface SavedBanquetPayload {
+  version: 1;
+  guestCount: number;
+  setupStyle: BanquetSetupStyle;
+  includeStage?: boolean;
+  includeDanceFloor?: boolean;
+  includeHeadTable?: boolean;
+  buffetStations?: number;
+  barStations?: number;
+  elements: PlacedElement[];
+  staffRoster: EventStaffAssignment[];
+}
+
+/**
+ * Extracts notes without previous banquet layout tagged blocks to prevent unbounded note duplication.
+ */
+export function extractCleanNotes(notes?: string | null): string {
+  if (!notes) return '';
+  const startIndex = notes.indexOf(BANQUET_LAYOUT_START);
+  const endIndex = notes.indexOf(BANQUET_LAYOUT_END);
+  if (startIndex !== -1 && endIndex !== -1 && endIndex >= startIndex) {
+    const before = notes.substring(0, startIndex).trim();
+    const after = notes.substring(endIndex + BANQUET_LAYOUT_END.length).trim();
+    return [before, after].filter(Boolean).join('\n\n');
+  }
+  return notes.trim();
+}
+
+/**
+ * Parses embedded JSON from BEO internalNotes if saved previously.
+ */
+export function parseSavedBanquetData(notes?: string | null): SavedBanquetPayload | null {
+  if (!notes) return null;
+  const startIdx = notes.indexOf(BANQUET_DATA_PREFIX);
+  if (startIdx === -1) return null;
+  const endIdx = notes.indexOf(BANQUET_DATA_SUFFIX, startIdx);
+  if (endIdx === -1) return null;
+  const rawJson = notes.substring(startIdx + BANQUET_DATA_PREFIX.length, endIdx);
+  try {
+    return JSON.parse(rawJson) as SavedBanquetPayload;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Builds the combined human-readable and machine-readable banquet layout block.
+ */
+export function buildBanquetNotesBlock(
+  cleanNotes: string,
+  summaryText: string,
+  payload: SavedBanquetPayload
+): string {
+  const jsonEncoded = JSON.stringify(payload);
+  const banquetBlock = [
+    BANQUET_LAYOUT_START,
+    summaryText,
+    `${BANQUET_DATA_PREFIX}${jsonEncoded}${BANQUET_DATA_SUFFIX}`,
+    BANQUET_LAYOUT_END,
+  ].join('\n');
+
+  if (!cleanNotes) {
+    return banquetBlock;
+  }
+  return `${cleanNotes}\n\n${banquetBlock}`;
+}

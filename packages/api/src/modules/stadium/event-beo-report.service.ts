@@ -499,6 +499,22 @@ export class EventBeoReportService {
     return withTenantTransaction(
       this.prisma,
       async (tx) => {
+        if (trigger === 'scheduled') {
+          const prior = await tx.eventBeoReport.findFirst({
+            where: { eventId },
+            orderBy: { version: 'desc' },
+            select: { publishedAt: true },
+          });
+          const eventRecord = await tx.venueEvent.findUnique({
+            where: { id: eventId },
+            select: { updatedAt: true },
+          });
+          if (prior && eventRecord && prior.publishedAt >= eventRecord.updatedAt) {
+            this.logger.log(`Skipping scheduled publish for event ${eventId}; peer instance already published.`);
+            return null;
+          }
+        }
+
         const latest = await tx.eventBeoReport.findFirst({
           where: { eventId },
           orderBy: { version: 'desc' },
@@ -597,15 +613,32 @@ export class EventBeoReportService {
       const due = await this.findEventsDueForScheduledPublish();
       for (const event of due) {
         try {
+          // Double-check latest publication right before executing
+          const prior = await this.prisma.eventBeoReport.findFirst({
+            where: { eventId: event.id },
+            orderBy: { version: 'desc' },
+            select: { publishedAt: true },
+          });
+          if (prior && prior.publishedAt >= event.updatedAt) {
+            this.logger.debug?.(`Skipping scheduled publish for event ${event.id}; already up to date.`);
+            continue;
+          }
+
           const result = await this.publish(
             event.venueId,
             event.id,
             { profileId: 'system', fullName: 'Scheduled publish' },
             'scheduled',
           );
-          this.logger.log(`Published BEO report v${result.version} for event ${event.id} (${event.title}).`);
-        } catch (err) {
-          this.logger.error(`BEO report publish failed for event ${event.id}: ${(err as Error).message}`);
+          if (result) {
+            this.logger.log(`Published BEO report v${result.version} for event ${event.id} (${event.title}).`);
+          }
+        } catch (err: any) {
+          if (err?.code === 'P2002') {
+            this.logger.log(`Scheduled publish version conflict caught for event ${event.id}; peer instance published concurrently.`);
+          } else {
+            this.logger.error(`BEO report publish failed for event ${event.id}: ${(err as Error).message}`);
+          }
         }
       }
     } catch (err) {

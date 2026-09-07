@@ -84,4 +84,5 @@ export interface Stadium3DViewerProps {
   onSelectUnit: (unit: StadiumZoneItem) => void;
   onOpenOperationsMap: () => void;
   initialPreset?: CameraPresetId;
+  venueName?: string;
 }

@@ -53,6 +53,7 @@ export function Stadium3DViewer({
   onSelectUnit,
   onOpenOperationsMap,
   initialPreset = 'overview',
+  venueName,
 }: Stadium3DViewerProps) {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const isMobile = windowWidth < 768;
@@ -181,7 +182,7 @@ export function Stadium3DViewer({
       <View style={[styles.canvasWrapper, { height: viewerHeight }]}>
         {/* Loading State Overlay */}
         {renderStatus === 'loading' ? (
-          <Stadium3DLoadingState progress={loadProgress} />
+          <Stadium3DLoadingState progress={loadProgress} venueName={venueName} />
         ) : null}
 
         {/* Error State Overlay */}

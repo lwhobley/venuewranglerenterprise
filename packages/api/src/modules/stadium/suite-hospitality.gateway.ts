@@ -95,9 +95,11 @@ export class SuiteHospitalityGateway implements OnModuleDestroy {
             operationalAreaType?: string | null;
             payload: Record<string, unknown>;
           };
-          if (parsed.instanceId === this.instanceId) return; // Already emitted locally
-
-          const orgId = parsed.organizationId || 'default-org';
+          if (!parsed.organizationId || parsed.organizationId === 'default-org') {
+            this.logger.warn(`Dropping cross-replica event missing organizationId for facility ${parsed.facilityId}`);
+            return;
+          }
+          const orgId = parsed.organizationId;
           const cleanZone = parsed.zoneId && parsed.zoneId !== 'global' ? parsed.zoneId : null;
           const areaType = parsed.operationalAreaType || null;
 
@@ -311,20 +313,24 @@ export class SuiteHospitalityGateway implements OnModuleDestroy {
     arg3: string | null | undefined | Record<string, unknown>,
     arg4?: Record<string, unknown>,
   ): Promise<void> {
-    let organizationId = 'default-org';
+    let organizationId: string;
     let facilityId: string;
     let zoneId: string | null | undefined;
     let beoOrder: Record<string, unknown>;
 
     if (typeof arg3 === 'object' && arg3 !== null && arg4 === undefined) {
-      facilityId = arg1;
-      zoneId = arg2;
-      beoOrder = arg3 as Record<string, unknown>;
+      this.logger.warn(`Dropping broadcastBeoUpdate call lacking organizationId for facility ${arg1}`);
+      return;
     } else {
       organizationId = arg1;
       facilityId = arg2;
       zoneId = typeof arg3 === 'string' ? arg3 : null;
       beoOrder = arg4 ?? {};
+    }
+
+    if (!organizationId || organizationId === 'default-org') {
+      this.logger.warn(`Dropping broadcastBeoUpdate with invalid organizationId "${organizationId}" for facility ${facilityId}`);
+      return;
     }
 
     const cleanZone = zoneId && zoneId !== 'global' ? zoneId : null;
@@ -365,20 +371,24 @@ export class SuiteHospitalityGateway implements OnModuleDestroy {
     arg3: string | null | undefined | Record<string, unknown>,
     arg4?: Record<string, unknown>,
   ): Promise<void> {
-    let organizationId = 'default-org';
+    let organizationId: string;
     let facilityId: string;
     let zoneId: string | null | undefined;
     let replenishment: Record<string, unknown>;
 
     if (typeof arg3 === 'object' && arg3 !== null && arg4 === undefined) {
-      facilityId = arg1;
-      zoneId = arg2;
-      replenishment = arg3 as Record<string, unknown>;
+      this.logger.warn(`Dropping broadcastReplenishment call lacking organizationId for facility ${arg1}`);
+      return;
     } else {
       organizationId = arg1;
       facilityId = arg2;
       zoneId = typeof arg3 === 'string' ? arg3 : null;
       replenishment = arg4 ?? {};
+    }
+
+    if (!organizationId || organizationId === 'default-org') {
+      this.logger.warn(`Dropping broadcastReplenishment with invalid organizationId "${organizationId}" for facility ${facilityId}`);
+      return;
     }
 
     const cleanZone = zoneId && zoneId !== 'global' ? zoneId : null;
@@ -422,23 +432,26 @@ export class SuiteHospitalityGateway implements OnModuleDestroy {
     arg4?: Record<string, unknown> | string,
     arg5?: string,
   ): Promise<void> {
-    let organizationId = 'default-org';
+    let organizationId: string;
     let facilityId: string;
     let zoneId: string | null | undefined;
     let ticket: Record<string, unknown>;
     let eventName = 'distro_pickup_updated';
 
     if (typeof arg3 === 'object' && arg3 !== null) {
-      facilityId = arg1;
-      zoneId = arg2;
-      ticket = arg3 as Record<string, unknown>;
-      if (typeof arg4 === 'string') eventName = arg4;
+      this.logger.warn(`Dropping broadcastDistroPickupUpdate call lacking organizationId for facility ${arg1}`);
+      return;
     } else {
       organizationId = arg1;
       facilityId = arg2;
       zoneId = typeof arg3 === 'string' ? arg3 : null;
       ticket = (arg4 && typeof arg4 === 'object' ? arg4 : {}) as Record<string, unknown>;
       if (typeof arg5 === 'string') eventName = arg5;
+    }
+
+    if (!organizationId || organizationId === 'default-org') {
+      this.logger.warn(`Dropping broadcastDistroPickupUpdate with invalid organizationId "${organizationId}" for facility ${facilityId}`);
+      return;
     }
 
     const cleanZone = zoneId && zoneId !== 'global' ? zoneId : null;

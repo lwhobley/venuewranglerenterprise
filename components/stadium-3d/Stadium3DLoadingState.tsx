@@ -5,11 +5,13 @@ import { styles } from './Stadium3DViewer.styles';
 interface Stadium3DLoadingStateProps {
   progress?: number;
   message?: string;
+  venueName?: string;
 }
 
 export function Stadium3DLoadingState({
   progress,
   message = 'Loading interactive stadium view…',
+  venueName,
 }: Stadium3DLoadingStateProps) {
   const hasValidProgress = typeof progress === 'number' && progress > 0 && progress <= 100;
 
@@ -39,7 +41,7 @@ export function Stadium3DLoadingState({
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8 }}>
         <MaterialCommunityIcons name="cube-scan" size={14} color="#00E5FF" />
         <Text style={{ fontSize: 10, color: '#78909C', fontWeight: '700', letterSpacing: 0.5 }}>
-          ENTERPRISE 3D DIGITAL TWIN · NRG STADIUM
+          {venueName ? `ENTERPRISE 3D DIGITAL TWIN · ${venueName.toUpperCase()}` : 'ENTERPRISE 3D SPATIAL MODEL'}
         </Text>
       </View>
     </View>

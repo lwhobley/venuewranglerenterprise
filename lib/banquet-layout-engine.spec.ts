@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { generateBanquetLayout, summarizeEquipment, generateSuggestedStaffRoster } from './banquet-layout-engine';
+import {
+  generateBanquetLayout,
+  summarizeEquipment,
+  generateSuggestedStaffRoster,
+  extractCleanNotes,
+  parseSavedBanquetData,
+  buildBanquetNotesBlock,
+} from './banquet-layout-engine';
 
 describe('banquet-layout-engine', () => {
   it('generates banquet rounds of 10 correctly for 120 guests', () => {
@@ -136,5 +143,67 @@ describe('banquet-layout-engine', () => {
 
     const headTableAttendant = roster.find((r) => r.workingTitle === 'VIP Suite Attendant');
     expect(headTableAttendant).toBeDefined();
+  });
+
+  it('serializes, cleans, and deserializes banquet layout notes blocks without unbounded duplication', () => {
+    const originalNotes = 'Client requested gluten-free meals at Table 2.\nVIP contact: Jane Doe (555-0199).';
+    const samplePayload = {
+      version: 1 as const,
+      guestCount: 120,
+      setupStyle: 'banquet_rounds_10' as const,
+      elements: [
+        {
+          id: 'table-1',
+          label: 'T-1',
+          shape: 'round' as const,
+          x: 150,
+          y: 200,
+          width: 60,
+          height: 60,
+          seats: 10,
+          section: 'main' as const,
+          category: 'guest_table' as const,
+        },
+      ],
+      staffRoster: [
+        {
+          id: 'staff-1',
+          staffName: 'Chef Antoine',
+          workingTitle: 'Banquet Captain',
+          assignedStation: 'Main Dining',
+        },
+      ],
+    };
+
+    // First save
+    const firstSavedNotes = buildBanquetNotesBlock(originalNotes, '[Layout Summary 1]', samplePayload);
+    expect(firstSavedNotes).toContain(originalNotes);
+    expect(firstSavedNotes).toContain('<!-- BANQUET_LAYOUT_START -->');
+    expect(firstSavedNotes).toContain('<!-- BANQUET_LAYOUT_END -->');
+
+    // Parse payload back
+    const parsed = parseSavedBanquetData(firstSavedNotes);
+    expect(parsed).toBeDefined();
+    expect(parsed?.elements.length).toBe(1);
+    expect(parsed?.elements[0].label).toBe('T-1');
+    expect(parsed?.staffRoster[0].workingTitle).toBe('Banquet Captain');
+
+    // Second save: clean notes should strip previous banquet block completely
+    const cleanedNotes = extractCleanNotes(firstSavedNotes);
+    expect(cleanedNotes).toBe(originalNotes);
+    expect(cleanedNotes).not.toContain('<!-- BANQUET_LAYOUT_START -->');
+
+    // Resaving with updated payload
+    const secondSavedNotes = buildBanquetNotesBlock(cleanedNotes, '[Layout Summary 2]', {
+      ...samplePayload,
+      guestCount: 150,
+    });
+
+    // Verify it doesn't double-append
+    const startOccurrences = (secondSavedNotes.match(/<!-- BANQUET_LAYOUT_START -->/g) || []).length;
+    expect(startOccurrences).toBe(1);
+
+    const parsedSecond = parseSavedBanquetData(secondSavedNotes);
+    expect(parsedSecond?.guestCount).toBe(150);
   });
 });

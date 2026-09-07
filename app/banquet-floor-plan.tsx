@@ -1,8 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Dimensions,
   PanResponder,
-  Pressable,
   ScrollView,
   StyleSheet,
   View,
@@ -12,11 +10,10 @@ import {
   Button,
   Card,
   Chip,
-  Divider,
+  Dialog,
   IconButton,
-  Menu,
+  Portal,
   ProgressBar,
-  SegmentedButtons,
   Switch,
   Text,
   TextInput,
@@ -30,92 +27,182 @@ import {
   generateBanquetLayout,
   summarizeEquipment,
   generateSuggestedStaffRoster,
-  STANDARD_WORKING_TITLES,
+  extractCleanNotes,
+  parseSavedBanquetData,
+  buildBanquetNotesBlock,
   type BanquetSetupStyle,
   type PlacedElement,
   type TableShapeType,
   type TableSectionType,
   type EventStaffAssignment,
+  type SavedBanquetPayload,
 } from '../lib/banquet-layout-engine';
 import { asArray, errorMessage } from '../lib/format';
 
 const CANVAS_WIDTH = 880;
 const CANVAS_HEIGHT = 640;
 
+export interface CrmBeoRecord {
+  id: string;
+  _id?: string;
+  venueId?: string;
+  leadId?: string | null;
+  eventName?: string;
+  eventDate?: string | null;
+  eventType?: string | null;
+  guestCount?: number | null;
+  venueSpace?: string | null;
+  setupStyle?: string | null;
+  specialRequirements?: string | null;
+  internalNotes?: string | null;
+  status?: string;
+  assignedRepId?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface VenueStaffMember {
+  id: string;
+  _id?: string;
+  fullName: string;
+  role?: string;
+  email?: string;
+}
+
+interface ActiveFloorTableItem {
+  id?: string;
+  label?: string;
+  shape?: TableShapeType;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  rotation?: number;
+  seats?: number;
+  capacity?: number;
+  section?: TableSectionType;
+  table?: ActiveFloorTableItem;
+}
+
+interface ActiveFloorPlanResponse {
+  id?: string;
+  name?: string;
+  tables?: ActiveFloorTableItem[];
+}
+
 export default function BanquetFloorPlanScreen() {
   const params = useLocalSearchParams<{ beoId?: string }>();
-  const { venue, canManage } = useVenueAuth();
+  const { venue } = useVenueAuth();
 
   // Load venue BEOs for selection
-  const beosQuery = useQueryState<any>(api.crm.listBeos, venue?.id ? { venueId: venue.id } : 'skip');
-  const beosList = asArray<any>(beosQuery.data);
+  const beosQuery = useQueryState<CrmBeoRecord[]>(api.crm.listBeos, venue?.id ? { venueId: venue.id } : 'skip');
+  const beosList = asArray<CrmBeoRecord>(beosQuery.data);
 
   // Load venue staff members
-  const staffQuery = useQueryState<any>(api.app.listVenueStaff);
-  const venueStaffList = asArray<any>(staffQuery.data);
+  const staffQuery = useQueryState<VenueStaffMember[]>(api.app.listVenueStaff);
+  const venueStaffList = asArray<VenueStaffMember>(staffQuery.data);
 
   // Save floor plan and BEO mutations
   const saveFloorPlan = useMutation(api.floor.saveFloorPlan);
   const saveBeo = useMutation(api.crm.saveBeo);
-  const activePlanQuery = useQueryState<any>(api.floor.getActiveFloorPlan, venue?.id ? {} : 'skip');
+  const activePlanQuery = useQueryState<ActiveFloorPlanResponse>(api.floor.getActiveFloorPlan, venue?.id ? {} : 'skip');
 
-  // BEO specification state
+  // BEO specification state (initialized blank, hydrated from selected BEO)
   const [selectedBeoId, setSelectedBeoId] = useState<string>(params.beoId ?? '');
-  const [eventName, setEventName] = useState<string>('Spring Gala Banquet');
-  const [guestCount, setGuestCount] = useState<number>(120);
+  const [eventName, setEventName] = useState<string>('');
+  const [guestCount, setGuestCount] = useState<number>(0);
   const [setupStyle, setSetupStyle] = useState<BanquetSetupStyle>('banquet_rounds_10');
   const [includeStage, setIncludeStage] = useState<boolean>(true);
   const [includeDanceFloor, setIncludeDanceFloor] = useState<boolean>(true);
   const [includeHeadTable, setIncludeHeadTable] = useState<boolean>(false);
-  const [buffetStations, setBuffetStations] = useState<number>(2);
+  const [buffetStations, setBuffetStations] = useState<number>(1);
   const [barStations, setBarStations] = useState<number>(1);
 
-  // Layout elements
-  const [elements, setElements] = useState<PlacedElement[]>(() =>
-    generateBanquetLayout({
-      canvasWidth: CANVAS_WIDTH,
-      canvasHeight: CANVAS_HEIGHT,
-      guestCount: 120,
-      setupStyle: 'banquet_rounds_10',
-      includeStage: true,
-      includeDanceFloor: true,
-      includeHeadTable: false,
-      buffetStationCount: 2,
-      barStationCount: 1,
-    })
-  );
+  // Layout elements & staff roster (initialized empty, hydrated from BEO)
+  const [elements, setElements] = useState<PlacedElement[]>([]);
+  const [staffRoster, setStaffRoster] = useState<EventStaffAssignment[]>([]);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [snapToGrid, setSnapToGrid] = useState<boolean>(true);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [printMode, setPrintMode] = useState<boolean>(false);
+  const [showDeployConfirm, setShowDeployConfirm] = useState<boolean>(false);
 
-  // Sync with selected BEO
+  // Sync with selected BEO (either saved JSON layout or fresh auto-build from specs)
   useEffect(() => {
     if (!selectedBeoId || !beosList.length) return;
-    const found = beosList.find((b) => b._id === selectedBeoId || b.id === selectedBeoId);
-    if (found) {
-      setEventName(found.eventName ?? 'Banquet Event');
-      if (found.guestCount && found.guestCount > 0) {
-        setGuestCount(found.guestCount);
-      }
-      if (found.setupStyle) {
-        const s = found.setupStyle.toLowerCase();
-        if (s.includes('theater')) setSetupStyle('theater');
-        else if (s.includes('classroom')) setSetupStyle('classroom');
-        else if (s.includes('cocktail') || s.includes('reception')) setSetupStyle('cocktail');
-        else if (s.includes('u-shape') || s.includes('u_shape')) setSetupStyle('u_shape');
-        else if (s.includes('boardroom') || s.includes('conference')) setSetupStyle('boardroom');
-        else if (s.includes('8')) setSetupStyle('banquet_rounds_8');
-        else setSetupStyle('banquet_rounds_10');
-      }
-      if (found.specialRequirements) {
-        const req = found.specialRequirements.toLowerCase();
-        if (req.includes('dance')) setIncludeDanceFloor(true);
-        if (req.includes('stage') || req.includes('podium')) setIncludeStage(true);
-        if (req.includes('head table') || req.includes('bridal')) setIncludeHeadTable(true);
-      }
+    const found = beosList.find((b) => (b._id || b.id) === selectedBeoId);
+    if (!found) return;
+
+    setEventName(found.eventName ?? 'Banquet Event');
+
+    // 1. Check if saved banquet layout JSON exists in the BEO notes
+    const savedData = parseSavedBanquetData(found.internalNotes);
+    if (savedData && savedData.elements?.length) {
+      setGuestCount(savedData.guestCount ?? found.guestCount ?? 0);
+      setSetupStyle(savedData.setupStyle ?? 'banquet_rounds_10');
+      setIncludeStage(savedData.includeStage ?? false);
+      setIncludeDanceFloor(savedData.includeDanceFloor ?? false);
+      setIncludeHeadTable(savedData.includeHeadTable ?? false);
+      setBuffetStations(savedData.buffetStations ?? 0);
+      setBarStations(savedData.barStations ?? 0);
+      setElements(savedData.elements);
+      setStaffRoster(savedData.staffRoster ?? []);
+      setStatusMessage(`Restored saved layout and staffing lineup for "${found.eventName}".`);
+      return;
+    }
+
+    // 2. Otherwise detect specs from BEO fields and generate layout if guest count exists
+    const count = found.guestCount && found.guestCount > 0 ? found.guestCount : 0;
+    setGuestCount(count);
+
+    let detectedStyle: BanquetSetupStyle = 'banquet_rounds_10';
+    if (found.setupStyle) {
+      const s = found.setupStyle.toLowerCase();
+      if (s.includes('theater')) detectedStyle = 'theater';
+      else if (s.includes('classroom')) detectedStyle = 'classroom';
+      else if (s.includes('cocktail') || s.includes('reception')) detectedStyle = 'cocktail';
+      else if (s.includes('u-shape') || s.includes('u_shape')) detectedStyle = 'u_shape';
+      else if (s.includes('boardroom') || s.includes('conference')) detectedStyle = 'boardroom';
+      else if (s.includes('8')) detectedStyle = 'banquet_rounds_8';
+      else detectedStyle = 'banquet_rounds_10';
+    }
+    setSetupStyle(detectedStyle);
+
+    let hasDance = false;
+    let hasStage = false;
+    let hasHead = false;
+    if (found.specialRequirements) {
+      const req = found.specialRequirements.toLowerCase();
+      if (req.includes('dance')) hasDance = true;
+      if (req.includes('stage') || req.includes('podium')) hasStage = true;
+      if (req.includes('head table') || req.includes('bridal')) hasHead = true;
+    }
+    setIncludeDanceFloor(hasDance);
+    setIncludeStage(hasStage);
+    setIncludeHeadTable(hasHead);
+
+    if (count > 0) {
+      const generated = generateBanquetLayout({
+        canvasWidth: CANVAS_WIDTH,
+        canvasHeight: CANVAS_HEIGHT,
+        guestCount: count,
+        setupStyle: detectedStyle,
+        includeStage: hasStage,
+        includeDanceFloor: hasDance,
+        includeHeadTable: hasHead,
+        buffetStationCount: 1,
+        barStationCount: 1,
+      });
+      const equip = summarizeEquipment(generated);
+      setElements(generated);
+      setStaffRoster(generateSuggestedStaffRoster(count, equip));
+      setStatusMessage(`Auto-generated layout for "${found.eventName}" (${count} target guests).`);
+    } else {
+      setElements([]);
+      setStaffRoster([]);
+      setStatusMessage(`Loaded "${found.eventName}". Enter guest count and build layout.`);
     }
   }, [selectedBeoId, beosList]);
 
@@ -123,13 +210,12 @@ export default function BanquetFloorPlanScreen() {
   const equipment = useMemo(() => summarizeEquipment(elements), [elements]);
   const capacityPct = guestCount > 0 ? Math.min(1, equipment.totalSeats / guestCount) : 1;
 
-  // Staff roster state (Working titles for the event day)
-  const [staffRoster, setStaffRoster] = useState<EventStaffAssignment[]>(() =>
-    generateSuggestedStaffRoster(120, summarizeEquipment(elements))
-  );
-
   // Handle auto-generation from current specs
   const handleAutoBuild = () => {
+    if (guestCount <= 0) {
+      setStatusMessage('Please enter a valid guest count before building the layout.');
+      return;
+    }
     const generated = generateBanquetLayout({
       canvasWidth: CANVAS_WIDTH,
       canvasHeight: CANVAS_HEIGHT,
@@ -189,8 +275,8 @@ export default function BanquetFloorPlanScreen() {
     );
   };
 
-  // Update selected element property
-  const updateSelectedProp = (key: keyof PlacedElement, value: any) => {
+  // Update selected element property with full type-safety
+  const updateSelectedProp = <K extends keyof PlacedElement>(key: K, value: PlacedElement[K]) => {
     if (!selectedId) return;
     setElements((prev) =>
       prev.map((el) => (el.id === selectedId ? { ...el, [key]: value } : el))
@@ -223,14 +309,14 @@ export default function BanquetFloorPlanScreen() {
     setSelectedId(newId);
   };
 
-  // Load existing active venue floor plan into canvas
+  // Load existing active venue floor plan into canvas as reference
   const handleLoadActiveVenueFloor = () => {
     const activeData = activePlanQuery.data;
     if (!activeData?.tables?.length) {
       setStatusMessage('No active tables found on the venue floor plan.');
       return;
     }
-    const imported: PlacedElement[] = activeData.tables.map((t: any) => {
+    const imported: PlacedElement[] = activeData.tables.map((t: ActiveFloorTableItem) => {
       const table = t.table ?? t;
       const isRound = table.shape === 'round';
       return {
@@ -251,9 +337,66 @@ export default function BanquetFloorPlanScreen() {
     setStatusMessage(`Loaded ${imported.length} tables from active venue floor plan.`);
   };
 
-  // Save as active venue floor plan
-  const handleSaveToVenue = async () => {
+  // 1. Primary Save Action: Persist layout JSON and summary cleanly on the BEO (does NOT touch live venue floor plan)
+  const handleSaveToBEO = async () => {
     if (!venue?.id) return;
+    if (!selectedBeoId) {
+      setStatusMessage('Please select a BEO above before saving the banquet layout.');
+      return;
+    }
+    const found = beosList.find((b) => (b._id || b.id) === selectedBeoId);
+    if (!found) {
+      setStatusMessage('Selected BEO was not found.');
+      return;
+    }
+    setIsSaving(true);
+    setStatusMessage(null);
+    try {
+      const cleanNotes = extractCleanNotes(found.internalNotes);
+      const setupSummary = `[Banquet Floor Plan: ${equipment.roundTableCount}x Rounds, ${equipment.rectTableCount}x Rect, ${equipment.totalSeats} seats placed. ${equipment.hasStage ? 'Stage. ' : ''}${equipment.hasDanceFloor ? 'Dance Floor. ' : ''}${equipment.buffetCount ? `${equipment.buffetCount}x Buffets. ` : ''}${equipment.barCount ? `${equipment.barCount}x Bars.` : ''}]`;
+      const rosterSummary = `[Assigned Catering & Banquet Staff (${staffRoster.length} staff - Pre-Shift Duty Lineup, Not Official Payroll Roster)]:\n` +
+        staffRoster.map((s) => `• ${s.workingTitle}: ${s.staffName} (${s.assignedStation}${s.shiftHours ? ` · ${s.shiftHours}` : ''})`).join('\n');
+
+      const payload: SavedBanquetPayload = {
+        version: 1,
+        guestCount,
+        setupStyle,
+        includeStage,
+        includeDanceFloor,
+        includeHeadTable,
+        buffetStations,
+        barStations,
+        elements,
+        staffRoster,
+      };
+
+      const updatedNotes = buildBanquetNotesBlock(
+        cleanNotes,
+        `${setupSummary}\n\n${rosterSummary}`,
+        payload
+      );
+
+      await saveBeo({
+        venueId: venue.id,
+        beoId: selectedBeoId,
+        eventName: eventName || found.eventName,
+        setupStyle: setupStyle.replace(/_/g, ' '),
+        guestCount: guestCount > 0 ? guestCount : (found.guestCount ?? 0),
+        internalNotes: updatedNotes,
+      });
+
+      setStatusMessage(`Banquet layout and duty roster saved successfully to BEO "${eventName || found.eventName}"!`);
+    } catch (err) {
+      setStatusMessage(`Error saving banquet layout to BEO: ${errorMessage(err)}`);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // 2. Explicit Secondary Action: Deploy to live restaurant floor plan ONLY after explicit confirmation
+  const handleConfirmDeployToActiveFloorPlan = async () => {
+    if (!venue?.id) return;
+    setShowDeployConfirm(false);
     setIsSaving(true);
     setStatusMessage(null);
     try {
@@ -274,32 +417,15 @@ export default function BanquetFloorPlanScreen() {
 
       await saveFloorPlan({
         venueId: venue.id,
-        name: `${eventName} (BEO Floor Plan)`,
+        name: `${eventName || 'Banquet Event'} (Live Floor Plan Overwrite)`,
         width: CANVAS_WIDTH,
         height: CANVAS_HEIGHT,
         tables: tablesPayload,
       });
 
-      // If linked to a BEO, keep the BEO notes, setupStyle, and staff roster in sync
-      if (selectedBeoId) {
-        const found = beosList.find((b) => (b._id || b.id) === selectedBeoId);
-        if (found) {
-          const setupNote = `[Floor Plan Layout: ${equipment.roundTableCount}x Rounds, ${equipment.rectTableCount}x Rect, ${equipment.totalSeats} seats placed. ${equipment.hasStage ? 'Stage. ' : ''}${equipment.hasDanceFloor ? 'Dance Floor. ' : ''}${equipment.buffetCount ? `${equipment.buffetCount}x Buffets. ` : ''}${equipment.barCount ? `${equipment.barCount}x Bars.` : ''}]`;
-          const rosterNote = `[Assigned Catering & Banquet Staff (${staffRoster.length} staff)]:\n` + staffRoster.map((s) => `• ${s.workingTitle}: ${s.staffName} (${s.assignedStation}${s.shiftHours ? ` · ${s.shiftHours}` : ''})`).join('\n');
-          await saveBeo({
-            venueId: venue.id,
-            beoId: selectedBeoId,
-            eventName: eventName || found.eventName,
-            setupStyle: setupStyle.replace(/_/g, ' '),
-            guestCount,
-            internalNotes: `${setupNote}\n\n${rosterNote}\n\n${found.internalNotes ?? ''}`.trim(),
-          });
-        }
-      }
-
-      setStatusMessage('Floor plan published to venue devices and synchronized with BEO!');
+      setStatusMessage('Operational Notice: Live restaurant floor plan has been overwritten with this banquet layout.');
     } catch (err) {
-      setStatusMessage(`Error saving floor plan: ${errorMessage(err)}`);
+      setStatusMessage(`Error replacing live floor plan: ${errorMessage(err)}`);
     } finally {
       setIsSaving(false);
     }
@@ -321,7 +447,7 @@ export default function BanquetFloorPlanScreen() {
               Banquet & Catering Floor Plan
             </Text>
             <Text variant="bodySmall" style={styles.subtitle}>
-              Auto-generate room setup from BEO specifications & interactively customize
+              Design custom event layouts linked to BEO specifications & duty assignments
             </Text>
           </View>
         </View>
@@ -339,15 +465,26 @@ export default function BanquetFloorPlanScreen() {
           </Button>
 
           <Button
+            mode="outlined"
+            icon="alert-circle-outline"
+            textColor="#B45309"
+            disabled={isSaving || elements.length === 0}
+            onPress={() => setShowDeployConfirm(true)}
+            style={{ borderRadius: radius.sharp, borderColor: '#FDE68A' }}
+          >
+            Deploy to Live Floor
+          </Button>
+
+          <Button
             mode="contained"
             icon="content-save"
             buttonColor="#074426"
             loading={isSaving}
-            disabled={isSaving}
-            onPress={() => void handleSaveToVenue()}
+            disabled={isSaving || !selectedBeoId}
+            onPress={() => void handleSaveToBEO()}
             style={{ borderRadius: radius.sharp }}
           >
-            Publish to Venue
+            Save Layout to BEO
           </Button>
         </View>
       </View>
@@ -376,10 +513,10 @@ export default function BanquetFloorPlanScreen() {
 
                 {beosList.length > 0 ? (
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                    <Text style={{ fontSize: 13, color: colors.muted }}>Link to BEO:</Text>
+                    <Text style={{ fontSize: 13, color: colors.muted }}>Select BEO:</Text>
                     <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                       <View style={{ flexDirection: 'row', gap: 6 }}>
-                        {beosList.slice(0, 5).map((b) => (
+                        {beosList.slice(0, 8).map((b) => (
                           <Chip
                             key={b._id || b.id}
                             selected={selectedBeoId === (b._id || b.id)}
@@ -392,12 +529,15 @@ export default function BanquetFloorPlanScreen() {
                       </View>
                     </ScrollView>
                   </View>
-                ) : null}
+                ) : (
+                  <Text style={{ fontSize: 12, color: colors.muted }}>No BEOs found for this venue.</Text>
+                )}
               </View>
 
               <View style={styles.formRow}>
                 <TextInput
                   label="Event Name"
+                  placeholder="Select a BEO or enter event name"
                   value={eventName}
                   onChangeText={setEventName}
                   mode="outlined"
@@ -407,8 +547,9 @@ export default function BanquetFloorPlanScreen() {
 
                 <TextInput
                   label="Guest Count"
-                  value={String(guestCount)}
-                  onChangeText={(v) => setGuestCount(Math.max(1, parseInt(v) || 0))}
+                  value={guestCount > 0 ? String(guestCount) : ''}
+                  placeholder="0"
+                  onChangeText={(v) => setGuestCount(Math.max(0, parseInt(v) || 0))}
                   keyboardType="numeric"
                   mode="outlined"
                   style={[styles.input, { flex: 1 }]}
@@ -530,6 +671,7 @@ export default function BanquetFloorPlanScreen() {
                     compact
                     icon="refresh"
                     textColor="#074426"
+                    disabled={guestCount <= 0}
                     onPress={() => setStaffRoster(generateSuggestedStaffRoster(guestCount, equipment))}
                   >
                     Reset Ratios
@@ -537,95 +679,104 @@ export default function BanquetFloorPlanScreen() {
                 </View>
               </View>
 
-              <Text style={{ fontSize: 12, color: colors.muted }}>
-                Every catering and banquet event requires staff assigned by their working title for the day.
-                Select staff from your venue roster or enter specific team members:
-              </Text>
+              {/* Roster Scope Disclaimer Banner */}
+              <View style={styles.rosterNoticeBanner}>
+                <MaterialCommunityIcons name="shield-alert-outline" size={16} color="#B45309" />
+                <Text style={styles.rosterNoticeText}>
+                  Suggested Event Duty Lineup (Pre-Shift & Setup Only) — Not the Official Payroll Roster. Attendance, clock-ins, and payroll are tracked via the Stadium Roster / VMS.
+                </Text>
+              </View>
 
-              <View style={{ gap: 8 }}>
-                {staffRoster.map((staff) => (
-                  <View key={staff.id} style={styles.staffCard}>
-                    <View style={styles.staffHeaderRow}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, flexWrap: 'wrap' }}>
-                        <Chip
-                          compact
-                          style={{
-                            backgroundColor:
-                              staff.workingTitle === 'Banquet Captain'
-                                ? '#FEF3C7'
-                                : staff.workingTitle === 'Catering Supervisor'
-                                ? '#E0E7FF'
-                                : staff.workingTitle.includes('Bartender')
-                                ? '#EFF6FF'
-                                : '#F1F5F9',
-                          }}
-                        >
-                          {staff.workingTitle}
-                        </Chip>
-                        <Text style={{ fontWeight: '700', color: '#1E293B', fontSize: 13 }}>
-                          {staff.staffName}
-                        </Text>
-                        <Text style={{ fontSize: 11, color: colors.muted }}>
-                          ({staff.assignedStation})
-                        </Text>
-                      </View>
+              {staffRoster.length === 0 ? (
+                <Text style={{ fontSize: 13, color: colors.muted, fontStyle: 'italic' }}>
+                  No staff members assigned yet. Build layout above or click "+ Add Staff" to assign duty posts.
+                </Text>
+              ) : (
+                <View style={{ gap: 8 }}>
+                  {staffRoster.map((staff) => (
+                    <View key={staff.id} style={styles.staffCard}>
+                      <View style={styles.staffHeaderRow}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, flexWrap: 'wrap' }}>
+                          <Chip
+                            compact
+                            style={{
+                              backgroundColor:
+                                staff.workingTitle === 'Banquet Captain'
+                                  ? '#FEF3C7'
+                                  : staff.workingTitle === 'Catering Supervisor'
+                                  ? '#E0E7FF'
+                                  : staff.workingTitle.includes('Bartender')
+                                  ? '#EFF6FF'
+                                  : '#F1F5F9',
+                            }}
+                          >
+                            {staff.workingTitle}
+                          </Chip>
+                          <Text style={{ fontWeight: '700', color: '#1E293B', fontSize: 13 }}>
+                            {staff.staffName}
+                          </Text>
+                          <Text style={{ fontSize: 11, color: colors.muted }}>
+                            ({staff.assignedStation})
+                          </Text>
+                        </View>
 
-                      <IconButton
-                        icon="close"
-                        size={16}
-                        iconColor="#94A3B8"
-                        onPress={() => removeStaffAssignment(staff.id)}
-                      />
-                    </View>
-
-                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-                      {/* Name input / quick pick */}
-                      <TextInput
-                        label="Staff Name"
-                        value={staff.staffName === 'Unassigned' ? '' : staff.staffName}
-                        placeholder={venueStaffList[0]?.fullName ?? 'e.g. Marcus Vance'}
-                        onChangeText={(v) => updateStaffAssignment(staff.id, 'staffName', v || 'Unassigned')}
-                        mode="outlined"
-                        dense
-                        style={[styles.input, { flex: 2, minWidth: 140 }]}
-                      />
-
-                      {/* Working title selector */}
-                      <View style={{ flex: 2, minWidth: 160 }}>
-                        <TextInput
-                          label="Working Title for Today"
-                          value={staff.workingTitle}
-                          onChangeText={(v) => updateStaffAssignment(staff.id, 'workingTitle', v)}
-                          mode="outlined"
-                          dense
-                          style={styles.input}
+                        <IconButton
+                          icon="close"
+                          size={16}
+                          iconColor="#94A3B8"
+                          onPress={() => removeStaffAssignment(staff.id)}
                         />
                       </View>
 
-                      {/* Assigned Station */}
-                      <TextInput
-                        label="Station / Section"
-                        value={staff.assignedStation}
-                        onChangeText={(v) => updateStaffAssignment(staff.id, 'assignedStation', v)}
-                        mode="outlined"
-                        dense
-                        style={[styles.input, { flex: 2, minWidth: 140 }]}
-                      />
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                        {/* Name input / quick pick */}
+                        <TextInput
+                          label="Staff Name"
+                          value={staff.staffName === 'Unassigned' ? '' : staff.staffName}
+                          placeholder={venueStaffList[0]?.fullName ?? 'e.g. Marcus Vance'}
+                          onChangeText={(v) => updateStaffAssignment(staff.id, 'staffName', v || 'Unassigned')}
+                          mode="outlined"
+                          dense
+                          style={[styles.input, { flex: 2, minWidth: 140 }]}
+                        />
 
-                      {/* Shift Hours */}
-                      <TextInput
-                        label="Shift Hours"
-                        value={staff.shiftHours ?? ''}
-                        placeholder="e.g. 4:00 PM - 11:30 PM"
-                        onChangeText={(v) => updateStaffAssignment(staff.id, 'shiftHours', v)}
-                        mode="outlined"
-                        dense
-                        style={[styles.input, { flex: 1.5, minWidth: 130 }]}
-                      />
+                        {/* Working title selector */}
+                        <View style={{ flex: 2, minWidth: 160 }}>
+                          <TextInput
+                            label="Working Title for Today"
+                            value={staff.workingTitle}
+                            onChangeText={(v) => updateStaffAssignment(staff.id, 'workingTitle', v)}
+                            mode="outlined"
+                            dense
+                            style={styles.input}
+                          />
+                        </View>
+
+                        {/* Assigned Station */}
+                        <TextInput
+                          label="Station / Section"
+                          value={staff.assignedStation}
+                          onChangeText={(v) => updateStaffAssignment(staff.id, 'assignedStation', v)}
+                          mode="outlined"
+                          dense
+                          style={[styles.input, { flex: 2, minWidth: 140 }]}
+                        />
+
+                        {/* Shift Hours */}
+                        <TextInput
+                          label="Shift Hours"
+                          value={staff.shiftHours ?? ''}
+                          placeholder="e.g. 4:00 PM - 11:30 PM"
+                          onChangeText={(v) => updateStaffAssignment(staff.id, 'shiftHours', v)}
+                          mode="outlined"
+                          dense
+                          style={[styles.input, { flex: 1.5, minWidth: 130 }]}
+                        />
+                      </View>
                     </View>
-                  </View>
-                ))}
-              </View>
+                  ))}
+                </View>
+              )}
             </Card.Content>
           </Card>
 
@@ -638,7 +789,7 @@ export default function BanquetFloorPlanScreen() {
               </Text>
               <ProgressBar
                 progress={capacityPct}
-                color={equipment.totalSeats >= guestCount ? '#074426' : '#E65100'}
+                color={equipment.totalSeats >= guestCount && guestCount > 0 ? '#074426' : '#E65100'}
                 style={{ height: 6, borderRadius: 3, marginTop: 4 }}
               />
             </View>
@@ -670,7 +821,7 @@ export default function BanquetFloorPlanScreen() {
         <Card style={[styles.controlCard, { backgroundColor: '#F8FAFC' }]}>
           <Card.Content>
             <Text variant="titleLarge" style={{ fontWeight: '800', color: '#074426' }}>
-              {eventName} — Banquet Setup Specification
+              {eventName || 'Banquet Event'} — Setup Specification Diagram
             </Text>
             <Text style={{ color: colors.muted, marginTop: 2 }}>
               Guest Count: {guestCount} | Seats Placed: {equipment.totalSeats} | Style: {setupStyle.replace(/_/g, ' ')}
@@ -681,9 +832,14 @@ export default function BanquetFloorPlanScreen() {
 
             {/* Staff Duty Lineup on Print Diagram */}
             <View style={{ marginTop: spacing.md, paddingTop: spacing.sm, borderTopWidth: 1, borderColor: '#CBD5E1', gap: 6 }}>
-              <Text style={{ fontWeight: '800', color: '#074426', fontSize: 13, textTransform: 'uppercase' }}>
-                Event Staffing Duty Lineup ({staffRoster.length} Staff Assigned)
-              </Text>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Text style={{ fontWeight: '800', color: '#074426', fontSize: 13, textTransform: 'uppercase' }}>
+                  Pre-Shift Staffing Duty Lineup ({staffRoster.length} Staff Assigned)
+                </Text>
+                <Text style={{ fontSize: 10, color: '#B45309', fontWeight: '700' }}>
+                  (Suggested Duty Lineup — Not Official Payroll Roster)
+                </Text>
+              </View>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
                 {staffRoster.map((s) => (
                   <View key={s.id} style={{ minWidth: 200, padding: 6, backgroundColor: '#FFFFFF', borderRadius: 4, borderWidth: 1, borderColor: '#E2E8F0' }}>
@@ -751,17 +907,27 @@ export default function BanquetFloorPlanScreen() {
             <Text style={styles.wallIndicatorText}>FRONT / PRESENTATION WALL</Text>
           </View>
 
-          {/* Render all placed tables and architectural elements */}
-          {elements.map((elem) => (
-            <MovableElement
-              key={elem.id}
-              element={elem}
-              isSelected={selectedId === elem.id}
-              isPrintMode={printMode}
-              onSelect={() => setSelectedId(elem.id)}
-              onMove={(newX, newY) => updateElementPosition(elem.id, newX, newY)}
-            />
-          ))}
+          {/* Render empty state or placed elements */}
+          {elements.length === 0 ? (
+            <View style={styles.emptyCanvasContainer}>
+              <MaterialCommunityIcons name="floor-plan" size={52} color="#94A3B8" />
+              <Text style={styles.emptyCanvasTitle}>No Banquet Elements Placed</Text>
+              <Text style={styles.emptyCanvasSubtitle}>
+                Select a BEO above or enter event specifications, then click "Auto-Build Floor Plan from BEO" or add tables manually.
+              </Text>
+            </View>
+          ) : (
+            elements.map((elem) => (
+              <MovableElement
+                key={elem.id}
+                element={elem}
+                isSelected={selectedId === elem.id}
+                isPrintMode={printMode}
+                onSelect={() => setSelectedId(elem.id)}
+                onMove={(newX, newY) => updateElementPosition(elem.id, newX, newY)}
+              />
+            ))
+          )}
         </View>
       </ScrollView>
 
@@ -828,6 +994,44 @@ export default function BanquetFloorPlanScreen() {
           </Card.Content>
         </Card>
       ) : null}
+
+      {/* Explicit Confirmation Dialog for Deploying to Live Active Restaurant Floor Plan */}
+      <Portal>
+        <Dialog
+          visible={showDeployConfirm}
+          onDismiss={() => setShowDeployConfirm(false)}
+          style={{ backgroundColor: '#FFFFFF', borderRadius: 8 }}
+        >
+          <Dialog.Title style={{ fontWeight: '800', color: '#B91C1C' }}>
+            Replace Live Restaurant Floor Plan?
+          </Dialog.Title>
+          <Dialog.Content style={{ gap: spacing.sm }}>
+            <Text style={{ color: '#1E293B', fontSize: 14, lineHeight: 20 }}>
+              <Text style={{ fontWeight: '700', color: '#B91C1C' }}>CRITICAL WARNING: </Text>
+              This action overwrites your venue's live operational restaurant floor plan (active table sections, reservations, and waitlist tables) with these banquet event tables.
+            </Text>
+            <Text style={{ color: '#64748B', fontSize: 13, lineHeight: 18 }}>
+              Standard banquet setups should be saved directly to the BEO using "Save Layout to BEO" instead.
+            </Text>
+            <Text style={{ color: '#1E293B', fontSize: 13, fontWeight: '600' }}>
+              Are you sure you want to overwrite the active restaurant layout with this banquet plan?
+            </Text>
+          </Dialog.Content>
+          <Dialog.Actions>
+            <Button onPress={() => setShowDeployConfirm(false)} textColor="#64748B">
+              Cancel
+            </Button>
+            <Button
+              mode="contained"
+              buttonColor="#B91C1C"
+              textColor="#FFFFFF"
+              onPress={() => void handleConfirmDeployToActiveFloorPlan()}
+            >
+              Yes, Overwrite Live Floor
+            </Button>
+          </Dialog.Actions>
+        </Dialog>
+      </Portal>
     </ScrollView>
   );
 }
@@ -1014,6 +1218,22 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 8,
   },
+  rosterNoticeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FEF3C7',
+    padding: 8,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+  },
+  rosterNoticeText: {
+    fontSize: 12,
+    color: '#92400E',
+    fontWeight: '600',
+    flex: 1,
+  },
   formRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1097,6 +1317,26 @@ const styles = StyleSheet.create({
     borderColor: '#CBD5E1',
     position: 'relative',
     overflow: 'hidden',
+  },
+  emptyCanvasContainer: {
+    flex: 1,
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.lg,
+    gap: 10,
+  },
+  emptyCanvasTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#64748B',
+  },
+  emptyCanvasSubtitle: {
+    fontSize: 13,
+    color: '#94A3B8',
+    textAlign: 'center',
+    maxWidth: 440,
+    lineHeight: 18,
   },
   stageWallIndicator: {
     position: 'absolute',

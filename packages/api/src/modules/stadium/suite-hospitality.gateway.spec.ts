@@ -228,4 +228,19 @@ describe('Realtime Gateway Security Isolation Probes (RT-01 through RT-05)', () 
     expect(culinaryEvents).toHaveLength(2); // beo-a (general) + ticket-culinary
     expect(culinaryEvents.some((e) => e.data.id === 'ticket-concession')).toBe(false);
   });
+
+  it('Fail-closed: drops broadcasts and cross-replica events when organizationId is missing or default-org', async () => {
+    const gateway = new SuiteHospitalityGateway();
+    const received: any[] = [];
+    gateway.on('default-org:facility-1', (e) => received.push(e));
+
+    // Calling with default-org or omitted org
+    await (gateway as any).broadcastBeoUpdate('default-org', 'facility-1', null, { beoNumber: 'BAD' });
+    await (gateway as any).broadcastReplenishment('default-org', 'facility-1', null, { itemId: 'BAD' });
+    await (gateway as any).broadcastDistroPickupUpdate('default-org', 'facility-1', null, { id: 'BAD' });
+    await (gateway as any).broadcastBeoUpdate('facility-1', null, { beoNumber: 'NO_ORG' });
+
+    expect(received).toHaveLength(0);
+    expect(gateway.getEventsSince('default-org', 'facility-1', 0)).toHaveLength(0);
+  });
 });
