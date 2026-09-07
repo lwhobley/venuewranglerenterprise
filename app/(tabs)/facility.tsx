@@ -130,6 +130,27 @@ export default function FacilityScreen() {
         ))}
       </View>
 
+      <CommandSurface palette={palette} strong style={{ gap: spacing.sm, borderColor: '#074426', borderWidth: 1 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: spacing.sm }}>
+          <View style={{ flex: 1, minWidth: 200, gap: 2 }}>
+            <CommandText palette={palette} variant="title" style={{ color: '#074426' }}>
+              Banquet & Catering Floor Plan
+            </CommandText>
+            <CommandText palette={palette} variant="caption">
+              Auto-generate movable floor layouts from BEO specifications
+            </CommandText>
+          </View>
+          <Button
+            mode="contained"
+            buttonColor="#074426"
+            icon="table-furniture"
+            onPress={() => router.push('/banquet-floor-plan')}
+          >
+            Open Floor Builder
+          </Button>
+        </View>
+      </CommandSurface>
+
       <CommandSurface palette={palette} strong style={{ gap: spacing.md }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
           <CommandText palette={palette} variant="title">Upcoming events</CommandText>

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ScrollView, View } from 'react-native';
+import { router } from 'expo-router';
 import { Button, Card, Chip, Divider, IconButton, SegmentedButtons, Text, TextInput } from 'react-native-paper';
 import { useMutation, useQuery } from '../lib/railway-hooks';
 import { api } from '../lib/railway-api';
@@ -692,7 +693,20 @@ function EventsView({
               <Text style={{ fontWeight: '800' }}>{item.label}: </Text>{item.value}
             </Text>
           ))}
-          <Button compact mode="outlined" icon="file-sign" textColor={colors.primary} onPress={() => void onConvert(beo._id)}>Convert to contract</Button>
+          <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: 4, flexWrap: 'wrap' }}>
+            <Button
+              compact
+              mode="contained"
+              icon="table-furniture"
+              buttonColor="#074426"
+              onPress={() => router.push(`/banquet-floor-plan?beoId=${beo._id}`)}
+            >
+              Floor Plan
+            </Button>
+            <Button compact mode="outlined" icon="file-sign" textColor={colors.primary} onPress={() => void onConvert(beo._id)}>
+              Convert to contract
+            </Button>
+          </View>
         </View>
       ))}
     </View>
