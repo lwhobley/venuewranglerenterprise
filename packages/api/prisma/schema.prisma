@@ -3253,11 +3253,12 @@ model UserAreaOverride {
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   facility     Facility     @relation(fields: [organizationId, facilityId], references: [organizationId, id], onDelete: Cascade)
-  department   Department?  @relation(fields: [organizationId, facilityId, departmentId], references: [organizationId, facilityId, id], onDelete: SetNull)
+  department   Department?  @relation(fields: [departmentId], references: [id], onDelete: SetNull)
   profile      Profile      @relation(fields: [profileId], references: [id], onDelete: Cascade)
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([facilityId, userId, active, expiresAt])
+  @@index([departmentId])
 }
 
 model DailyTemporaryRoster {
