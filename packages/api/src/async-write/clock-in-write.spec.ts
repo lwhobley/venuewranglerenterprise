@@ -3,15 +3,11 @@ import { applyQueuedClockIn } from './clock-in-write';
 
 const CLOCK_IN_AT = new Date('2026-09-06T18:00:00.000Z');
 
-function uniqueViolation() {
-  return Object.assign(new Error('Unique constraint failed on TimeEntry_profileId_open_key'), { code: 'P2002' });
-}
-
 function makeTx(overrides: Record<string, any> = {}) {
   return {
     timeEntry: {
-      create: vi.fn().mockResolvedValue({ id: 'entry-1', clockInAt: CLOCK_IN_AT }),
-      findFirst: vi.fn().mockResolvedValue(null),
+      createMany: vi.fn().mockResolvedValue({ count: 1 }),
+      findFirst: vi.fn().mockResolvedValue({ id: 'entry-1', clockInAt: CLOCK_IN_AT }),
       ...overrides,
     },
   } as any;
@@ -42,7 +38,7 @@ describe('applyQueuedClockIn', () => {
   // poisoned, and a punch that had already landed was reported as a failure.
   it('completes against the existing punch when the worker races an open punch', async () => {
     const tx = makeTx({
-      create: vi.fn().mockRejectedValue(uniqueViolation()),
+      createMany: vi.fn().mockResolvedValue({ count: 0 }),
       findFirst: vi.fn().mockResolvedValue({ id: 'entry-existing', clockInAt: CLOCK_IN_AT }),
     });
 
@@ -57,16 +53,17 @@ describe('applyQueuedClockIn', () => {
       orderBy: { clockInAt: 'desc' },
       select: { id: true, clockInAt: true },
     });
+    expect(tx.timeEntry.createMany).toHaveBeenCalledWith(expect.objectContaining({ skipDuplicates: true }));
   });
 
   it('rethrows a uniqueness failure that left no open punch to complete against', async () => {
-    const tx = makeTx({ create: vi.fn().mockRejectedValue(uniqueViolation()) });
+    const tx = makeTx({ createMany: vi.fn().mockResolvedValue({ count: 0 }), findFirst: vi.fn().mockResolvedValue(null) });
 
-    await expect(applyQueuedClockIn(tx, 'venue-1', payload)).rejects.toMatchObject({ code: 'P2002' });
+    await expect(applyQueuedClockIn(tx, 'venue-1', payload)).rejects.toThrow('No open punch found');
   });
 
   it('rethrows errors that are not uniqueness failures', async () => {
-    const tx = makeTx({ create: vi.fn().mockRejectedValue(new Error('connection lost')) });
+    const tx = makeTx({ createMany: vi.fn().mockRejectedValue(new Error('connection lost')) });
 
     await expect(applyQueuedClockIn(tx, 'venue-1', payload)).rejects.toThrow('connection lost');
     expect(tx.timeEntry.findFirst).not.toHaveBeenCalled();

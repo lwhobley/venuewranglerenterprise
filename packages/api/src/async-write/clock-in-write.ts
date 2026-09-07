@@ -27,44 +27,35 @@ export type ClockInResult = {
 };
 
 /**
- * A partial unique index allows a single open TimeEntry per profile, so a
- * P2002 here means this worker raced a punch that already landed — the staff
- * member is clocked in, which is exactly what the message asked for. Completing
- * the receipt against the existing punch keeps the write idempotent. Letting
- * the P2002 escape instead made `isPermanent()` classify the message as
- * poisoned and drop a punch that had, in fact, succeeded.
+ * A partial unique index allows a single open TimeEntry per profile.
+ * Conflict-safe insertion lets a duplicate complete against the existing punch
+ * without aborting the transaction that also records the delivery receipt.
  */
 export async function applyQueuedClockIn(
   tx: ClockInClient,
   venueId: string,
   payload: ClockInPayload,
 ): Promise<ClockInResult> {
-  let timeEntry: { id: string; clockInAt: Date } | null = null;
-  try {
-    timeEntry = await tx.timeEntry.create({
-      data: {
-        profileId: payload.profileId,
-        venueId,
-        clockInAt: new Date(payload.clockInAt),
-        clockInLat: payload.lat,
-        clockInLng: payload.lng,
-        clockInAccuracyM: payload.accuracy,
-        clockInMocked: payload.mocked,
-        isOpen: true,
-      },
-      select: { id: true, clockInAt: true },
-    });
-  } catch (error) {
-    if ((error as { code?: string } | null)?.code !== 'P2002') throw error;
-    timeEntry = await tx.timeEntry.findFirst({
-      where: { profileId: payload.profileId, venueId, isOpen: true },
-      orderBy: { clockInAt: 'desc' },
-      select: { id: true, clockInAt: true },
-    });
-    // No open punch after a uniqueness failure means the conflict was not the
-    // open-punch index; there is nothing to complete against.
-    if (!timeEntry) throw error;
-  }
+  // ON CONFLICT DO NOTHING keeps the transaction usable on duplicate punches.
+  await tx.timeEntry.createMany({
+    data: [{
+      profileId: payload.profileId,
+      venueId,
+      clockInAt: new Date(payload.clockInAt),
+      clockInLat: payload.lat,
+      clockInLng: payload.lng,
+      clockInAccuracyM: payload.accuracy,
+      clockInMocked: payload.mocked,
+      isOpen: true,
+    }],
+    skipDuplicates: true,
+  });
+  const timeEntry = await tx.timeEntry.findFirst({
+    where: { profileId: payload.profileId, venueId, isOpen: true },
+    orderBy: { clockInAt: 'desc' },
+    select: { id: true, clockInAt: true },
+  });
+  if (!timeEntry) throw new Error('No open punch found after queued clock-in.');
 
   return {
     accepted: true,

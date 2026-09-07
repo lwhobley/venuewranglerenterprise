@@ -16,16 +16,12 @@ function makeVenue(overrides: Record<string, unknown> = {}) {
   } as any;
 }
 
-function uniqueViolation() {
-  return Object.assign(new Error('Unique constraint failed'), { code: 'P2002' });
-}
-
 function makeDb(facilityLookups: Array<{ id: string } | null>) {
   return {
     venue: { findUniqueOrThrow: vi.fn().mockResolvedValue(makeVenue()) },
     facility: {
       findUnique: vi.fn().mockImplementation(() => Promise.resolve(facilityLookups.shift() ?? null)),
-      create: vi.fn().mockResolvedValue({ id: 'venue-1' }),
+      createMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
   } as any;
 }
@@ -36,8 +32,8 @@ describe('ensurePairedFacility', () => {
 
     await ensurePairedFacility(db, makeVenue());
 
-    expect(db.facility.create).toHaveBeenCalledWith({
-      data: {
+    expect(db.facility.createMany).toHaveBeenCalledWith({
+      data: [{
         id: 'venue-1',
         organizationId: 'org-1',
         code: 'VW-ABCDEFGHJK',
@@ -47,7 +43,8 @@ describe('ensurePairedFacility', () => {
         latitude: 40.7,
         longitude: -74,
         capacity: 50_000,
-      },
+      }],
+      skipDuplicates: true,
     });
   });
 
@@ -56,30 +53,30 @@ describe('ensurePairedFacility', () => {
 
     await ensurePairedFacility(db, makeVenue());
 
-    expect(db.facility.create).not.toHaveBeenCalled();
+    expect(db.facility.createMany).not.toHaveBeenCalled();
   });
 
   it('treats a lost create race as success', async () => {
     const db = makeDb([null, { id: 'venue-1' }]);
-    db.facility.create.mockRejectedValueOnce(uniqueViolation());
+    db.facility.createMany.mockResolvedValueOnce({ count: 0 });
 
     await expect(ensurePairedFacility(db, makeVenue())).resolves.toBeUndefined();
-    expect(db.facility.create).toHaveBeenCalledTimes(1);
+    expect(db.facility.createMany).toHaveBeenCalledTimes(1);
   });
 
   it('falls back to a venue-derived code when the org already uses the venue code', async () => {
     const db = makeDb([null, null]);
-    db.facility.create.mockRejectedValueOnce(uniqueViolation());
+    db.facility.createMany.mockResolvedValueOnce({ count: 0 });
 
     await ensurePairedFacility(db, makeVenue());
 
-    expect(db.facility.create).toHaveBeenCalledTimes(2);
-    expect(db.facility.create.mock.calls[1][0].data).toMatchObject({ id: 'venue-1', code: 'venue-venue-1' });
+    expect(db.facility.createMany).toHaveBeenCalledTimes(2);
+    expect(db.facility.createMany.mock.calls[1][0].data[0]).toMatchObject({ id: 'venue-1', code: 'venue-venue-1' });
   });
 
   it('propagates errors that are not unique violations', async () => {
     const db = makeDb([null]);
-    db.facility.create.mockRejectedValueOnce(new Error('connection lost'));
+    db.facility.createMany.mockRejectedValueOnce(new Error('connection lost'));
 
     await expect(ensurePairedFacility(db, makeVenue())).rejects.toThrow('connection lost');
   });
@@ -90,7 +87,7 @@ describe('organizationIdForPairedVenue', () => {
     const db = makeDb([null]);
 
     await expect(organizationIdForPairedVenue(db, 'venue-1')).resolves.toBe('org-1');
-    expect(db.facility.create).toHaveBeenCalledTimes(1);
+    expect(db.facility.createMany).toHaveBeenCalledTimes(1);
   });
 
   it('throws for an unknown venue rather than inventing an organization', async () => {
@@ -98,6 +95,6 @@ describe('organizationIdForPairedVenue', () => {
     db.venue.findUniqueOrThrow.mockRejectedValueOnce(Object.assign(new Error('No Venue found'), { code: 'P2025' }));
 
     await expect(organizationIdForPairedVenue(db, 'missing')).rejects.toThrow('No Venue found');
-    expect(db.facility.create).not.toHaveBeenCalled();
+    expect(db.facility.createMany).not.toHaveBeenCalled();
   });
 });

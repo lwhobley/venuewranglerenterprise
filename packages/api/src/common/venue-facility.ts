@@ -48,15 +48,10 @@ type PairableVenue = {
   stadiumCapacity: number | null;
 };
 
-function isUniqueViolation(error: unknown): boolean {
-  return (error as { code?: string } | null)?.code === 'P2002';
-}
-
 /**
  * Create the Facility paired with an already-loaded Venue, if it is missing.
  *
- * Safe to call concurrently: a lost race surfaces as P2002 on the primary key,
- * which means the row this call wanted now exists. `Facility` also carries a
+ * Conflict-safe inserts avoid aborting the caller's transaction. Facility has a
  * `@@unique([organizationId, code])`; if some other facility in the org already
  * holds the venue's code, the pairing falls back to a code derived from the
  * venue id so the same-id invariant still holds.
@@ -76,22 +71,17 @@ export async function ensurePairedFacility(db: VenueFacilityClient, venue: Paira
     capacity: venue.stadiumCapacity,
   };
 
-  try {
-    await db.facility.create({ data: { ...data, code: venue.code } });
-    return;
-  } catch (error) {
-    if (!isUniqueViolation(error)) throw error;
-  }
+  const inserted = await db.facility.createMany({ data: [{ ...data, code: venue.code }], skipDuplicates: true });
+  if (inserted.count) return;
 
   // Either another writer created the pair first, or the venue's code is taken
   // inside this organization. Re-read before deciding which.
   if (await db.facility.findUnique({ where: { id: venue.id }, select: { id: true } })) return;
 
-  try {
-    await db.facility.create({ data: { ...data, code: `venue-${venue.id}` } });
-  } catch (error) {
-    if (!isUniqueViolation(error)) throw error;
-    if (!(await db.facility.findUnique({ where: { id: venue.id }, select: { id: true } }))) throw error;
+  const fallback = await db.facility.createMany({ data: [{ ...data, code: `venue-${venue.id}` }], skipDuplicates: true });
+  if (fallback.count) return;
+  if (!(await db.facility.findUnique({ where: { id: venue.id }, select: { id: true } }))) {
+    throw new Error('Unable to pair venue with a facility: facility code is already in use.');
   }
 }
 

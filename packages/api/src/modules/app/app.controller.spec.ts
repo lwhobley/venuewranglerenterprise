@@ -225,7 +225,7 @@ describe('AppController multi-venue invariants', () => {
             ...data,
           })),
         },
-        facility: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn() },
+        facility: { findUnique: vi.fn().mockResolvedValue(null), createMany: vi.fn().mockResolvedValue({ count: 1 }) },
         subscription: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn() },
         team: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn() },
       };
@@ -257,8 +257,9 @@ describe('AppController multi-venue invariants', () => {
 
       await register(prisma);
 
-      expect(prisma.facility.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({ id: 'venue-new', organizationId: 'org-new' }),
+      expect(prisma.facility.createMany).toHaveBeenCalledWith({
+        data: [expect.objectContaining({ id: 'venue-new', organizationId: 'org-new' })],
+        skipDuplicates: true,
       });
     });
 
