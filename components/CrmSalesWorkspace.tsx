@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ScrollView, View } from 'react-native';
 import { Button, Card, Chip, Divider, IconButton, SegmentedButtons, Text, TextInput } from 'react-native-paper';
 import { useMutation, useQuery } from '../lib/railway-hooks';
@@ -8,9 +8,9 @@ import { accents, colors, spacing } from '../lib/theme';
 import { useIsDesktop } from '../lib/responsive';
 import { asArray, dollarsToCents, errorMessage, formatMoneyWhole, formatShortDate, splitTags as baseSplitTags } from '../lib/format';
 import { AnimatedTab } from './AppCard';
+import type { WorkspaceView } from '../lib/crm-routing';
 
 type LeadStatus = 'new' | 'contacted' | 'qualified' | 'proposal_sent' | 'negotiating' | 'won' | 'lost' | 'unqualified' | 'on_hold';
-type WorkspaceView = 'dashboard' | 'pipeline' | 'contacts' | 'events' | 'contracts' | 'insights' | 'templates';
 
 type ForecastRow = { stage: string; probability: number; count: number; rawValueCents: number; weightedValueCents: number };
 type ForecastResponse = { byStage: ForecastRow[]; totals: { leadCount: number; rawValueCents: number; weightedValueCents: number; wonCount: number; wonValueCents: number } };
@@ -40,6 +40,8 @@ type BeoRow = {
   _id: Id<'crmBeos'>;
   leadId?: Id<'crmLeads'>;
   leadName?: string | null;
+  /** Operational suite orders raised against this sales BEO. */
+  suiteOrderCount?: number;
   eventName: string;
   eventDate?: number;
   eventType?: string;
@@ -101,9 +103,45 @@ function splitTags(value: string) {
   return Array.from(new Set(baseSplitTags(value))).slice(0, 12);
 }
 
-export function CrmSalesWorkspace({ venueId, enabled }: { venueId: Id<'venues'> | undefined; enabled: boolean }) {
+export function CrmSalesWorkspace({
+  venueId,
+  enabled,
+  initialView,
+  initialEventName,
+  initialBeoId,
+}: {
+  venueId: Id<'venues'> | undefined;
+  enabled: boolean;
+  /** Opens the workspace on a specific tab, so a BEO link can land on Events. */
+  initialView?: WorkspaceView;
+  /**
+   * Filters the Events tab to one event name. A link from the published BEO
+   * report arrives with the event's title, which is the only handle the sales
+   * and operational BEO records share.
+   */
+  initialEventName?: string;
+  /** Filters the Events tab to one BEO by record id, from a linked suite row. */
+  initialBeoId?: string;
+}) {
   const isDesktop = useIsDesktop();
-  const [view, setView] = useState<WorkspaceView>('dashboard');
+  const [view, setView] = useState<WorkspaceView>(initialView ?? 'dashboard');
+  // A second link to a different tab arrives as a prop change on a mounted
+  // screen, so follow it rather than leaving the user on the previous tab.
+  useEffect(() => {
+    if (initialView) setView(initialView);
+  }, [initialView]);
+  const [eventFilter, setEventFilter] = useState<string>(initialEventName ?? '');
+  useEffect(() => {
+    setEventFilter(initialEventName ?? '');
+  }, [initialEventName]);
+  const [beoIdFilter, setBeoIdFilter] = useState<string>(initialBeoId ?? '');
+  useEffect(() => {
+    setBeoIdFilter(initialBeoId ?? '');
+  }, [initialBeoId]);
+  const clearBeoFilters = () => {
+    setEventFilter('');
+    setBeoIdFilter('');
+  };
   const [leadSearch, setLeadSearch] = useState('');
   const [selectedLeadId, setSelectedLeadId] = useState<Id<'crmLeads'> | null>(null);
   const [showLeadForm, setShowLeadForm] = useState(false);
@@ -409,7 +447,7 @@ export function CrmSalesWorkspace({ venueId, enabled }: { venueId: Id<'venues'> 
           ) : null}
 
           {view === 'events' ? (
-            <EventsView beos={beos} onConvert={async (beoId) => {
+            <EventsView beos={beos} eventFilter={eventFilter} beoIdFilter={beoIdFilter} onClearFilter={clearBeoFilters} onConvert={async (beoId) => {
               if (!venueId) return;
               try {
                 await convertBeoToContract({ venueId, beoId });
@@ -581,10 +619,49 @@ function ContactsView({ leads, search, onSearch, onSelectLead }: { leads: LeadRo
   );
 }
 
-function EventsView({ beos, onConvert }: { beos: BeoRow[] | undefined; onConvert: (beoId: Id<'crmBeos'>) => Promise<void> }) {
+function EventsView({
+  beos,
+  eventFilter,
+  beoIdFilter,
+  onClearFilter,
+  onConvert,
+}: {
+  beos: BeoRow[] | undefined;
+  /** Event name to narrow the list to, from a report link. Empty shows all. */
+  eventFilter?: string;
+  /** Exact BEO record id, from a suite order that carries a link. Wins over name. */
+  beoIdFilter?: string;
+  onClearFilter?: () => void;
+  onConvert: (beoId: Id<'crmBeos'>) => Promise<void>;
+}) {
+  const needle = eventFilter?.trim().toLocaleLowerCase() ?? '';
+  const targetId = beoIdFilter?.trim() ?? '';
+  const all = asArray(beos);
+  // An id is exact, so it takes precedence over a name match.
+  const matching = targetId
+    ? all.filter((beo) => beo._id === targetId)
+    : needle
+      ? all.filter((beo) => beo.eventName.toLocaleLowerCase().includes(needle))
+      : all;
+  const filtered = Boolean(targetId || needle);
+  const filterLabel = targetId ? 'the linked BEO' : `"${eventFilter}"`;
   return (
     <View style={{ gap: spacing.sm }}>
-      {asArray(beos).length === 0 ? <EmptyLine text="No BEO drafts yet." /> : asArray(beos).map((beo) => (
+      {filtered ? (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm, flexWrap: 'wrap' }}>
+          <Text style={{ color: colors.muted, flex: 1 }}>
+            {matching.length
+              ? `Showing ${matching.length} of ${all.length} BEOs for ${filterLabel}.`
+              : targetId
+                ? 'That linked BEO is no longer in this venue’s list.'
+                : `No BEO drafts match ${filterLabel}. This event may only have suite orders.`}
+          </Text>
+          <Button compact mode="outlined" textColor={colors.primary} onPress={() => onClearFilter?.()}>
+            Show all
+          </Button>
+        </View>
+      ) : null}
+      {matching.length === 0 && !filtered ? <EmptyLine text="No BEO drafts yet." /> : matching.map((beo) => (
         <View key={beo._id} style={{ padding: spacing.sm, borderWidth: 1, borderColor: colors.border, borderRadius: 8, gap: 4 }}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: spacing.sm }}>
             <View style={{ flex: 1 }}>
@@ -598,6 +675,11 @@ function EventsView({ beos, onConvert }: { beos: BeoRow[] | undefined; onConvert
             {beo.eventType ? <Chip compact>{beo.eventType}</Chip> : null}
             {beo.setupStyle ? <Chip compact>{beo.setupStyle}</Chip> : null}
             {beo.menuBarPackage ? <Chip compact>{beo.menuBarPackage}</Chip> : null}
+            {beo.suiteOrderCount ? (
+              <Chip compact icon="room-service-outline">
+                {beo.suiteOrderCount} suite {beo.suiteOrderCount === 1 ? 'order' : 'orders'}
+              </Chip>
+            ) : null}
           </View>
           {[
             { label: 'Apps', value: beo.menuAppetizers },

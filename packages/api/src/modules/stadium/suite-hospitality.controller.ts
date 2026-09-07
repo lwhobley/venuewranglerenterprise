@@ -22,6 +22,11 @@ class SeedSuitesDto {
   @IsString() zoneId!: string;
 }
 
+class LinkCrmBeoDto {
+  /** The sales BEO to link, or null to clear an existing link. */
+  @IsOptional() @IsString() crmBeoId?: string | null;
+}
+
 @UseInterceptors(TenantRequestTransactionInterceptor)
 @Controller('v1/stadium/suite-beos')
 @RequireSubscription()
@@ -106,6 +111,19 @@ export class SuiteHospitalityController {
       ...body,
       deliveredBy: body.deliveredBy || scope.profileId,
     });
+  }
+
+  /**
+   * Links this suite order to the sales BEO it fulfils, so the published report
+   * can offer a per-row route into the CRM record rather than a whole-event
+   * guess by name. Pass `crmBeoId: null` to unlink.
+   */
+  @Patch(':id/crm-beo')
+  async linkCrmBeo(@VenueScope() scope: Scope, @Param('id') id: string, @Body() body: LinkCrmBeoDto) {
+    const order = await this.prisma.suiteBeoOrder.findFirst({ where: { id, facilityId: scope.venueId }, select: { zoneId: true } });
+    if (!order) throw new ForbiddenException('Suite BEO order is unavailable in this facility.');
+    await this.assertOperator(scope, order.zoneId);
+    return this.service.linkToCrmBeo(scope.venueId, id, body.crmBeoId ?? null);
   }
 
   @Post(':id/replenish')
