@@ -58,15 +58,19 @@ export function generateBanquetLayout(options: BanquetLayoutOptions): PlacedElem
   const {
     canvasWidth = 800,
     canvasHeight = 600,
-    guestCount = 100,
+    guestCount = 0,
     setupStyle = 'banquet_rounds_10',
     includeStage = false,
     includeDanceFloor = false,
     includeHeadTable = false,
     headTableSeats = 8,
-    buffetStationCount = 1,
-    barStationCount = 1,
+    buffetStationCount = 0,
+    barStationCount = 0,
   } = options;
+
+  if (guestCount <= 0) {
+    return [];
+  }
 
   const elements: PlacedElement[] = [];
   const safeLeft = 60;

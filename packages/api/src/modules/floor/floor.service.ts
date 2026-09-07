@@ -186,6 +186,7 @@ export class FloorService {
     width?: number;
     height?: number;
     backgroundImageUrl?: string | null;
+    backupPriorPlan?: boolean;
     tables: Array<{
       id?: string;
       label: string;
@@ -209,6 +210,58 @@ export class FloorService {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`floor-plan:${venueId}`}))`;
       let plan = await tx.floorPlan.findFirst({ where: { venueId, isActive: true } });
       if (plan) {
+        // If explicitly requested or replacing with an event overwrite, create an archived snapshot of
+        // the existing active floor plan first so the previous operational FOH layout is never lost.
+        if (input.backupPriorPlan || input.name?.includes('Live Floor Plan Overwrite')) {
+          const existingTablesCount = await tx.floorTable.count({ where: { floorPlanId: plan.id } });
+          if (existingTablesCount > 0) {
+            const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+            const backupPlan = await tx.floorPlan.create({
+              data: {
+                venueId,
+                name: `[Archived Backup] ${plan.name} (${timestamp})`,
+                width: plan.width,
+                height: plan.height,
+                backgroundImageUrl: plan.backgroundImageUrl,
+                isActive: false,
+              },
+            });
+            const priorTables = await tx.floorTable.findMany({ where: { floorPlanId: plan.id } });
+            for (const t of priorTables) {
+              await tx.floorTable.create({
+                data: {
+                  floorPlanId: backupPlan.id,
+                  label: t.label,
+                  shape: t.shape,
+                  seats: t.seats,
+                  seatLabelStyle: t.seatLabelStyle,
+                  x: t.x,
+                  y: t.y,
+                  width: t.width,
+                  height: t.height,
+                  rotation: t.rotation,
+                  section: t.section,
+                  minSpend: t.minSpend,
+                  isReservable: t.isReservable,
+                },
+              });
+            }
+            const priorChairs = await tx.floorChair.findMany({ where: { floorPlanId: plan.id } });
+            if (priorChairs.length > 0) {
+              await tx.floorChair.createMany({
+                data: priorChairs.map((c) => ({
+                  venueId,
+                  floorPlanId: backupPlan.id,
+                  x: c.x,
+                  y: c.y,
+                  rotation: c.rotation,
+                  label: c.label,
+                })),
+              });
+            }
+          }
+        }
+
         plan = await tx.floorPlan.update({ where: { id: plan.id }, data: { name: input.name?.trim() || 'Floor Plan', width: input.width ?? plan.width, height: input.height ?? plan.height, backgroundImageUrl: input.backgroundImageUrl ?? null } });
       } else {
         plan = await tx.floorPlan.create({ data: { venueId, name: input.name?.trim() || 'Floor Plan', width: input.width ?? 800, height: input.height ?? 600, backgroundImageUrl: input.backgroundImageUrl ?? null, isActive: true } });

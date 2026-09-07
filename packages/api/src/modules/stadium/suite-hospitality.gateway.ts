@@ -351,7 +351,11 @@ export class SuiteHospitalityGateway implements OnModuleDestroy {
     }
     const payload = { event: 'suite_beo_updated', data: beoOrder, seq, timestamp };
     this.publishCrossReplica(organizationId, facilityId, cleanZone, payload);
-    this.logger.log(`Broadcasted suite_beo_updated for BEO ${(beoOrder as any).beoNumber} (seq: ${seq}) to ${organizationId}:${facilityId}${cleanZone ? `:zone:${cleanZone}` : ''}`);
+    const beoNumber =
+      typeof beoOrder === 'object' && beoOrder !== null && 'beoNumber' in beoOrder
+        ? String((beoOrder as { beoNumber: unknown }).beoNumber)
+        : 'unspecified';
+    this.logger.log(`Broadcasted suite_beo_updated for BEO ${beoNumber} (seq: ${seq}) to ${organizationId}:${facilityId}${cleanZone ? `:zone:${cleanZone}` : ''}`);
   }
 
   async broadcastReplenishment(

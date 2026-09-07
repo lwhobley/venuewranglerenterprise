@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import {
   IsArray,
+  IsBoolean,
   IsIn,
   IsInt,
   IsNumber,
@@ -130,6 +131,10 @@ class SaveFloorPlanDto {
   @Type(() => TableChairDto)
   @IsOptional()
   chairs?: TableChairDto[];
+
+  @IsBoolean()
+  @IsOptional()
+  backupPriorPlan?: boolean;
 }
 
 class AddWaitlistDto {

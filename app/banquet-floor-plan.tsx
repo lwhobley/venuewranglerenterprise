@@ -112,11 +112,11 @@ export default function BanquetFloorPlanScreen() {
   const [eventName, setEventName] = useState<string>('');
   const [guestCount, setGuestCount] = useState<number>(0);
   const [setupStyle, setSetupStyle] = useState<BanquetSetupStyle>('banquet_rounds_10');
-  const [includeStage, setIncludeStage] = useState<boolean>(true);
-  const [includeDanceFloor, setIncludeDanceFloor] = useState<boolean>(true);
+  const [includeStage, setIncludeStage] = useState<boolean>(false);
+  const [includeDanceFloor, setIncludeDanceFloor] = useState<boolean>(false);
   const [includeHeadTable, setIncludeHeadTable] = useState<boolean>(false);
-  const [buffetStations, setBuffetStations] = useState<number>(1);
-  const [barStations, setBarStations] = useState<number>(1);
+  const [buffetStations, setBuffetStations] = useState<number>(0);
+  const [barStations, setBarStations] = useState<number>(0);
 
   // Layout elements & staff roster (initialized empty, hydrated from BEO)
   const [elements, setElements] = useState<PlacedElement[]>([]);
@@ -421,9 +421,10 @@ export default function BanquetFloorPlanScreen() {
         width: CANVAS_WIDTH,
         height: CANVAS_HEIGHT,
         tables: tablesPayload,
+        backupPriorPlan: true,
       });
 
-      setStatusMessage('Operational Notice: Live restaurant floor plan has been overwritten with this banquet layout.');
+      setStatusMessage('Operational Notice: Live restaurant floor plan updated with banquet layout. An archived backup of the prior FOH layout was saved.');
     } catch (err) {
       setStatusMessage(`Error replacing live floor plan: ${errorMessage(err)}`);
     } finally {
@@ -1009,6 +1010,9 @@ export default function BanquetFloorPlanScreen() {
             <Text style={{ color: '#1E293B', fontSize: 14, lineHeight: 20 }}>
               <Text style={{ fontWeight: '700', color: '#B91C1C' }}>CRITICAL WARNING: </Text>
               This action overwrites your venue's live operational restaurant floor plan (active table sections, reservations, and waitlist tables) with these banquet event tables.
+            </Text>
+            <Text style={{ color: '#074426', fontSize: 13, lineHeight: 18, fontWeight: '600', backgroundColor: '#E8F5E9', padding: 8, borderRadius: 6 }}>
+              Safety Backup: A timestamped copy of your existing active floor plan will be automatically saved to your archived floor plans so the original FOH layout can be restored at any time.
             </Text>
             <Text style={{ color: '#64748B', fontSize: 13, lineHeight: 18 }}>
               Standard banquet setups should be saved directly to the BEO using "Save Layout to BEO" instead.

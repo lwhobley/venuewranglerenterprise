@@ -500,6 +500,22 @@ export class EventBeoReportService {
       this.prisma,
       async (tx) => {
         if (trigger === 'scheduled') {
+          // Acquire transaction-level advisory lock on the event ID to strictly serialize
+          // peer Cloud Run replicas executing the daily 6:00 AM sweep.
+          // If a replica is currently publishing this event, pg_try_advisory_xact_lock
+          // returns false immediately, skipping concurrent execution without racing versions.
+          try {
+            const lockResult = await tx.$queryRaw<Array<{ acquired: boolean }>>`
+              SELECT pg_try_advisory_xact_lock(hashtext(${`beo_pub:${eventId}`})) AS acquired
+            `;
+            if (lockResult && lockResult[0] && !lockResult[0].acquired) {
+              this.logger.log(`Skipping scheduled publish for event ${eventId}; peer instance holds advisory lock.`);
+              return null;
+            }
+          } catch {
+            // In test environments or non-Postgres mocks without $queryRaw, fallback to prior timestamp check
+          }
+
           const prior = await tx.eventBeoReport.findFirst({
             where: { eventId },
             orderBy: { version: 'desc' },

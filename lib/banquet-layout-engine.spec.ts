@@ -206,4 +206,22 @@ describe('banquet-layout-engine', () => {
     const parsedSecond = parseSavedBanquetData(secondSavedNotes);
     expect(parsedSecond?.guestCount).toBe(150);
   });
+
+  it('returns an empty array when guestCount is 0 or negative', () => {
+    const zeroLayout = generateBanquetLayout({
+      canvasWidth: 800,
+      canvasHeight: 600,
+      guestCount: 0,
+      setupStyle: 'banquet_rounds_10',
+    });
+    expect(zeroLayout).toEqual([]);
+
+    const negativeLayout = generateBanquetLayout({
+      canvasWidth: 800,
+      canvasHeight: 600,
+      guestCount: -5,
+      setupStyle: 'banquet_rounds_10',
+    });
+    expect(negativeLayout).toEqual([]);
+  });
 });
