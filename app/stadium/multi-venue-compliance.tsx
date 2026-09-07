@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { router } from 'expo-router';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { CommandButton, CommandText, StatusPill } from '../../components/FutureUI';
+import { CommandText, StatusPill } from '../../components/FutureUI';
 import { spacing, useDesignTheme } from '../../lib/theme';
 import { useVenueAuth } from '../../lib/useVenueAuth';
 import { useQuery } from '../../lib/railway-hooks';
@@ -17,50 +17,9 @@ export default function MultiVenueComplianceScreen() {
   const certs = useQuery(api.unionCompliance.getCertifications, isReady && canManage && venue?.id ? { venueId: venue.id } : 'skip') as any;
 
   const [activeTab, setActiveTab] = useState<'facilities' | 'conflicts' | 'certifications' | 'cba_rules'>('facilities');
-  const [reminderDispatched, setReminderDispatched] = useState<string | null>(null);
-
-  const venuesList = overview?.venueSummaries?.length ? overview.venueSummaries : [
-    { facilityId: 'fac-stadium-main', facilityName: 'Metropolitan Stadium', facilityCode: 'STAD-MAIN', healthScore: 98, status: 'compliant', activeUnionCba: 'UNITE HERE Local 1 Master CBA', mealBreakThresholdHours: 5.0, openViolationsCount: 1, resolvedViolationsCount: 18, penaltyExposureCents: 2500, certifiedWorkersCount: 380, pendingRecertificationsCount: 6 },
-    { facilityId: 'fac-arena-city', facilityName: 'City Center Arena', facilityCode: 'ARNA-CITY', healthScore: 94, status: 'compliant', activeUnionCba: 'SEIU Local 1877 Arena Agreement', mealBreakThresholdHours: 5.0, openViolationsCount: 3, resolvedViolationsCount: 14, penaltyExposureCents: 7500, certifiedWorkersCount: 220, pendingRecertificationsCount: 8 },
-    { facilityId: 'fac-convention-ctr', facilityName: 'Riverside Convention Center', facilityCode: 'CONV-RIV', healthScore: 100, status: 'compliant', activeUnionCba: 'Teamsters Joint Council 25', mealBreakThresholdHours: 5.0, openViolationsCount: 0, resolvedViolationsCount: 9, penaltyExposureCents: 0, certifiedWorkersCount: 165, pendingRecertificationsCount: 2 },
-    { facilityId: 'fac-amphitheater', facilityName: 'Bayfront Amphitheater', facilityCode: 'AMPH-BAY', healthScore: 91, status: 'watch', activeUnionCba: 'IATSE & Culinary Local 23', mealBreakThresholdHours: 4.5, openViolationsCount: 4, resolvedViolationsCount: 11, penaltyExposureCents: 10000, certifiedWorkersCount: 110, pendingRecertificationsCount: 5 },
-  ];
-
-  const conflictsList = crossConflicts?.conflicts?.length ? crossConflicts.conflicts : [
-    {
-      id: 'conf-1',
-      workerId: 'w-8821',
-      workerName: 'Marcus Sterling (Lead Bartender)',
-      conflictType: 'cross_venue_clopening',
-      severity: 'high',
-      description: 'Scheduled closing shift at Metropolitan Stadium (out at 11:30 PM) followed by opening shift at City Center Arena (in at 7:00 AM). Rest window: 7.5 hrs (Minimum required: 10.0 hrs).',
-      venueA: 'Metropolitan Stadium',
-      venueB: 'City Center Arena',
-      suggestedRemedy: 'Reassign City Center Arena opening shift to available certified bartender Samira Khan.',
-    },
-    {
-      id: 'conf-2',
-      workerId: 'w-4490',
-      workerName: 'Elena Rostova (VIP Attendant)',
-      conflictType: 'concurrent_shift_overlap',
-      severity: 'critical',
-      description: 'Concurrent shift assignment overlap detected between Riverside Convention Center (4:00 PM - 10:00 PM) and Metropolitan Stadium (5:00 PM - 11:00 PM).',
-      venueA: 'Riverside Convention Center',
-      venueB: 'Metropolitan Stadium',
-      suggestedRemedy: 'Remove overlap from Metropolitan Stadium roster.',
-    },
-  ];
-
-  const certCategories = certs?.categories?.length ? certs.categories : [
-    { name: 'TIPS / RBS Responsible Alcohol Service', activeCertified: 640, expiringIn30Days: 14, expired: 2, complianceRate: 97.6 },
-    { name: 'ServSafe Food Protection Manager / Food Handler', activeCertified: 710, expiringIn30Days: 19, expired: 1, complianceRate: 98.4 },
-    { name: 'AED / CPR & First Aid Emergency Response', activeCertified: 215, expiringIn30Days: 5, expired: 0, complianceRate: 100.0 },
-    { name: 'Crowd Management & Fire Safety Certification', activeCertified: 320, expiringIn30Days: 8, expired: 0, complianceRate: 100.0 },
-  ];
-
-  const handleSendRecertReminder = (certName: string) => {
-    setReminderDispatched(`Push notification & email alerts sent to all staff with expiring ${certName}.`);
-  };
+  const venuesList = overview?.venueSummaries ?? [];
+  const conflictsList = crossConflicts?.conflicts ?? [];
+  const certCategories = certs?.categories ?? [];
 
   return (
     <ScrollView
@@ -84,7 +43,7 @@ export default function MultiVenueComplianceScreen() {
           <View style={styles.liveIndicator}>
             <View style={styles.liveDot} />
             <CommandText palette={palette} variant="caption" style={{ color: '#FFFFFF', fontWeight: '800' }}>
-              MULTI-VENUE AUDIT READY
+              COMPLIANCE OVERVIEW
             </CommandText>
           </View>
         </View>
@@ -103,23 +62,23 @@ export default function MultiVenueComplianceScreen() {
           <View style={[styles.kpiCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
             <CommandText palette={palette} variant="caption">Organization Health Score</CommandText>
             <CommandText palette={palette} variant="title" style={{ color: '#17643B', fontWeight: '800' }}>
-              {overview?.overallHealthScore ?? 96}%
+              {overview?.overallHealthScore != null ? `${overview.overallHealthScore}%` : 'Unavailable'}
             </CommandText>
-            <CommandText palette={palette} variant="caption" style={{ color: '#68706A' }}>4 Venues Monitored</CommandText>
+            <CommandText palette={palette} variant="caption" style={{ color: '#68706A' }}>{overview ? `${venuesList.length} Venues Reported` : 'Awaiting compliance data'}</CommandText>
           </View>
 
           <View style={[styles.kpiCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
             <CommandText palette={palette} variant="caption">Active Union CBAs</CommandText>
             <CommandText palette={palette} variant="title" style={{ color: '#17643B', fontWeight: '800' }}>
-              4 Agreements
+              Unavailable
             </CommandText>
-            <CommandText palette={palette} variant="caption" style={{ color: '#68706A' }}>UNITE HERE, SEIU, IBT</CommandText>
+            <CommandText palette={palette} variant="caption" style={{ color: '#68706A' }}>Agreement totals not reported</CommandText>
           </View>
 
           <View style={[styles.kpiCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
             <CommandText palette={palette} variant="caption">Cross-Venue Conflicts</CommandText>
             <CommandText palette={palette} variant="title" style={{ color: conflictsList.length > 0 ? '#A86514' : '#17643B', fontWeight: '800' }}>
-              {conflictsList.length} Flagged
+              {crossConflicts?.note || !crossConflicts ? 'Unavailable' : `${conflictsList.length} Flagged`}
             </CommandText>
             <CommandText palette={palette} variant="caption" style={{ color: '#68706A' }}>Clopenings & Overlaps</CommandText>
           </View>
@@ -189,6 +148,7 @@ export default function MultiVenueComplianceScreen() {
               </CommandText>
             </View>
 
+            {!venuesList.length ? <CommandText palette={palette}>No facility compliance data available.</CommandText> : null}
             {venuesList.map((fac: any) => (
               <View key={fac.facilityId} style={[styles.facilityCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -259,6 +219,7 @@ export default function MultiVenueComplianceScreen() {
               </CommandText>
             </View>
 
+            {!conflictsList.length ? <CommandText palette={palette}>{crossConflicts?.note ?? (crossConflicts ? 'No conflicts reported.' : 'Conflict data unavailable.')}</CommandText> : null}
             {conflictsList.map((c: any) => (
               <View key={c.id} style={[styles.conflictCard, { backgroundColor: palette.surface, borderColor: c.severity === 'critical' ? '#D32F2F' : '#A86514' }]}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -303,15 +264,8 @@ export default function MultiVenueComplianceScreen() {
               </CommandText>
             </View>
 
-            {reminderDispatched ? (
-              <View style={[styles.remedyBox, { backgroundColor: '#EEF5F0', borderColor: '#17643B' }]}>
-                <MaterialCommunityIcons name="check-circle" size={16} color="#17643B" />
-                <CommandText palette={palette} variant="caption" style={{ color: '#17643B', fontWeight: '700', flex: 1 }}>
-                  {reminderDispatched}
-                </CommandText>
-              </View>
-            ) : null}
 
+            {!certCategories.length ? <CommandText palette={palette}>No certification data available.</CommandText> : null}
             {certCategories.map((cat: any, idx: number) => (
               <View key={idx} style={[styles.certCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -346,13 +300,9 @@ export default function MultiVenueComplianceScreen() {
 
                 {cat.expiringIn30Days > 0 ? (
                   <View style={{ marginTop: spacing.xs }}>
-                    <CommandButton
-                      palette={palette}
-                      icon="bell-ring-outline"
-                      onPress={() => handleSendRecertReminder(cat.name)}
-                    >
-                      Send Re-Certification Reminders ({cat.expiringIn30Days})
-                    </CommandButton>
+                    <CommandText palette={palette} variant="caption">
+                      Automated reminders are unavailable. Contact staff directly to arrange recertification.
+                    </CommandText>
                   </View>
                 ) : null}
               </View>
@@ -365,7 +315,7 @@ export default function MultiVenueComplianceScreen() {
           <View style={{ gap: spacing.md }}>
             <View style={[styles.facilityCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
               <CommandText palette={palette} variant="label" style={{ color: '#17643B', fontWeight: '800' }}>
-                STANDARDIZED UNION CBA COMPLIANCE MATRIX
+                EXAMPLE BREAK RULES — NOT YOUR VENUE POLICY
               </CommandText>
 
               <View style={{ gap: spacing.sm, marginTop: spacing.xs }}>

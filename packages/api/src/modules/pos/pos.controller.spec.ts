@@ -43,6 +43,29 @@ function makeController() {
 }
 
 const managerScope = { venueId: 'venue-1', profileId: 'manager-1', role: 'manager', allAccess: false } as any;
+
+describe('aggregator telemetry integrity', () => {
+  it('returns measured sales without manufactured telemetry', async () => {
+    const { controller, prisma } = makeController();
+    prisma.posCheck.aggregate.mockResolvedValue({ _sum: { totalCents: 12345 } });
+    const status = await controller.getAggregatorStatus(managerScope);
+    expect(status.metrics.grossSalesCents).toBe(12345);
+    expect(status.latencyMs).toBeNull();
+    expect(status.metrics.syncHealthScore).toBeNull();
+    expect(status.metrics.recentChecksPerMinute).toBeNull();
+    expect(status.activeFeedsCount).toBe(0);
+    expect(status.connectedProviders.every(provider => provider.terminalCount === null)).toBe(true);
+  });
+
+  it('does not manufacture tender or provider splits for paid checks', async () => {
+    const { controller, prisma } = makeController();
+    prisma.posCheck.aggregate.mockResolvedValue({ _sum: { totalCents: 99999 } });
+    const settlement = await controller.getAggregatorSettlement(managerScope);
+    expect(settlement.totalGrossCents).toBe(99999);
+    expect(settlement.tenderSplits).toEqual([]);
+    expect(settlement.providerBreakdown).toEqual([]);
+  });
+});
 const staffScope = { venueId: 'venue-1', profileId: 'staff-1', role: 'staff', allAccess: false } as any;
 
 function makeRequest(ip = '203.0.113.5') {

@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { VmsSyncSystem } from '@prisma/client';
 
@@ -194,7 +194,10 @@ export class VmsIntegrationsService {
     let remoteSupplies: ShiftSupplyItem[] | null = null;
 
     if (remoteUrl && remoteKey) {
-      const outbound = params.customItems || defaultCatalog;
+      if (!params.customItems?.length) {
+        throw new BadRequestException('Live inventory sync requires explicit inventory items. No stock was sent.');
+      }
+      const outbound = params.customItems;
 
       // Transient failures get one retry with a short backoff; a non-2xx
       // response is a decision by the remote system and is not retried.
@@ -240,7 +243,7 @@ export class VmsIntegrationsService {
       }
     }
 
-    const supplies = remoteSupplies
+    const supplies = remoteUrl && remoteKey ? (remoteSupplies ?? []) : remoteSupplies
       ? remoteSupplies
       : params.customItems
       ? params.customItems.map((item, idx) => ({

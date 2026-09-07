@@ -1,10 +1,11 @@
-import React from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'react-native';
+import React, { useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Alert } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
 import { apiRequest, useApiQuery } from '../../lib/api-client';
 import { asArray } from '../../lib/format';
 import { OpsQueryState } from '../../components/stadium/OpsQueryState';
 import { opsConsole } from '../../lib/theme';
+import { requiredCount, requiredCents } from '../../lib/concourse-counts';
 
 export interface RestockTransfer {
   id: string;
@@ -17,6 +18,7 @@ export interface RestockTransfer {
 }
 
 export interface HawkerSession {
+  itemsCheckedOut: Array<{ code: string; name: string; quantity: number; unitPriceCents: number }>;
   id: string;
   hawkerId: string;
   hawkerName: string;
@@ -28,6 +30,49 @@ export interface HawkerSession {
 
 const TRANSFERS_KEY = ['stadium', 'concourse', 'transfers'];
 const HAWKERS_KEY = ['stadium', 'concourse', 'hawkers'];
+
+type Settlement = { itemsCheckedIn: Array<{ code: string; name: string; quantity: number }>; cashCollectedCents: number; cardCollectedCents: number };
+
+function HawkerSettlementForm({ session, onSettle }: { session: HawkerSession; onSettle: (body: Settlement) => Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const [returns, setReturns] = useState<Record<string, string>>({});
+  const [cash, setCash] = useState('');
+  const [card, setCard] = useState('');
+  const [saving, setSaving] = useState(false);
+  const submit = async () => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      if (!session.itemsCheckedOut?.length) throw new Error('Checkout inventory is unavailable. Reload the session before settling.');
+      let gross = 0;
+      const itemsCheckedIn = session.itemsCheckedOut.map(item => {
+        const quantity = requiredCount(returns[item.code], `${item.name} returned`);
+        if (quantity > item.quantity) throw new Error(`${item.name} returns exceed checkout quantity.`);
+        gross += Math.round((item.quantity - quantity) * item.unitPriceCents);
+        return { code: item.code, name: item.name, quantity };
+      }).filter(item => item.quantity > 0);
+      const cashCollectedCents = requiredCents(cash, 'cash collected');
+      const cardCollectedCents = requiredCents(card, 'card collected');
+      if (cashCollectedCents + cardCollectedCents !== gross) throw new Error(`Collected cash and card must total $${(gross / 100).toFixed(2)}.`);
+      await onSettle({ itemsCheckedIn, cashCollectedCents, cardCollectedCents });
+    } catch (error) {
+      Alert.alert('Settlement failed', error instanceof Error ? error.message : 'Settlement was not recorded.');
+    } finally { setSaving(false); }
+  };
+  if (!open) return <TouchableOpacity accessibilityRole="button" style={styles.settleBtn} onPress={() => setOpen(true)}><Text style={styles.btnText}>Enter returns & settle</Text></TouchableOpacity>;
+  return <View style={{ gap: 8 }}>
+    {(session.itemsCheckedOut ?? []).map(item => <View key={item.code}>
+      <Text style={styles.itemText}>{item.name} · Checked out {item.quantity} · Returned:</Text>
+      <TextInput accessibilityLabel={`${item.name} returned`} editable={!saving} keyboardType="decimal-pad" value={returns[item.code] ?? ''} onChangeText={value => setReturns(previous => ({ ...previous, [item.code]: value }))} style={styles.countInput} />
+    </View>)}
+    <Text style={styles.itemText}>Cash collected ($)</Text>
+    <TextInput accessibilityLabel="Cash collected" editable={!saving} keyboardType="decimal-pad" value={cash} onChangeText={setCash} style={styles.countInput} />
+    <Text style={styles.itemText}>Card collected ($)</Text>
+    <TextInput accessibilityLabel="Card collected" editable={!saving} keyboardType="decimal-pad" value={card} onChangeText={setCard} style={styles.countInput} />
+    <TouchableOpacity accessibilityRole="button" disabled={saving} style={styles.settleBtn} onPress={submit}><Text style={styles.btnText}>{saving ? 'Saving…' : 'Confirm settlement'}</Text></TouchableOpacity>
+    <TouchableOpacity accessibilityRole="button" disabled={saving} onPress={() => setOpen(false)}><Text style={styles.btnText}>Cancel</Text></TouchableOpacity>
+  </View>;
+}
 
 export default function CentralCommissaryDashboard() {
   const queryClient = useQueryClient();
@@ -51,14 +96,11 @@ export default function CentralCommissaryDashboard() {
     Alert.alert('Transfer Dispatched', `Restock Transfer marked ${nextStatus.toUpperCase()}. Restock items appended to Stand Sheet.`);
   };
 
-  const handleSettleHawker = async (session: HawkerSession) => {
-    // The checkout-time item list isn't in this list response, so we can't
-    // reconstruct a real check-in count here; settle for zero returns
-    // (full sellthrough) rather than a fabricated fixed count.
+  const handleSettleHawker = async (session: HawkerSession, body: Settlement) => {
     try {
       const settled = await apiRequest<HawkerSession & { grossSalesCents: number; commissionPayoutCents: number }>(
         `/v1/stadium/concourse/hawkers/${session.id}/settle`,
-        { method: 'POST', body: { itemsCheckedIn: [], cashCollectedCents: 0, cardCollectedCents: 0 } },
+        { method: 'POST', body },
       );
       await queryClient.invalidateQueries({ queryKey: HAWKERS_KEY });
       Alert.alert(
@@ -143,9 +185,7 @@ export default function CentralCommissaryDashboard() {
                 </View>
               </View>
               {h.status !== 'settled' && (
-                <TouchableOpacity style={styles.settleBtn} onPress={() => void handleSettleHawker(h)}>
-                  <Text style={styles.btnText}>CHECK-IN & SETTLE COMMISSION 💵</Text>
-                </TouchableOpacity>
+                <HawkerSettlementForm session={h} onSettle={body => handleSettleHawker(h, body)} />
               )}
             </View>
           ))}
@@ -156,6 +196,7 @@ export default function CentralCommissaryDashboard() {
 }
 
 const styles = StyleSheet.create({
+  countInput: { color: opsConsole.text, borderWidth: 1, borderColor: opsConsole.border, borderRadius: 8, padding: 12 },
   container: { flex: 1, backgroundColor: opsConsole.background },
   header: { padding: 16, backgroundColor: opsConsole.surface, borderBottomWidth: 2, borderBottomColor: opsConsole.border },
   headerTitle: { color: opsConsole.text, fontSize: 22, fontWeight: '900' },

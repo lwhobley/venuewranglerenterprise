@@ -143,7 +143,7 @@ export default function PosAggregatorScreen() {
           <View style={styles.liveIndicator}>
             <View style={styles.liveDot} />
             <CommandText palette={palette} variant="caption" style={{ color: '#FFFFFF', fontWeight: '800' }}>
-              LIVE
+              {aggregatorStatus?.status?.toUpperCase() ?? 'UNAVAILABLE'}
             </CommandText>
           </View>
         </View>
@@ -162,25 +162,25 @@ export default function PosAggregatorScreen() {
           <View style={[styles.kpiCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
             <CommandText palette={palette} variant="caption">Aggregated Feeds</CommandText>
             <CommandText palette={palette} variant="title" style={{ color: '#17643B', fontWeight: '800' }}>
-              6 Active POS Feeds
+              {aggregatorStatus ? `${aggregatorStatus.activeFeedsCount} Active POS Feeds` : 'Unavailable'}
             </CommandText>
-            <CommandText palette={palette} variant="caption" style={{ color: '#68706A' }}>208 Live Terminals</CommandText>
+            <CommandText palette={palette} variant="caption" style={{ color: '#68706A' }}>Terminal telemetry unavailable</CommandText>
           </View>
 
           <View style={[styles.kpiCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
             <CommandText palette={palette} variant="caption">Pipeline Velocity</CommandText>
             <CommandText palette={palette} variant="title" style={{ color: '#17643B', fontWeight: '800' }}>
-              146 Checks / Min
+              {aggregatorStatus?.metrics?.recentChecksPerMinute != null ? `${aggregatorStatus.metrics.recentChecksPerMinute} Checks / Min` : 'Unavailable'}
             </CommandText>
-            <CommandText palette={palette} variant="caption" style={{ color: '#68706A' }}>Avg Latency: 34ms</CommandText>
+            <CommandText palette={palette} variant="caption" style={{ color: '#68706A' }}>Latency telemetry unavailable</CommandText>
           </View>
 
           <View style={[styles.kpiCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
             <CommandText palette={palette} variant="caption">Aggregated Gross Sales</CommandText>
             <CommandText palette={palette} variant="title" style={{ color: '#17643B', fontWeight: '800' }}>
-              $129,340.00
+              {aggregatorStatus?.metrics?.grossSalesCents != null ? `$${(aggregatorStatus.metrics.grossSalesCents / 100).toFixed(2)}` : 'Unavailable'}
             </CommandText>
-            <CommandText palette={palette} variant="caption" style={{ color: '#68706A' }}>Sync Health: 99.8%</CommandText>
+            <CommandText palette={palette} variant="caption" style={{ color: '#68706A' }}>All recorded paid checks · Sync health unavailable</CommandText>
           </View>
         </View>
       </View>
@@ -309,7 +309,7 @@ export default function PosAggregatorScreen() {
                       </CommandText>
                     </View>
                     <StatusPill palette={palette} tone={prov.status === 'connected' ? 'good' : 'neutral'}>
-                      {prov.status.toUpperCase()}
+                      {(aggregatorStatus?.connectedProviders?.find((p: any) => p.provider === prov.provider)?.status ?? 'unavailable').toUpperCase()}
                     </StatusPill>
                   </View>
 
@@ -320,15 +320,15 @@ export default function PosAggregatorScreen() {
                   <View style={styles.providerStatsRow}>
                     <View style={styles.statCol}>
                       <CommandText palette={palette} variant="caption">Terminals</CommandText>
-                      <CommandText palette={palette} variant="body" style={{ fontWeight: '700' }}>{prov.terminals}</CommandText>
+                      <CommandText palette={palette} variant="body" style={{ fontWeight: '700' }}>Unavailable</CommandText>
                     </View>
                     <View style={styles.statCol}>
                       <CommandText palette={palette} variant="caption">Latency</CommandText>
-                      <CommandText palette={palette} variant="body" style={{ fontWeight: '700' }}>{prov.latencyMs}ms</CommandText>
+                      <CommandText palette={palette} variant="body" style={{ fontWeight: '700' }}>Unavailable</CommandText>
                     </View>
                     <View style={styles.statCol}>
                       <CommandText palette={palette} variant="caption">Gross Volume</CommandText>
-                      <CommandText palette={palette} variant="body" style={{ fontWeight: '700', color: '#17643B' }}>{prov.grossSales}</CommandText>
+                      <CommandText palette={palette} variant="body" style={{ fontWeight: '700', color: '#17643B' }}>Unavailable</CommandText>
                     </View>
                   </View>
                 </View>
@@ -452,13 +452,14 @@ export default function PosAggregatorScreen() {
                 CURRENT MASTER 86 ACTIVE ITEMS
               </CommandText>
               <View style={{ gap: spacing.xs, marginTop: spacing.xs }}>
-                {['Jumbo Gulf Shrimp Platter (Shellfish Bar)', 'Smoked Tomahawk Ribeye (Suites)', 'Craft Hazy IPA Draft (Section 104)'].map((item, idx) => (
+                {!master86?.items?.length ? <CommandText palette={palette}>{master86 ? 'No out-of-stock items reported.' : 'Inventory data unavailable.'}</CommandText> : null}
+                {(master86?.items ?? []).map((item: { id: string; name: string }, idx: number) => (
                   <View key={idx} style={[styles.item86Row, { borderColor: palette.divider }]}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                       <MaterialCommunityIcons name="cancel" size={16} color="#D32F2F" />
-                      <CommandText palette={palette} variant="body" style={{ fontWeight: '700' }}>{item}</CommandText>
+                      <CommandText palette={palette} variant="body" style={{ fontWeight: '700' }}>{item.name}</CommandText>
                     </View>
-                    <StatusPill palette={palette} tone="danger">86'D UNIVERSALLY</StatusPill>
+                    <StatusPill palette={palette} tone="danger">OUT OF STOCK</StatusPill>
                   </View>
                 ))}
               </View>
@@ -474,12 +475,8 @@ export default function PosAggregatorScreen() {
                 MULTI-TENDER AGGREGATED SETTLEMENT
               </CommandText>
               <View style={{ gap: spacing.sm, marginTop: spacing.xs }}>
-                {(settlement?.tenderSplits || [
-                  { tender: 'Credit / Debit Card (Visa, MC, Amex)', amountCents: 8795000, percentage: 68 },
-                  { tender: 'Apple Pay / Google Pay (NFC Contactless)', amountCents: 2845000, percentage: 22 },
-                  { tender: 'Stadium RFID Loaded Wristbands & Season Member Balance', amountCents: 905000, percentage: 7 },
-                  { tender: 'Cash & Concourse Currency', amountCents: 388000, percentage: 3 },
-                ]).map((t: any, idx: number) => (
+                {!settlement?.tenderSplits?.length ? <CommandText palette={palette}>Tender breakdown unavailable. No settlement split has been calculated.</CommandText> : null}
+                {(settlement?.tenderSplits ?? []).map((t: any, idx: number) => (
                   <View key={idx} style={[styles.tenderRow, { borderColor: palette.divider }]}>
                     <View style={{ flex: 1 }}>
                       <CommandText palette={palette} variant="body" style={{ fontWeight: '700' }}>{t.tender}</CommandText>

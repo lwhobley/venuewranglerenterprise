@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Alert } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
 import { apiRequest, useApiQuery } from '../../lib/api-client';
@@ -6,6 +6,7 @@ import { asArray } from '../../lib/format';
 import { OpsQueryState } from '../../components/stadium/OpsQueryState';
 import { opsConsole } from '../../lib/theme';
 import { useResponsive } from '../../lib/responsive';
+import { requiredCount, requiredCents } from '../../lib/concourse-counts';
 
 export interface StandSheetItem {
   code: string;
@@ -22,6 +23,7 @@ export interface StandSheetItem {
 }
 
 export interface StandSheetData {
+  countIn: Array<{ code: string; name: string; count: number; unitPriceCents: number }>;
   id: string;
   outlet: { name: string; code: string };
   zone: { name: string };
@@ -47,19 +49,25 @@ export default function StandSheetAuditScreen() {
   const activeSheet = sheets.find((sheet) => sheet.id === selectedSheetId) ?? sheets[0] ?? null;
 
   // Form states for manual count out input
-  const [countOutDraft, setCountOutDraft] = useState<Record<string, number>>({});
-  const [posSoldDraft, setPosSoldDraft] = useState<Record<string, number>>({});
+  const [countOutDraft, setCountOutDraft] = useState<Record<string, string>>({});
+  const [wasteDraft, setWasteDraft] = useState<Record<string, string>>({});
+  const [posSoldDraft, setPosSoldDraft] = useState<Record<string, string>>({});
   const [actualRevenue, setActualRevenue] = useState<string>('');
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    setCountOutDraft({}); setWasteDraft({}); setPosSoldDraft({}); setActualRevenue('');
+  }, [activeSheet?.id]);
 
   const handleReconcile = async () => {
-    if (!activeSheet) return;
-    const items = activeSheet.inventoryVariance || [];
-    const countOutItems = items.map(i => ({ code: i.code, name: i.name, count: countOutDraft[i.code] ?? i.countOut, unitPriceCents: i.unitPriceCents }));
-    const wasteItems = items.map(i => ({ code: i.code, name: i.name, count: i.waste, unitPriceCents: i.unitPriceCents }));
-    const posItemsSold = items.map(i => ({ code: i.code, name: i.name, count: posSoldDraft[i.code] ?? i.posSold, unitPriceCents: i.unitPriceCents }));
-    const actualCents = Math.round(parseFloat(actualRevenue || '0') * 100);
-
+    if (!activeSheet || saving || activeSheet.status === 'reconciled') return;
+    setSaving(true);
     try {
+      const items = activeSheet.countIn ?? [];
+      if (!items.length) throw new Error('This sheet has no opening inventory to reconcile.');
+      const countOutItems = items.map(i => ({ ...i, count: requiredCount(countOutDraft[i.code], `${i.name} count out`) }));
+      const wasteItems = items.map(i => ({ ...i, count: requiredCount(wasteDraft[i.code], `${i.name} waste`) }));
+      const posItemsSold = items.map(i => ({ ...i, count: requiredCount(posSoldDraft[i.code], `${i.name} POS sales`) }));
+      const actualCents = requiredCents(actualRevenue, 'actual POS revenue');
       const updated = await apiRequest<StandSheetData>(`/v1/stadium/concourse/stand-sheets/${activeSheet.id}/reconcile`, {
         method: 'POST',
         body: {
@@ -74,6 +82,8 @@ export default function StandSheetAuditScreen() {
       Alert.alert('Stand Sheet Reconciled', `Inventory Variance: $${(updated.varianceAmountCents / 100).toFixed(2)}`);
     } catch (error) {
       Alert.alert('Reconciliation failed', error instanceof Error ? error.message : 'No inventory counts were changed.');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -85,7 +95,7 @@ export default function StandSheetAuditScreen() {
           <Text style={styles.headerTitle}>STAND SHEET RECONCILIATION</Text>
           <Text style={styles.headerSub}>CONCOURSE F&B AUDIT ENGINE • AUTOMATIC VARIANCE TRACKING</Text>
         </View>
-        <TouchableOpacity style={styles.reconcileBtnHeader} onPress={handleReconcile}>
+        <TouchableOpacity disabled={saving || !activeSheet || activeSheet.status === 'reconciled'} style={styles.reconcileBtnHeader} onPress={handleReconcile}>
           <Text style={styles.reconcileBtnText}>RECONCILE & AUDIT ✅</Text>
         </TouchableOpacity>
       </View>
@@ -99,6 +109,27 @@ export default function StandSheetAuditScreen() {
         onRetry={() => void query.refetch()}
       >
         {activeSheet ? <ScrollView contentContainerStyle={styles.body}>
+          <ScrollView horizontal contentContainerStyle={{ gap: 8 }}>
+            {sheets.map(sheet => <TouchableOpacity key={sheet.id} disabled={saving} accessibilityRole="button" accessibilityState={{ selected: sheet.id === activeSheet.id }} onPress={() => setSelectedSheetId(sheet.id)} style={styles.reconcileBtnHeader}>
+              <Text style={styles.reconcileBtnText}>{sheet.outlet?.name ?? sheet.id} · {sheet.status}</Text>
+            </TouchableOpacity>)}
+          </ScrollView>
+          {activeSheet.status !== 'reconciled' ? <View style={{ gap: 12 }}>
+            {(activeSheet.countIn ?? []).map(item => <View key={item.code} style={{ gap: 6 }}>
+              <Text style={styles.itemName}>{item.name} · Opening count {item.count}</Text>
+              {([
+                ['Count out', countOutDraft, setCountOutDraft],
+                ['Waste', wasteDraft, setWasteDraft],
+                ['POS sold', posSoldDraft, setPosSoldDraft],
+              ] as const).map(([label, draft, setDraft]) => <View key={label}>
+                <Text style={styles.summaryLabel}>{label}</Text>
+                <TextInput accessibilityLabel={`${item.name} ${label}`} editable={!saving} keyboardType="decimal-pad" value={draft[item.code] ?? ''} onChangeText={value => setDraft(previous => ({ ...previous, [item.code]: value }))} style={{ color: opsConsole.text, borderWidth: 1, borderColor: opsConsole.border, borderRadius: 8, padding: 12 }} />
+              </View>)}
+            </View>)}
+            <Text style={styles.summaryLabel}>Actual POS revenue ($)</Text>
+            <TextInput accessibilityLabel="Actual POS revenue" editable={!saving} keyboardType="decimal-pad" value={actualRevenue} onChangeText={setActualRevenue} style={{ color: opsConsole.text, borderWidth: 1, borderColor: opsConsole.border, borderRadius: 8, padding: 12 }} />
+            <TouchableOpacity accessibilityRole="button" disabled={saving} onPress={handleReconcile} style={styles.reconcileBtnHeader}><Text style={styles.reconcileBtnText}>{saving ? 'Saving…' : 'Reconcile counts'}</Text></TouchableOpacity>
+          </View> : null}
           {/* Summary Cards */}
           <View style={[styles.summaryRow, isPhone && styles.summaryRowPhone]}>
             <View style={[styles.summaryCard, isPhone && styles.summaryCardPhone]}>
@@ -142,7 +173,7 @@ export default function StandSheetAuditScreen() {
               <View key={idx} style={styles.tableRow}>
                 <View style={{ flex: 2 }}>
                   <Text style={styles.itemName}>{item.name}</Text>
-                  <Text style={styles.itemCode}>{item.code} • ${(item.unitPriceCents / 100).toFixed(2)}</Text>
+                  <Text style={styles.itemCode}>{item.code} • ${((activeSheet.countIn?.find(opening => opening.code === item.code)?.unitPriceCents ?? 0) / 100).toFixed(2)}</Text>
                 </View>
                 <Text style={styles.td}>{item.countIn}</Text>
                 <Text style={[styles.td, { color: opsConsole.accentSoft }]}>+{item.restocks}</Text>

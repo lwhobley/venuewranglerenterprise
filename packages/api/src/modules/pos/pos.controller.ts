@@ -836,7 +836,7 @@ export class PosController {
     return {
       status: activeProviders.length > 0 ? 'online' : 'standby',
       aggregatorEngine: 'VenueWrangler Unified Multi-POS Aggregator Core v2.4',
-      latencyMs: 42,
+      latencyMs: null,
       activeFeedsCount: activeProviders.length,
       connectedProviders: POS_PROVIDERS.map((p) => {
         const found = connections.find((c) => c.provider === p);
@@ -844,16 +844,16 @@ export class PosController {
           provider: p,
           status: found ? found.status : 'unconfigured',
           lastSyncAt: found?.updatedAt ?? null,
-          terminalCount: found ? (p === 'toast' ? 18 : p === 'square' ? 12 : p === 'clover' ? 8 : 4) : 0,
+          terminalCount: null,
         };
       }),
       metrics: {
         totalChecksCount: checksCount,
-        recentChecksPerMinute: Math.min(checksCount, 48),
+        recentChecksPerMinute: null,
         grossSalesCents: totalSalesAggregated._sum.totalCents ?? 0,
         tipsCents: totalSalesAggregated._sum.tipCents ?? 0,
         taxCents: totalSalesAggregated._sum.taxCents ?? 0,
-        syncHealthScore: 99.8,
+        syncHealthScore: null,
       },
       recentTransactions: recentChecks.map((c) => ({
         id: c.id,
@@ -955,8 +955,8 @@ export class PosController {
 
     return {
       total86Count: items.length,
-      broadcastActive: true,
-      lastBroadcastAt: new Date().toISOString(),
+      broadcastActive: false,
+      lastBroadcastAt: null,
       items: items.map((i) => ({
         id: i.id,
         name: i.name,
@@ -1008,28 +1008,20 @@ export class PosController {
       throw new ForbiddenException('Only managers can view settlement matrix.');
     }
 
-    const sales = await this.prisma.posCheck.findMany({
+    const sales = await this.prisma.posCheck.aggregate({
       where: { venueId: scope.venueId, status: 'paid' },
-      take: 100,
+      _sum: { totalCents: true },
     });
 
-    const totalCents = sales.reduce((sum, c) => sum + c.totalCents, 0);
+    const totalCents = sales._sum.totalCents ?? 0;
 
     return {
       settlementDate: new Date().toISOString().split('T')[0],
       totalGrossCents: totalCents,
-      tenderSplits: totalCents > 0 ? [
-        { tender: 'Credit / Debit Card (Visa, MC, Amex)', amountCents: Math.round(totalCents * 0.68), percentage: 68 },
-        { tender: 'Apple Pay / Google Pay (NFC Contactless)', amountCents: Math.round(totalCents * 0.22), percentage: 22 },
-        { tender: 'Stadium RFID Loaded Wristbands & Season Member Balance', amountCents: Math.round(totalCents * 0.07), percentage: 7 },
-        { tender: 'Cash & Concourse Currency', amountCents: Math.round(totalCents * 0.03), percentage: 3 },
-      ] : [],
-      providerBreakdown: totalCents > 0 ? [
-        { provider: 'toast', grossCents: Math.round(totalCents * 0.54), terminalCount: 18, matchedRatio: 1.0 },
-        { provider: 'square', grossCents: Math.round(totalCents * 0.26), terminalCount: 12, matchedRatio: 0.99 },
-        { provider: 'spoton', grossCents: Math.round(totalCents * 0.14), terminalCount: 8, matchedRatio: 1.0 },
-        { provider: 'clover', grossCents: Math.round(totalCents * 0.06), terminalCount: 4, matchedRatio: 1.0 },
-      ] : [],
+      reportingPeriod: 'all_recorded_paid_checks',
+      tenderSplits: [],
+      providerBreakdown: [],
+      note: 'Tender and provider reconciliation breakdowns are unavailable.',
     };
   }
 }

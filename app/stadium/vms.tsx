@@ -131,10 +131,6 @@ export default function VendorManagementSystemScreen() {
     [['vms', 'attendance']],
   );
 
-  const syncInventoryMutation = useApiMutation<any, any>(
-    (body) => apiRequest('/v1/vms/integrations/sync', { method: 'POST', body }),
-    [['vms', 'inventory-status']],
-  );
 
   // Handlers
   const handleAddVendor = async () => {
@@ -266,7 +262,7 @@ export default function VendorManagementSystemScreen() {
 
         <View style={[styles.kpiCard, isPhone && styles.kpiCardPhone]}>
           <Text style={styles.kpiLabel}>FULFILLMENT RATE</Text>
-          <Text style={[styles.kpiValue, { color: opsConsole.good }]}>98.4%</Text>
+          <Text style={[styles.kpiValue, { color: opsConsole.good }]}>Unavailable</Text>
           <Text style={styles.kpiSub}>Target &gt;95%</Text>
         </View>
 
@@ -293,7 +289,7 @@ export default function VendorManagementSystemScreen() {
 
         <View style={[styles.kpiCard, isPhone && styles.kpiCardPhone]}>
           <Text style={styles.kpiLabel}>YELLOW DOG SYNC</Text>
-          <Text style={[styles.kpiValue, { color: opsConsole.good }]}>ONLINE</Text>
+          <Text style={[styles.kpiValue, { color: opsConsole.good }]}>{inventoryStatus?.status?.replaceAll('_', ' ').toUpperCase() ?? 'UNAVAILABLE'}</Text>
           <Text style={styles.kpiSub}>Supplies & Equipment</Text>
         </View>
       </ScrollView>
@@ -729,10 +725,11 @@ export default function VendorManagementSystemScreen() {
 
               <Pressable
                 style={[styles.primaryActionBtn, { backgroundColor: palette.primary }]}
-                onPress={() => syncInventoryMutation.mutateAsync({})}
+                disabled
+                accessibilityState={{ disabled: true }}
               >
                 <MaterialCommunityIcons name="sync" size={16} color="#FFF" />
-                <Text style={styles.primaryActionText}>TRIGGER SYNC NOW</Text>
+                <Text style={styles.primaryActionText}>SYNC REQUIRES EXPLICIT STOCK ITEMS</Text>
               </Pressable>
             </View>
 
