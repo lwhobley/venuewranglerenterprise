@@ -1,0 +1,126 @@
+name: Expo EAS Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Target build platform'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - android
+          - ios
+      profile:
+        description: 'EAS build profile (see eas.json)'
+        required: true
+        default: 'preview'
+        type: choice
+        options:
+          - preview
+          - production
+      auto_submit:
+        description: 'Auto-submit to stores on build completion (production profile only)'
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Codebase Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run api:prisma:generate
+
+      - name: Run typecheck
+        run: npm run typecheck
+
+      - name: Run tests
+        run: npm test -- --run
+
+  eas-build:
+    name: EAS Cloud Build
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup EAS CLI
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Verify EXPO_TOKEN configuration
+        run: |
+          if [ -z "${{ secrets.EXPO_TOKEN }}" ]; then
+            echo "::error::EXPO_TOKEN secret is not set in repository secrets! Please add EXPO_TOKEN to repository settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run api:prisma:generate
+
+      - name: Determine Build Parameters
+        id: params
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "platform=${{ inputs.platform }}" >> $GITHUB_OUTPUT
+            echo "profile=${{ inputs.profile }}" >> $GITHUB_OUTPUT
+            echo "auto_submit=${{ inputs.auto_submit }}" >> $GITHUB_OUTPUT
+          else
+            echo "platform=all" >> $GITHUB_OUTPUT
+            echo "profile=production" >> $GITHUB_OUTPUT
+            echo "auto_submit=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Execute EAS Build
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          PLATFORM="${{ steps.params.outputs.platform }}"
+          PROFILE="${{ steps.params.outputs.profile }}"
+          AUTO_SUBMIT="${{ steps.params.outputs.auto_submit }}"
+
+          BUILD_ARGS="--platform $PLATFORM --profile $PROFILE --non-interactive"
+
+          if [ "$AUTO_SUBMIT" = "true" ]; then
+            BUILD_ARGS="$BUILD_ARGS --auto-submit"
+          fi
+
+          echo "Running: eas build $BUILD_ARGS"
+          npx eas-cli build $BUILD_ARGS

@@ -9,6 +9,9 @@
       "channel": "preview",
       "env": {
         "EXPO_PUBLIC_API_URL": "https://stadium-wrangler-api-c57mm72zpa-ue.a.run.app/api"
+      },
+      "android": {
+        "buildType": "apk"
       }
     },
     "production": {

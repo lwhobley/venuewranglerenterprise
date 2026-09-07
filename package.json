@@ -27,7 +27,8 @@
     "typecheck": "tsc --noEmit && npm run typecheck -w @venue-wrangler/api",
     "test": "npm run api:prisma:generate && vitest run",
     "test:ui": "vitest run --exclude \"packages/api/**\" --exclude \"**/*.integration.spec.ts\"",
-    "test:watch": "npm run api:prisma:generate && vitest"
+    "test:watch": "npm run api:prisma:generate && vitest",
+    "eas-build-pre-install": "npm run api:prisma:generate"
   },
   "dependencies": {
     "@expo-google-fonts/fraunces": "^0.4.1",
