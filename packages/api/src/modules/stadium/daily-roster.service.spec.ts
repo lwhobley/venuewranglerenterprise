@@ -628,7 +628,7 @@ describe('DailyRosterService (Unit)', () => {
     expect(result.workerCount).toBe(2);
     expect(prismaMock.department.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
-        code: 'BANQUET_CATERING',
+        code: 'catering',
         defaultRoute: '/banquet-floor-plan',
       }),
     });

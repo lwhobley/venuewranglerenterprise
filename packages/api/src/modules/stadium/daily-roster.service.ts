@@ -692,12 +692,12 @@ export class DailyRosterService {
   }) {
     const { organizationId, facilityId, actorUserId, dto } = params;
 
-    // 1. Ensure or find a department for Banquets / Catering
+    // 1. Ensure or find a department for Catering & Banquets (aligns with STANDARD_VENUE_DEPARTMENTS & BASELINE_DEPARTMENT_AREAS)
     let department = await this.prisma.department.findFirst({
       where: {
         organizationId,
         facilityId,
-        code: 'BANQUET_CATERING',
+        code: { in: ['catering', 'BANQUET_CATERING'] },
       },
     });
 
@@ -706,8 +706,8 @@ export class DailyRosterService {
         data: {
           organizationId,
           facilityId,
-          code: 'BANQUET_CATERING',
-          name: 'Banquet & Catering Operations',
+          code: 'catering',
+          name: 'Catering & Banquets',
           defaultRoute: '/banquet-floor-plan',
           visibilityScope: 'isolated',
         },
