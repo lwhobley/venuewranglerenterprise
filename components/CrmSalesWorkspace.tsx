@@ -10,6 +10,7 @@ import { useIsDesktop } from '../lib/responsive';
 import { asArray, dollarsToCents, errorMessage, formatMoneyWhole, formatShortDate, splitTags as baseSplitTags } from '../lib/format';
 import { AnimatedTab } from './AppCard';
 import type { WorkspaceView } from '../lib/crm-routing';
+import { formatCrmNotesForDisplay } from '../lib/banquet-layout-engine';
 
 type LeadStatus = 'new' | 'contacted' | 'qualified' | 'proposal_sent' | 'negotiating' | 'won' | 'lost' | 'unqualified' | 'on_hold';
 
@@ -687,7 +688,7 @@ function EventsView({
             { label: 'Entrees', value: beo.menuEntrees },
             { label: 'Dessert', value: beo.menuDesserts },
             { label: 'Guest needs', value: beo.specialRequirements },
-            { label: 'Run-of-show', value: beo.internalNotes },
+            { label: 'Run-of-show', value: formatCrmNotesForDisplay(beo.internalNotes) },
           ].filter((item) => item.value).map((item) => (
             <Text key={item.label} style={{ color: colors.charcoal, fontSize: 12 }}>
               <Text style={{ fontWeight: '800' }}>{item.label}: </Text>{item.value}

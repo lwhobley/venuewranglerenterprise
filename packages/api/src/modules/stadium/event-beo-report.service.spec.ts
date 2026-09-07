@@ -269,4 +269,50 @@ describe('EventBeoReportService.buildReport', () => {
     expect(report.suites.rows[0].lineItems).toHaveLength(1);
     expect(report.suites.rows[0].lineItems[0].name).toBe('Crab tower');
   });
+
+  it('fails closed and returns null if scheduled advisory lock query throws a database error', async () => {
+    const prisma = {
+      venueEvent: {
+        findFirst: vi.fn().mockResolvedValue(EVENT),
+        findFirstOrThrow: vi.fn().mockResolvedValue(EVENT),
+      },
+      venue: { findUniqueOrThrow: vi.fn().mockResolvedValue({ id: 'ven_1', name: 'NRG Stadium' }) },
+      suiteBeoOrder: { findMany: vi.fn().mockResolvedValue([]) },
+      eventExecutionWorkspace: { findMany: vi.fn().mockResolvedValue([]) },
+      eventFnbReadiness: { findMany: vi.fn().mockResolvedValue([]) },
+      $transaction: vi.fn((cb: any) =>
+        cb({
+          $queryRaw: vi.fn().mockRejectedValue(new Error('connection timeout to postgres')),
+        }),
+      ),
+    };
+    const service = new EventBeoReportService(prisma as never);
+
+    const result = await service.publish('ven_1', 'evt_1', { profileId: 'prof_1' }, 'scheduled');
+
+    expect(result).toBeNull();
+  });
+
+  it('skips scheduled publish if another instance holds the advisory lock', async () => {
+    const prisma = {
+      venueEvent: {
+        findFirst: vi.fn().mockResolvedValue(EVENT),
+        findFirstOrThrow: vi.fn().mockResolvedValue(EVENT),
+      },
+      venue: { findUniqueOrThrow: vi.fn().mockResolvedValue({ id: 'ven_1', name: 'NRG Stadium' }) },
+      suiteBeoOrder: { findMany: vi.fn().mockResolvedValue([]) },
+      eventExecutionWorkspace: { findMany: vi.fn().mockResolvedValue([]) },
+      eventFnbReadiness: { findMany: vi.fn().mockResolvedValue([]) },
+      $transaction: vi.fn((cb: any) =>
+        cb({
+          $queryRaw: vi.fn().mockResolvedValue([{ acquired: false }]),
+        }),
+      ),
+    };
+    const service = new EventBeoReportService(prisma as never);
+
+    const result = await service.publish('ven_1', 'evt_1', { profileId: 'prof_1' }, 'scheduled');
+
+    expect(result).toBeNull();
+  });
 });

@@ -163,3 +163,45 @@ export class AdjustRosterDto {
   @Type(() => WorkerAdjustmentDto)
   workerUpdates?: WorkerAdjustmentDto[];
 }
+
+export class SyncBanquetWorkerItemDto {
+  @IsString()
+  @IsNotEmpty()
+  workerName!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  workerRole!: string;
+
+  @IsOptional()
+  @IsString()
+  assignedStation?: string;
+
+  @IsOptional()
+  @IsString()
+  shiftHours?: string;
+
+  @IsOptional()
+  @IsString()
+  notes?: string;
+}
+
+export class SyncBanquetStaffDto {
+  @IsString()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'operationalDate must be YYYY-MM-DD' })
+  operationalDate!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  eventName!: string;
+
+  @IsOptional()
+  @IsString()
+  beoId?: string;
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => SyncBanquetWorkerItemDto)
+  workers!: SyncBanquetWorkerItemDto[];
+}
+

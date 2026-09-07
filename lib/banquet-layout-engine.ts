@@ -725,3 +725,16 @@ export function buildBanquetNotesBlock(
   }
   return `${cleanNotes}\n\n${banquetBlock}`;
 }
+
+/**
+ * Strips raw HTML comments and JSON serialization blocks from BEO notes so sales/CRM reps
+ * see only clean human-readable text and layout/roster summaries.
+ */
+export function formatCrmNotesForDisplay(notes?: string | null): string {
+  if (!notes) return '';
+  return notes
+    .replace(/<!--\s*BANQUET_DATA_JSON:[\s\S]*?:END_BANQUET_DATA\s*-->/g, '')
+    .replace(/<!--\s*BANQUET_LAYOUT_START\s*-->/g, '')
+    .replace(/<!--\s*BANQUET_LAYOUT_END\s*-->/g, '')
+    .trim();
+}

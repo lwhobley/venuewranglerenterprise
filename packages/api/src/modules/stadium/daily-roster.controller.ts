@@ -14,6 +14,7 @@ import {
   AdjustRosterDto,
   AssignRosterWorkerDto,
   CreateDailyRosterDto,
+  SyncBanquetStaffDto,
   UpdateRosterWorkerDto,
 } from './daily-roster.dto';
 import { VenueScope } from '../../venue/venue-scope.decorator';
@@ -64,6 +65,22 @@ export class DailyRosterController {
   ) {
     const orgId = await this.organizationIdFor(scope.venueId);
     return this.service.createRoster({
+      organizationId: orgId,
+      facilityId: scope.venueId,
+      actorUserId: scope.userId,
+      actorRole: scope.role,
+      actorAllAccess: scope.allAccess,
+      dto: body,
+    });
+  }
+
+  @Post('banquet-sync')
+  async syncBanquetStaff(
+    @VenueScope() scope: Scope,
+    @Body() body: SyncBanquetStaffDto,
+  ) {
+    const orgId = await this.organizationIdFor(scope.venueId);
+    return this.service.syncBanquetStaffToRoster({
       organizationId: orgId,
       facilityId: scope.venueId,
       actorUserId: scope.userId,

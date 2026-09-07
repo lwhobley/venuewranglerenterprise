@@ -210,9 +210,9 @@ export class FloorService {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`floor-plan:${venueId}`}))`;
       let plan = await tx.floorPlan.findFirst({ where: { venueId, isActive: true } });
       if (plan) {
-        // If explicitly requested or replacing with an event overwrite, create an archived snapshot of
+        // If explicitly requested, create an archived snapshot of
         // the existing active floor plan first so the previous operational FOH layout is never lost.
-        if (input.backupPriorPlan || input.name?.includes('Live Floor Plan Overwrite')) {
+        if (input.backupPriorPlan) {
           const existingTablesCount = await tx.floorTable.count({ where: { floorPlanId: plan.id } });
           if (existingTablesCount > 0) {
             const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
@@ -335,6 +335,86 @@ export class FloorService {
     ]);
 
     return { deletedTables: tableIds.length, deletedChairs: chairIds.length };
+  }
+
+  async listArchivedFloorPlans(venueId: string) {
+    const plans = await this.prisma.floorPlan.findMany({
+      where: { venueId, isActive: false },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        _count: {
+          select: { tables: true, chairs: true },
+        },
+      },
+    });
+
+    return plans.map((p) => ({
+      id: p.id,
+      name: p.name,
+      width: p.width,
+      height: p.height,
+      backgroundImageUrl: p.backgroundImageUrl,
+      tableCount: p._count.tables,
+      chairCount: p._count.chairs,
+      createdAt: p.createdAt.toISOString(),
+      updatedAt: p.updatedAt.toISOString(),
+    }));
+  }
+
+  async restoreArchivedFloorPlan(venueId: string, archivePlanId: string) {
+    return withSerializableRetry(this.prisma, async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`floor-plan:${venueId}`}))`;
+
+      const targetPlan = await tx.floorPlan.findFirst({
+        where: { id: archivePlanId, venueId, isActive: false },
+        include: { tables: true, chairs: true },
+      });
+
+      if (!targetPlan) {
+        throw new NotFoundException('Archived floor plan not found');
+      }
+
+      const activePlan = await tx.floorPlan.findFirst({
+        where: { venueId, isActive: true },
+      });
+
+      if (activePlan) {
+        await tx.floorPlan.update({
+          where: { id: activePlan.id },
+          data: { isActive: false },
+        });
+      }
+
+      await tx.floorPlan.update({
+        where: { id: targetPlan.id },
+        data: { isActive: true },
+      });
+
+      // Ensure every table in the restored plan has a valid TableState row
+      for (const table of targetPlan.tables) {
+        const existingState = await tx.tableState.findUnique({
+          where: { tableId: table.id },
+        });
+        if (!existingState) {
+          await tx.tableState.create({
+            data: {
+              venueId,
+              tableId: table.id,
+              status: 'available',
+              lastActivityAt: new Date(),
+            },
+          });
+        }
+      }
+
+      return {
+        ok: true,
+        restoredPlanId: targetPlan.id,
+        name: targetPlan.name,
+        tableCount: targetPlan.tables.length,
+        chairCount: targetPlan.chairs.length,
+      };
+    });
   }
 
   async getUnassignedReservations(venueId: string, withinMinutes?: string) {

@@ -13,6 +13,7 @@ import type {
   AdjustRosterDto,
   AssignRosterWorkerDto,
   CreateDailyRosterDto,
+  SyncBanquetStaffDto,
   UpdateRosterWorkerDto,
 } from './daily-roster.dto';
 
@@ -675,5 +676,117 @@ export class DailyRosterService {
     ]);
 
     return [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+  }
+
+  /**
+   * Syncs event/banquet staffing assignments into a DailyTemporaryRoster and creates
+   * DailyTemporaryRosterWorker records for the banquet operations department.
+   */
+  async syncBanquetStaffToRoster(params: {
+    organizationId: string;
+    facilityId: string;
+    actorUserId: string;
+    actorRole?: string | null;
+    actorAllAccess?: boolean;
+    dto: SyncBanquetStaffDto;
+  }) {
+    const { organizationId, facilityId, actorUserId, dto } = params;
+
+    // 1. Ensure or find a department for Banquets / Catering
+    let department = await this.prisma.department.findFirst({
+      where: {
+        organizationId,
+        facilityId,
+        code: 'BANQUET_CATERING',
+      },
+    });
+
+    if (!department) {
+      department = await this.prisma.department.create({
+        data: {
+          organizationId,
+          facilityId,
+          code: 'BANQUET_CATERING',
+          name: 'Banquet & Catering Operations',
+          defaultRoute: '/banquet-floor-plan',
+          visibilityScope: 'isolated',
+        },
+      });
+    }
+
+    const rosterName = `Banquet: ${dto.eventName.trim() || 'Catering Event'}`;
+
+    // 2. Find or create DailyTemporaryRoster for this operational date
+    let roster = await this.prisma.dailyTemporaryRoster.findFirst({
+      where: {
+        organizationId,
+        facilityId,
+        operationalDate: dto.operationalDate,
+        name: rosterName,
+      },
+    });
+
+    if (!roster) {
+      roster = await this.prisma.dailyTemporaryRoster.create({
+        data: {
+          organizationId,
+          facilityId,
+          operationalDate: dto.operationalDate,
+          name: rosterName,
+          rosterType: 'temporary',
+          staffingSource: 'banquet_beo',
+          departmentId: department.id,
+          status: 'draft',
+          version: 1,
+          notes: dto.beoId ? `Direct sync from BEO #${dto.beoId}` : 'Direct sync from Banquet Floor Plan',
+          createdById: actorUserId,
+          updatedById: actorUserId,
+        },
+      });
+    } else {
+      roster = await this.prisma.dailyTemporaryRoster.update({
+        where: { id: roster.id },
+        data: {
+          updatedById: actorUserId,
+          notes: dto.beoId ? `Direct sync from BEO #${dto.beoId}` : 'Direct sync from Banquet Floor Plan',
+        },
+      });
+      // Clear previous draft workers for this banquet roster to sync fresh lineup
+      await this.prisma.dailyTemporaryRosterWorker.deleteMany({
+        where: { rosterId: roster.id },
+      });
+    }
+
+    // 3. Create DailyTemporaryRosterWorker entries
+    if (dto.workers && dto.workers.length > 0) {
+      for (const w of dto.workers) {
+        const notesParts = [
+          w.assignedStation ? `Station: ${w.assignedStation}` : null,
+          w.shiftHours ? `Hours: ${w.shiftHours}` : null,
+          w.notes ? w.notes : null,
+        ].filter(Boolean);
+
+        await this.prisma.dailyTemporaryRosterWorker.create({
+          data: {
+            organizationId,
+            facilityId,
+            rosterId: roster.id,
+            workerName: w.workerName.trim() || 'Banquet Staff',
+            workerRole: w.workerRole.trim() || 'Banquet Attendant',
+            notes: notesParts.join(' | ') || null,
+            attendanceStatus: 'scheduled',
+          },
+        });
+      }
+    }
+
+    return {
+      ok: true,
+      rosterId: roster.id,
+      rosterName: roster.name,
+      operationalDate: roster.operationalDate,
+      workerCount: dto.workers?.length ?? 0,
+      departmentId: department.id,
+    };
   }
 }

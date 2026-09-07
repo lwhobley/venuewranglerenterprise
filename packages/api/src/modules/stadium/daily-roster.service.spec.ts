@@ -578,4 +578,76 @@ describe('DailyRosterService (Unit)', () => {
     expect(VALID_ATTENDANCE_STATUSES).toContain('checked_in');
     expect(VALID_ATTENDANCE_STATUSES).not.toContain('chekced_in');
   });
+
+  it('syncs banquet duty assignments into DailyTemporaryRoster and creates worker rows', async () => {
+    const prismaMock = {
+      department: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        create: vi.fn().mockResolvedValue({ id: 'dept-banquet-1' }),
+      },
+      dailyTemporaryRoster: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        create: vi.fn().mockResolvedValue({
+          id: 'roster-banquet-1',
+          name: 'Banquet: Annual Foundation Gala',
+          operationalDate: '2026-10-15',
+        }),
+      },
+      dailyTemporaryRosterWorker: {
+        create: vi.fn().mockResolvedValue({ id: 'worker-1' }),
+      },
+    } as any;
+
+    const service = new DailyRosterService(prismaMock);
+    const result = await service.syncBanquetStaffToRoster({
+      organizationId: orgId,
+      facilityId,
+      actorUserId: 'u-lead',
+      dto: {
+        operationalDate: '2026-10-15',
+        eventName: 'Annual Foundation Gala',
+        beoId: 'beo-123',
+        workers: [
+          {
+            workerName: 'Elena Rostova',
+            workerRole: 'Banquet Captain',
+            assignedStation: 'Head Table & VIP Floor',
+            shiftHours: '4:00 PM - 12:00 AM',
+          },
+          {
+            workerName: 'Marcus Vance',
+            workerRole: 'Lead Bartender',
+            assignedStation: 'South Main Bar',
+          },
+        ],
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.rosterId).toBe('roster-banquet-1');
+    expect(result.workerCount).toBe(2);
+    expect(prismaMock.department.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        code: 'BANQUET_CATERING',
+        defaultRoute: '/banquet-floor-plan',
+      }),
+    });
+    expect(prismaMock.dailyTemporaryRoster.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        operationalDate: '2026-10-15',
+        name: 'Banquet: Annual Foundation Gala',
+        staffingSource: 'banquet_beo',
+        departmentId: 'dept-banquet-1',
+      }),
+    });
+    expect(prismaMock.dailyTemporaryRosterWorker.create).toHaveBeenCalledTimes(2);
+    expect(prismaMock.dailyTemporaryRosterWorker.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        rosterId: 'roster-banquet-1',
+        workerName: 'Elena Rostova',
+        workerRole: 'Banquet Captain',
+        attendanceStatus: 'scheduled',
+      }),
+    });
+  });
 });

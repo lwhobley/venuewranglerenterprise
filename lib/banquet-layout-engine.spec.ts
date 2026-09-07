@@ -6,6 +6,7 @@ import {
   extractCleanNotes,
   parseSavedBanquetData,
   buildBanquetNotesBlock,
+  formatCrmNotesForDisplay,
 } from './banquet-layout-engine';
 
 describe('banquet-layout-engine', () => {
@@ -223,5 +224,34 @@ describe('banquet-layout-engine', () => {
       setupStyle: 'banquet_rounds_10',
     });
     expect(negativeLayout).toEqual([]);
+  });
+
+  it('formatCrmNotesForDisplay strips raw JSON blobs and HTML comments so sales CRM sees clean text', () => {
+    const rawNotesWithBlob = `Client VIP request: stage left seating.
+
+<!-- BANQUET_LAYOUT_START -->
+[Banquet & Catering Floor Plan Setup Specifications]:
+• Setup Style: Banquet Rounds 10
+• Guest Target: 120 (12 tables placed)
+
+[Assigned Catering & Banquet Staff]:
+• 1x Banquet Captain (Marcus Vance)
+<!-- BANQUET_DATA_JSON:{"version":1,"guestCount":120,"setupStyle":"banquet_rounds_10"}:END_BANQUET_DATA -->
+<!-- BANQUET_LAYOUT_END -->`;
+
+    const cleaned = formatCrmNotesForDisplay(rawNotesWithBlob);
+
+    expect(cleaned).toContain('Client VIP request: stage left seating.');
+    expect(cleaned).toContain('[Banquet & Catering Floor Plan Setup Specifications]:');
+    expect(cleaned).toContain('• 1x Banquet Captain (Marcus Vance)');
+    expect(cleaned).not.toContain('BANQUET_DATA_JSON');
+    expect(cleaned).not.toContain('<!--');
+    expect(cleaned).not.toContain('-->');
+  });
+
+  it('formatCrmNotesForDisplay handles empty or null notes safely', () => {
+    expect(formatCrmNotesForDisplay(null)).toBe('');
+    expect(formatCrmNotesForDisplay(undefined)).toBe('');
+    expect(formatCrmNotesForDisplay('  ')).toBe('');
   });
 });

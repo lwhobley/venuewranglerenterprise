@@ -257,6 +257,20 @@ export class FloorController {
   }
 
   @RequireSubscription('active')
+  @Get('archives')
+  async listArchivedFloorPlans(@VenueScope() scope: Scope) {
+    if (!scope) return [];
+    return this.floor.listArchivedFloorPlans(scope.venueId);
+  }
+
+  @RequireSubscription('active')
+  @Post('archives/:id/restore')
+  async restoreArchivedFloorPlan(@VenueScope() scope: Scope, @Param('id') id: string) {
+    requireManager(scope);
+    return this.floor.restoreArchivedFloorPlan(scope.venueId, id);
+  }
+
+  @RequireSubscription('active')
   @Get('unassigned-reservations')
   async getUnassignedReservations(@VenueScope() scope: Scope, @Query('withinMinutes') withinMinutes?: string) {
     if (!scope) return [];

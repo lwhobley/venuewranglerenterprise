@@ -104,8 +104,24 @@ export default function BanquetFloorPlanScreen() {
 
   // Save floor plan and BEO mutations
   const saveFloorPlan = useMutation(api.floor.saveFloorPlan);
+  const restoreArchivedFloorPlan = useMutation(api.floor.restoreArchivedFloorPlan);
+  const syncBanquetRosterMutation = useMutation(api.stadium.syncBanquetStaffToRoster);
   const saveBeo = useMutation(api.crm.saveBeo);
   const activePlanQuery = useQueryState<ActiveFloorPlanResponse>(api.floor.getActiveFloorPlan, venue?.id ? {} : 'skip');
+  const archivedPlansQuery = useQueryState<Array<{
+    id: string;
+    name: string;
+    tableCount: number;
+    chairCount: number;
+    createdAt: string;
+  }>>(api.floor.listArchivedFloorPlans, venue?.id ? {} : 'skip');
+  const archivedPlans = asArray<{
+    id: string;
+    name: string;
+    tableCount: number;
+    chairCount: number;
+    createdAt: string;
+  }>(archivedPlansQuery.data);
 
   // BEO specification state (initialized blank, hydrated from selected BEO)
   const [selectedBeoId, setSelectedBeoId] = useState<string>(params.beoId ?? '');
@@ -128,6 +144,10 @@ export default function BanquetFloorPlanScreen() {
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [printMode, setPrintMode] = useState<boolean>(false);
   const [showDeployConfirm, setShowDeployConfirm] = useState<boolean>(false);
+  const [showArchivesModal, setShowArchivesModal] = useState<boolean>(false);
+  const [isRestoring, setIsRestoring] = useState<boolean>(false);
+  const [isSyncingRoster, setIsSyncingRoster] = useState<boolean>(false);
+  const [rosterSyncResult, setRosterSyncResult] = useState<{ rosterName: string; count: number } | null>(null);
 
   // Sync with selected BEO (either saved JSON layout or fresh auto-build from specs)
   useEffect(() => {
@@ -432,6 +452,67 @@ export default function BanquetFloorPlanScreen() {
     }
   };
 
+  // 3. Sync banquet duty assignments directly to DailyTemporaryRoster (VMS)
+  const handleSyncToDailyRoster = async () => {
+    if (!venue?.id || !staffRoster.length) return;
+    setIsSyncingRoster(true);
+    setStatusMessage(null);
+    try {
+      const found = beosList.find((b) => (b._id || b.id) === selectedBeoId);
+      const rawDate = found?.eventDate ? new Date(found.eventDate) : new Date();
+      const opDate = !isNaN(rawDate.getTime())
+        ? rawDate.toISOString().slice(0, 10)
+        : new Date().toISOString().slice(0, 10);
+
+      const workersPayload = staffRoster.map((s) => ({
+        workerName: s.staffName !== 'Unassigned' ? s.staffName : 'Banquet Staff Member',
+        workerRole: s.workingTitle,
+        assignedStation: s.assignedStation,
+        shiftHours: s.shiftHours,
+        notes: s.notes,
+      }));
+
+      const res = await syncBanquetRosterMutation({
+        venueId: venue.id,
+        operationalDate: opDate,
+        eventName: eventName || found?.eventName || 'Banquet Event',
+        beoId: selectedBeoId || undefined,
+        workers: workersPayload,
+      });
+
+      setRosterSyncResult({
+        rosterName: res.rosterName,
+        count: res.workerCount,
+      });
+      setStatusMessage(`Official Daily Temporary Roster recorded: "${res.rosterName}" with ${res.workerCount} workers.`);
+    } catch (err) {
+      setStatusMessage(`Error syncing staff to Daily Temporary Roster: ${errorMessage(err)}`);
+    } finally {
+      setIsSyncingRoster(false);
+    }
+  };
+
+  // 4. Restore an archived floor plan backup
+  const handleRestoreArchive = async (archivePlanId: string, archiveName: string) => {
+    if (!venue?.id) return;
+    setIsRestoring(true);
+    setStatusMessage(null);
+    try {
+      await restoreArchivedFloorPlan({
+        venueId: venue.id,
+        archivePlanId,
+      });
+      setShowArchivesModal(false);
+      setStatusMessage(`Restored archived floor plan "${archiveName}". Operational FOH layout is now active.`);
+      activePlanQuery.refetch?.();
+      archivedPlansQuery.refetch?.();
+    } catch (err) {
+      setStatusMessage(`Error restoring floor plan: ${errorMessage(err)}`);
+    } finally {
+      setIsRestoring(false);
+    }
+  };
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer}>
       {/* Top Header */}
@@ -454,6 +535,18 @@ export default function BanquetFloorPlanScreen() {
         </View>
 
         <View style={styles.headerActions}>
+          {archivedPlans.length > 0 && (
+            <Button
+              mode="outlined"
+              icon="history"
+              textColor="#334155"
+              onPress={() => setShowArchivesModal(true)}
+              style={{ borderRadius: radius.sharp, borderColor: '#CBD5E1' }}
+            >
+              Archived Backups ({archivedPlans.length})
+            </Button>
+          )}
+
           <Button
             mode={printMode ? 'contained' : 'outlined'}
             icon="printer"
@@ -660,6 +753,17 @@ export default function BanquetFloorPlanScreen() {
 
                 <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
                   <Button
+                    mode="contained"
+                    compact
+                    icon="account-clock"
+                    buttonColor="#1E3A8A"
+                    loading={isSyncingRoster}
+                    disabled={isSyncingRoster || staffRoster.length === 0}
+                    onPress={() => void handleSyncToDailyRoster()}
+                  >
+                    Sync to Daily Roster
+                  </Button>
+                  <Button
                     mode="outlined"
                     compact
                     icon="plus"
@@ -680,13 +784,22 @@ export default function BanquetFloorPlanScreen() {
                 </View>
               </View>
 
-              {/* Roster Scope Disclaimer Banner */}
-              <View style={styles.rosterNoticeBanner}>
-                <MaterialCommunityIcons name="shield-alert-outline" size={16} color="#B45309" />
-                <Text style={styles.rosterNoticeText}>
-                  Suggested Event Duty Lineup (Pre-Shift & Setup Only) — Not the Official Payroll Roster. Attendance, clock-ins, and payroll are tracked via the Stadium Roster / VMS.
-                </Text>
-              </View>
+              {/* Roster Sync Status or Information Banner */}
+              {rosterSyncResult ? (
+                <View style={[styles.rosterNoticeBanner, { backgroundColor: '#ECFDF5', borderColor: '#A7F3D0' }]}>
+                  <MaterialCommunityIcons name="check-decagram" size={16} color="#059669" />
+                  <Text style={[styles.rosterNoticeText, { color: '#065F46' }]}>
+                    Active in Official Daily Temporary Roster: "{rosterSyncResult.rosterName}" ({rosterSyncResult.count} workers recorded in VMS database).
+                  </Text>
+                </View>
+              ) : (
+                <View style={[styles.rosterNoticeBanner, { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]}>
+                  <MaterialCommunityIcons name="clipboard-account" size={16} color="#1D4ED8" />
+                  <Text style={[styles.rosterNoticeText, { color: '#1E40AF' }]}>
+                    Pre-shift duty lineup ready. Tap "Sync to Daily Roster" to write shifts directly to the official Daily Temporary Roster in VMS.
+                  </Text>
+                </View>
+              )}
 
               {staffRoster.length === 0 ? (
                 <Text style={{ fontSize: 13, color: colors.muted, fontStyle: 'italic' }}>
@@ -1032,6 +1145,71 @@ export default function BanquetFloorPlanScreen() {
               onPress={() => void handleConfirmDeployToActiveFloorPlan()}
             >
               Yes, Overwrite Live Floor
+            </Button>
+          </Dialog.Actions>
+        </Dialog>
+
+        {/* Restore Archived Floor Plan Dialog */}
+        <Dialog
+          visible={showArchivesModal}
+          onDismiss={() => setShowArchivesModal(false)}
+          style={{ backgroundColor: '#FFFFFF', maxWidth: 540, alignSelf: 'center', width: '92%' }}
+        >
+          <Dialog.Title style={{ color: '#074426', fontWeight: '800' }}>
+            Archived Floor Plan Backups
+          </Dialog.Title>
+          <Dialog.Content style={{ gap: 12, maxHeight: 400 }}>
+            <Text style={{ color: '#64748B', fontSize: 13 }}>
+              Prior live floor plans backed up before event overwrites. Restore any archived layout at any time to return your operational FOH tables and seating to service.
+            </Text>
+            {archivedPlans.length === 0 ? (
+              <Text style={{ fontStyle: 'italic', color: '#94A3B8', marginVertical: 12 }}>
+                No archived backups found for this venue.
+              </Text>
+            ) : (
+              <ScrollView style={{ maxHeight: 260 }}>
+                <View style={{ gap: 8 }}>
+                  {archivedPlans.map((arch) => (
+                    <View
+                      key={arch.id}
+                      style={{
+                        padding: 12,
+                        backgroundColor: '#F8FAFC',
+                        borderRadius: 6,
+                        borderWidth: 1,
+                        borderColor: '#E2E8F0',
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                      }}
+                    >
+                      <View style={{ flex: 1, marginRight: 12 }}>
+                        <Text style={{ fontWeight: '700', color: '#1E293B', fontSize: 13 }}>
+                          {arch.name}
+                        </Text>
+                        <Text style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>
+                          {arch.tableCount} tables • {arch.chairCount} chairs • {new Date(arch.createdAt).toLocaleString()}
+                        </Text>
+                      </View>
+                      <Button
+                        mode="contained"
+                        compact
+                        buttonColor="#074426"
+                        loading={isRestoring}
+                        disabled={isRestoring}
+                        onPress={() => void handleRestoreArchive(arch.id, arch.name)}
+                      >
+                        Restore
+                      </Button>
+                    </View>
+                  ))}
+                </View>
+              </ScrollView>
+            )}
+          </Dialog.Content>
+          <Dialog.Actions>
+            <Button onPress={() => setShowArchivesModal(false)} textColor="#64748B">
+              Close
             </Button>
           </Dialog.Actions>
         </Dialog>
