@@ -178,10 +178,16 @@ export default function HomeScreen() {
             <MaterialCommunityIcons name="map-marker-radius" size={20} color={String(palette.primary)} />
             <CommandText palette={palette} variant="title">Stadium layout & zone status</CommandText>
           </View>
-          <Pressable onPress={() => router.push('/stadium-map')} style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1, flexDirection: 'row', alignItems: 'center', gap: 2 })}>
-            <CommandText palette={palette} variant="caption" style={{ color: palette.primary, fontWeight: '700' }}>Full screen</CommandText>
-            <MaterialCommunityIcons name="chevron-right" size={16} color={String(palette.primary)} />
-          </Pressable>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.md }}>
+            <Pressable onPress={() => router.push('/stadium-map?mode=3d')} style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1, flexDirection: 'row', alignItems: 'center', gap: 3 })}>
+              <MaterialCommunityIcons name="cube-outline" size={16} color="#013369" />
+              <CommandText palette={palette} variant="caption" style={{ color: '#013369', fontWeight: '800' }}>3D View</CommandText>
+            </Pressable>
+            <Pressable onPress={() => router.push('/stadium-map')} style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1, flexDirection: 'row', alignItems: 'center', gap: 2 })}>
+              <CommandText palette={palette} variant="caption" style={{ color: palette.primary, fontWeight: '700' }}>Full screen</CommandText>
+              <MaterialCommunityIcons name="chevron-right" size={16} color={String(palette.primary)} />
+            </Pressable>
+          </View>
         </View>
         <StadiumVenueMap />
       </View>

@@ -130,6 +130,37 @@ export default function FacilityScreen() {
         ))}
       </View>
 
+      <CommandSurface palette={palette} strong style={{ gap: spacing.sm, borderColor: '#013369', borderWidth: 1 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: spacing.sm }}>
+          <View style={{ flex: 1, minWidth: 200, gap: 2 }}>
+            <CommandText palette={palette} variant="title" style={{ color: '#013369' }}>
+              3D Stadium Spatial Model & Map
+            </CommandText>
+            <CommandText palette={palette} variant="caption">
+              Cinematic 3D stadium viewer with camera presets, lighting overlays, and BEO inspections
+            </CommandText>
+          </View>
+          <View style={{ flexDirection: 'row', gap: spacing.xs, flexWrap: 'wrap' }}>
+            <Button
+              mode="contained"
+              buttonColor="#013369"
+              icon="cube-outline"
+              onPress={() => router.push('/stadium-map?mode=3d')}
+            >
+              Open 3D Model
+            </Button>
+            <Button
+              mode="outlined"
+              textColor="#013369"
+              icon="floor-plan"
+              onPress={() => router.push('/stadium-map')}
+            >
+              2D Plan
+            </Button>
+          </View>
+        </View>
+      </CommandSurface>
+
       <CommandSurface palette={palette} strong style={{ gap: spacing.sm, borderColor: '#074426', borderWidth: 1 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: spacing.sm }}>
           <View style={{ flex: 1, minWidth: 200, gap: 2 }}>

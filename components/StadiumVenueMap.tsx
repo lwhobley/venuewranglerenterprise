@@ -187,18 +187,96 @@ export function StadiumVenueMap({
     if (onSelectUnit) onSelectUnit(unit);
   };
 
+  useEffect(() => {
+    if (initialViewMode) {
+      setViewPerspective(initialViewMode === '3d' ? '3d_isometric' : '2d_plan');
+    }
+  }, [initialViewMode]);
+
   if (isMobile) {
     return (
       <View style={styles.container}>
-        <MobileStadiumNavigator
-          zones={zonesState}
-          initialZoneId={initialZoneId}
-          selectedUnitId={selectedUnitId}
-          onSelectUnit={(unit) => {
-            handleUnitPress(unit);
-            setActiveModalUnit(unit);
-          }}
-        />
+        <View style={[styles.topSearchBar, { borderBottomColor: palette.divider, paddingVertical: spacing.xs }]}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm }}>
+            <CommandText palette={palette} variant="caption" style={{ fontWeight: '800', color: '#013369' }}>
+              {viewPerspective === '3d_isometric' ? '3D SPATIAL MODEL' : 'STADIUM OPERATIONS'}
+            </CommandText>
+            <View style={styles.viewModeToggle}>
+              <Pressable
+                onPress={() => setViewPerspective('2d_plan')}
+                style={[
+                  styles.perspectiveBtn,
+                  { backgroundColor: viewPerspective === '2d_plan' ? '#013369' : '#FFFFFF', paddingVertical: 6, paddingHorizontal: 8 },
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="Show 2D Level Navigator"
+                accessibilityState={{ selected: viewPerspective === '2d_plan' }}
+              >
+                <MaterialCommunityIcons
+                  name="floor-plan"
+                  size={14}
+                  color={viewPerspective === '2d_plan' ? '#FFFFFF' : '#013369'}
+                />
+                <CommandText
+                  palette={palette}
+                  variant="caption"
+                  style={{ color: viewPerspective === '2d_plan' ? '#FFFFFF' : '#013369', fontWeight: '800', fontSize: 11 }}
+                >
+                  LEVELS
+                </CommandText>
+              </Pressable>
+              <Pressable
+                onPress={() => setViewPerspective('3d_isometric')}
+                style={[
+                  styles.perspectiveBtn,
+                  { backgroundColor: viewPerspective === '3d_isometric' ? '#013369' : '#FFFFFF', paddingVertical: 6, paddingHorizontal: 8 },
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="Show 3D Spatial Model"
+                accessibilityState={{ selected: viewPerspective === '3d_isometric' }}
+              >
+                <MaterialCommunityIcons
+                  name="cube-outline"
+                  size={14}
+                  color={viewPerspective === '3d_isometric' ? '#FFFFFF' : '#013369'}
+                />
+                <CommandText
+                  palette={palette}
+                  variant="caption"
+                  style={{ color: viewPerspective === '3d_isometric' ? '#FFFFFF' : '#013369', fontWeight: '800', fontSize: 11 }}
+                >
+                  3D VIEW
+                </CommandText>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+
+        {viewPerspective === '3d_isometric' ? (
+          <View style={styles.interactiveModelFrame}>
+            <Stadium3DViewer
+              zones={zonesState}
+              selectedZoneId={selectedZoneId !== 'ALL' ? selectedZoneId : null}
+              selectedUnitId={selectedUnitId}
+              onSelectZone={(zoneId) => setSelectedZoneId(zoneId)}
+              onSelectUnit={(unit) => {
+                handleUnitPress(unit);
+                setActiveModalUnit(unit);
+              }}
+              onOpenOperationsMap={() => setViewPerspective('2d_plan')}
+            />
+          </View>
+        ) : (
+          <MobileStadiumNavigator
+            zones={zonesState}
+            initialZoneId={initialZoneId}
+            selectedUnitId={selectedUnitId}
+            onSelectUnit={(unit) => {
+              handleUnitPress(unit);
+              setActiveModalUnit(unit);
+            }}
+          />
+        )}
         {activeModalUnit ? (
           <StadiumUnitDetailModal
             visible={Boolean(activeModalUnit)}
