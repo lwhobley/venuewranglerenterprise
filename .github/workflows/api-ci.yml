@@ -95,15 +95,22 @@ jobs:
           # covered by ALTER DEFAULT PRIVILEGES, so any migration after it that
           # creates a table must enable RLS in the same migration.
           LOCKDOWN=20260805120000
-          # Historical exemption: 20260808134500_ai_usage_metering created
-          # AiUsageEvent without RLS; 20260808150000_harden_ai_usage_event_rls
-          # enabled it shortly after. Migrations are immutable, so exempt the
-          # pair's first half explicitly.
-          EXEMPT=20260808134500
+          # Historical exemptions: each of these created a table without RLS,
+          # with a later migration enabling it shortly after. Migrations are
+          # immutable, so exempt the first half of each pair explicitly.
+          #   20260808134500_ai_usage_metering -> RLS added by
+          #     20260808150000_harden_ai_usage_event_rls.
+          #   20260907180000_department_isolated_inventory -> RLS added by
+          #     20260908050000_department_inventory_rls.
+          EXEMPT=(20260808134500 20260907180000)
           for dir in packages/api/prisma/migrations/*/; do
             name="$(basename "$dir")"
             [[ "$name" > "$LOCKDOWN" ]] || continue
-            [[ "$name" == "$EXEMPT"* ]] && continue
+            exempt=0
+            for prefix in "${EXEMPT[@]}"; do
+              [[ "$name" == "$prefix"* ]] && exempt=1 && break
+            done
+            [[ "$exempt" == 1 ]] && continue
             if grep -qi 'CREATE TABLE' "$dir/migration.sql" && ! grep -qi 'ROW LEVEL SECURITY' "$dir/migration.sql"; then
               echo "::error::Migration $name creates a table without ENABLE ROW LEVEL SECURITY"
               exit 1
