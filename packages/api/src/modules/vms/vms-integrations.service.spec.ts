@@ -28,4 +28,16 @@ describe('live inventory sync safety', () => {
     expect(result.supplies).toEqual([]);
     expect(result.itemsSynced).toBe(0);
   });
+
+  it('rejects sync write when departmentId is missing', async () => {
+    const service = new VmsIntegrationsService({} as any);
+    await expect(
+      service.syncInventory({
+        organizationId: 'org',
+        facilityId: 'facility',
+        writeToInventory: true,
+        customItems: [{ sku: 'sku-1', name: 'Flour', quantity: 10 }],
+      }),
+    ).rejects.toThrow('Inventory sync writes require an explicit departmentId');
+  });
 });

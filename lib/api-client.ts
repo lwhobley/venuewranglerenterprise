@@ -185,6 +185,7 @@ export function useApiQuery<T>(
    * it shares one cache entry with every other observer of the same path.
    */
   refetchIntervalMs?: number,
+  options?: { silent?: boolean; retry?: boolean | number },
 ) {
   const authEpoch = useAuthStore((state) => state.authEpoch);
   const userId = useAuthStore((state) => state.user?.id ?? null);
@@ -195,6 +196,10 @@ export function useApiQuery<T>(
     queryFn: ({ signal }) => apiRequest<T>(path, { signal }),
     enabled: enabled && Boolean(token),
     ...(refetchIntervalMs ? { refetchInterval: refetchIntervalMs, staleTime: 0 } : {}),
+    ...(options?.retry !== undefined ? { retry: options.retry } : options?.silent ? { retry: false } : {}),
+    meta: {
+      silent: options?.silent,
+    },
   });
 }
 

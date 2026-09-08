@@ -277,10 +277,6 @@ export class AppController {
     if (!businessName) throw new BadRequestException('Enter your business name');
     if (!STAFF_RANGES.includes(body.staffRange as (typeof STAFF_RANGES)[number])) throw new BadRequestException('Choose a staff size range');
 
-    if (!(await this.isEmailVerified(user.sub))) {
-      throw new ForbiddenException('Verify your email before creating a venue.');
-    }
-
     const result = await runWithoutTenant(() => this.prisma.$transaction(async (tx) => {
       // Serialize every registration attempt for this account, regardless of
       // business name, then re-check all cross-venue invariants under the lock.

@@ -1,5 +1,55 @@
+import { StyleSheet } from "react-native";
 import { MD3DarkTheme, MD3LightTheme } from "react-native-paper";
 import { create } from "zustand";
+
+// Brand Standard HUD Tokens
+export const surfaceIvory = "#f3eee4";
+export const ink = "#12110e";
+export const chromeGold = "#c4a574";
+export const stone = "#6B645B";
+
+// Department signals: saturated UI colors for 4px rails, 2px rings, or chip borders
+export const dept = {
+  culinary: "#EA580C",
+  suites: "#2563EB",
+  banquets: "#16A34A",
+  beverage: "#1E3A8A",
+  concessions: "#DC2626",
+  warehouse: "#475569",
+} as const;
+
+export type DepartmentCode =
+  | "CULINARY"
+  | "SUITES"
+  | "BANQUETS"
+  | "BEVERAGE"
+  | "CONCESSIONS"
+  | "WAREHOUSE"
+  | string;
+
+export const deptTint = (code?: string | null): string => {
+  if (!code) return chromeGold;
+  const upper = code.toUpperCase().trim();
+  if (upper === "CULINARY" || upper === "KITCHEN") return dept.culinary;
+  if (upper === "SUITES" || upper === "PREMIUM") return dept.suites;
+  if (upper === "BANQUETS" || upper === "STAFFING" || upper === "CATERING") return dept.banquets;
+  if (upper === "BEVERAGE" || upper === "BAR") return dept.beverage;
+  if (upper === "CONCESSIONS" || upper === "86") return dept.concessions;
+  if (upper === "WAREHOUSE" || upper === "PROCUREMENT") return dept.warehouse;
+  return chromeGold;
+};
+
+// Status chips: full saturation, colored border + label
+export const statusColors = {
+  confirmed: "#16A34A",
+  needs_review: "#D97706",
+  in_service: "#EA580C",
+  closed: "#475569",
+  cancelled: "#475569",
+  alert: "#DC2626",
+} as const;
+
+export const hairline = StyleSheet.hairlineWidth || 1;
 
 type ThemeMode = "dark" | "light";
 
@@ -42,26 +92,26 @@ export const designPalettes = {
   },
   light: {
     mode: "light" as const,
-    background: "#F4F6F9",
+    background: surfaceIvory,
     backgroundAlt: "#FFFFFF",
-    surface: "#FFFFFF",
+    surface: surfaceIvory,
     surfaceStrong: "#FFFFFF",
-    surfaceSoft: "#E8EEF5",
-    glass: "#FFFFFF",
-    primary: "#013369",
-    secondary: "#D50A0A",
-    charcoal: "#0A1628",
-    muted: "#5A6577",
-    border: "#D0D8E4",
-    divider: "#E2E8F0",
-    success: "#013369",
-    danger: "#D50A0A",
-    warning: "#C45C12",
-    info: "#2E5A8F",
-    cream: "#E8EEF5",
-    glow: "#E8EEF5",
-    shadow: "#3A4A63",
-    buttonText: "#FFFFFF",
+    surfaceSoft: "#EAE3D6",
+    glass: surfaceIvory,
+    primary: chromeGold,
+    secondary: dept.concessions,
+    charcoal: ink,
+    muted: stone,
+    border: "#D8CFC0",
+    divider: "#E5DDD0",
+    success: dept.banquets,
+    danger: dept.concessions,
+    warning: statusColors.needs_review,
+    info: dept.suites,
+    cream: surfaceIvory,
+    glow: "#EAE3D6",
+    shadow: "#000000",
+    buttonText: ink,
   },
 } as const;
 
@@ -75,16 +125,16 @@ export const useDesignTheme = () => {
 export const colors = designPalettes.light;
 
 export const authColors = {
-  background: "#FFFFFF",
+  background: surfaceIvory,
   surface: "#FFFFFF",
-  primary: designPalettes.light.primary,
-  text: designPalettes.light.charcoal,
-  muted: designPalettes.light.muted,
-  border: designPalettes.light.border,
-  danger: designPalettes.light.danger,
-  success: designPalettes.light.success,
-  buttonText: designPalettes.light.buttonText,
-  highlight: designPalettes.light.surfaceSoft,
+  primary: chromeGold,
+  text: ink,
+  muted: stone,
+  border: "#D8CFC0",
+  danger: dept.concessions,
+  success: dept.banquets,
+  buttonText: ink,
+  highlight: "#EAE3D6",
 };
 
 export const authInputProps = {
@@ -99,12 +149,12 @@ export const authInputProps = {
 // tiles and callout cards, so it must keep at least six entries — a shorter
 // list crashes those screens with "cannot read properties of undefined".
 export const accents = [
-  { bg: designPalettes.light.primary, fg: "#FFFFFF", icon: designPalettes.light.primary },
-  { bg: designPalettes.light.secondary, fg: "#FFFFFF", icon: designPalettes.light.secondary },
-  { bg: designPalettes.light.info, fg: "#FFFFFF", icon: designPalettes.light.info },
-  { bg: designPalettes.light.warning, fg: "#FFFFFF", icon: designPalettes.light.warning },
-  { bg: designPalettes.light.charcoal, fg: "#FFFFFF", icon: designPalettes.light.charcoal },
-  { bg: designPalettes.light.shadow, fg: "#FFFFFF", icon: designPalettes.light.shadow },
+  { bg: chromeGold, fg: ink, icon: chromeGold },
+  { bg: dept.suites, fg: "#FFFFFF", icon: dept.suites },
+  { bg: dept.culinary, fg: "#FFFFFF", icon: dept.culinary },
+  { bg: dept.banquets, fg: "#FFFFFF", icon: dept.banquets },
+  { bg: dept.concessions, fg: "#FFFFFF", icon: dept.concessions },
+  { bg: stone, fg: "#FFFFFF", icon: stone },
 ];
 
 /**
@@ -136,6 +186,7 @@ export const spacing = {
 
 export const radius = {
   sharp: 6, soft: 14, sm: 10, md: 14, lg: 18, xl: 24, pill: 999,
+  control: 16, metric: 999,
 };
 
 // Loaded via useFonts() in app/_layout.tsx. These string literals must match
@@ -190,19 +241,22 @@ export const makePaperTheme = (mode: ThemeMode) => {
   return {
     ...base,
     dark: mode === "dark",
-    roundness: radius.md,
+    roundness: radius.control,
     colors: {
       ...base.colors,
       primary: palette.primary,
+      onPrimary: palette.buttonText,
       secondary: palette.secondary,
       background: palette.background,
-      surface: palette.surfaceStrong,
+      surface: palette.surface,
+      surfaceVariant: palette.surfaceSoft,
       onSurface: palette.charcoal,
       onBackground: palette.charcoal,
       outline: palette.border,
       error: palette.danger,
       elevation: {
         ...base.colors.elevation,
+        level0: "transparent",
         level1: palette.surface,
         level2: palette.surfaceSoft,
       },

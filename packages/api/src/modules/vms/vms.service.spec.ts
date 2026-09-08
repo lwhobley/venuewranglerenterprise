@@ -517,7 +517,10 @@ describe('VmsService', () => {
     });
 
     it('triggers Yellow Dog inventory sync', async () => {
-      const res = await service.syncInventory(mockOrgId, mockFacilityId);
+      const items = [
+        { sku: 'YD-BEEF', name: 'Ground Beef', quantity: 40, departmentId: 'dept-culinary' },
+      ];
+      const res = await service.syncInventory(mockOrgId, mockFacilityId, undefined, undefined, items);
 
       expect(['success', 'demo_mode']).toContain(res.status);
       expect(res.itemsSynced).toBeGreaterThan(0);
@@ -727,7 +730,7 @@ describe('VmsService', () => {
     });
 
     it('attributes no-shows to the assigned worker, not an arbitrary one (Q1)', async () => {
-      const pastShiftDate = new Date(Date.now() - 2 * 3600 * 1000).toISOString().split('T')[0];
+      const pastShiftDate = new Date(Date.now() - 24 * 3600 * 1000).toISOString().split('T')[0];
       prisma.vmsStaffingOrder.findMany.mockResolvedValue([
         {
           id: 'order-noshow-1',
@@ -835,7 +838,7 @@ describe('VmsService', () => {
     });
 
     it('records an unstaffed confirmed slot against the vendor with no worker (Q1)', async () => {
-      const pastShiftDate = new Date(Date.now() - 2 * 3600 * 1000).toISOString().split('T')[0];
+      const pastShiftDate = new Date(Date.now() - 24 * 3600 * 1000).toISOString().split('T')[0];
       prisma.vmsStaffingOrder.findMany.mockResolvedValue([
         {
           id: 'order-noshow-2',

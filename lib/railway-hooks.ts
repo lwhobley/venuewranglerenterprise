@@ -59,6 +59,19 @@ const queryRoutes: Record<string, Route> = {
   'operations.getCommandCenter': { path: '/v1/operations/command-center' },
   'operations.getCommandCenterEvent': { path: (args) => `/v1/operations/command-center/events/${args.eventId ?? args.id}` },
   'stadium.getOverview': { path: '/v1/stadium/overview' },
+  'stadium.listDistroTickets': {
+    path: (args) => {
+      const q = new URLSearchParams();
+      if (args?.status) q.append('status', String(args.status));
+      if (args?.serviceAreaId) q.append('serviceAreaId', String(args.serviceAreaId));
+      if (args?.zoneId) q.append('zoneId', String(args.zoneId));
+      if (args?.kitchenId) q.append('kitchenId', String(args.kitchenId));
+      if (args?.beoId) q.append('beoId', String(args.beoId));
+      if (args?.eventId) q.append('eventId', String(args.eventId));
+      const str = q.toString();
+      return `/v1/stadium/distro-tickets${str ? `?${str}` : ''}`;
+    },
+  },
   'stadium.listEventIssues': { path: (args) => `/v1/stadium/events/${args.eventId}/issues` },
   'stadium.listEventAudit': { path: (args) => `/v1/stadium/events/${args.eventId}/audit` },
   'stadium.getEventCloseout': { path: (args) => `/v1/stadium/events/${args.eventId}/closeout` },
@@ -122,6 +135,33 @@ const queryRoutes: Record<string, Route> = {
   'crm.getStaleLeads': { path: (args) => `/v1/crm/stale-leads${args?.days ? `?days=${args.days}` : ''}` },
   'crm.getLeadActivity': { path: (args) => `/v1/crm/leads/${args.leadId}/activity` },
   'crm.listTemplates': { path: '/v1/crm/templates' },
+  'beoHub.listBeos': {
+    path: (args) => {
+      const q = new URLSearchParams();
+      if (args?.serviceDate) q.set('serviceDate', args.serviceDate);
+      if (args?.eventId) q.set('eventId', args.eventId);
+      if (args?.spaceId) q.set('spaceId', args.spaceId);
+      if (args?.department) q.set('department', args.department);
+      if (args?.status) q.set('status', args.status);
+      if (args?.needsReview) q.set('needsReview', String(args.needsReview));
+      const qs = q.toString();
+      return `/v1/beo-hub/beos${qs ? `?${qs}` : ''}`;
+    },
+  },
+  'beoHub.getBeo': { path: (args) => `/v1/beo-hub/beos/${args.id ?? args.beoId}` },
+  'departments.listInventory': {
+    path: (args) => {
+      const q = new URLSearchParams();
+      if (args?.search) q.set('search', String(args.search));
+      if (args?.status) q.set('status', String(args.status));
+      if (args?.needsReview) q.set('needsReview', String(args.needsReview));
+      const qs = q.toString();
+      return `/v1/departments/${args.departmentId}/inventory${qs ? `?${qs}` : ''}`;
+    },
+  },
+  'departments.getInventoryItem': {
+    path: (args) => `/v1/departments/${args.departmentId}/inventory/${args.itemId}`,
+  },
   'reservations.getCoverPacing': { path: (args) => `/v1/reservations/cover-pacing?date=${encodeURIComponent(args.date)}` },
   'reservations.guestAutofill': {
     path: (args) =>
@@ -702,6 +742,66 @@ const mutationRoutes: Record<string, Route> = {
     path: (args) => `/v1/crm/templates/${args.templateId}/render`,
     method: 'POST',
     body: ({ leadId, beoId }) => ({ leadId, beoId }),
+  },
+  'beoHub.uploadBeo': {
+    path: '/v1/beo-hub/uploads',
+    method: 'POST',
+    body: stripVenue,
+    invalidate: [['beoHub', 'listBeos'], ['crm', 'listBeos']],
+  },
+  'beoHub.createBeo': {
+    path: '/v1/beo-hub/beos',
+    method: 'POST',
+    body: stripVenue,
+    invalidate: [['beoHub', 'listBeos'], ['crm', 'listBeos']],
+  },
+  'beoHub.updateBeo': {
+    path: (args) => `/v1/beo-hub/beos/${args.id ?? args.beoId}`,
+    method: 'PATCH',
+    body: stripVenue,
+    invalidate: [['beoHub', 'listBeos'], ['beoHub', 'getBeo'], ['crm', 'listBeos']],
+  },
+  'beoHub.createSuiteOrder': {
+    path: (args) => `/v1/beo-hub/beos/${args.id ?? args.beoId}/create-suite-order`,
+    method: 'POST',
+    body: () => ({}),
+    invalidate: [['beoHub', 'listBeos'], ['beoHub', 'getBeo'], ['stadium', 'listSuiteBeos']],
+  },
+  'beoHub.syncStaffing': {
+    path: (args) => `/v1/beo-hub/beos/${args.id ?? args.beoId}/sync-staffing`,
+    method: 'POST',
+    body: () => ({}),
+    invalidate: [['beoHub', 'listBeos'], ['beoHub', 'getBeo']],
+  },
+  'departments.createInventoryItem': {
+    path: (args) => `/v1/departments/${args.departmentId}/inventory`,
+    method: 'POST',
+    body: (args) => args.data ?? args,
+    invalidate: [['departments.listInventory']],
+  },
+  'departments.updateInventoryItem': {
+    path: (args) => `/v1/departments/${args.departmentId}/inventory/${args.itemId}`,
+    method: 'PATCH',
+    body: (args) => args.data ?? args,
+    invalidate: [['departments.listInventory'], ['departments.getInventoryItem']],
+  },
+  'departments.recordMovement': {
+    path: (args) => `/v1/departments/${args.departmentId}/inventory/${args.itemId}/movements`,
+    method: 'POST',
+    body: (args) => args.data ?? args,
+    invalidate: [['departments.listInventory'], ['departments.getInventoryItem']],
+  },
+  'departments.requestTransfer': {
+    path: (args) => `/v1/departments/${args.departmentId}/inventory/transfers`,
+    method: 'POST',
+    body: (args) => args.data ?? args,
+    invalidate: [['departments.listInventory']],
+  },
+  'departments.approveTransfer': {
+    path: (args) => `/v1/departments/${args.departmentId ?? 'any'}/inventory/transfers/${args.transferId}/approve`,
+    method: 'POST',
+    body: () => ({}),
+    invalidate: [['departments.listInventory']],
   },
   'reservations.saveReservation': { path: '/v1/reservations', method: 'POST', body: mapReservationBody, invalidate: [['reservations', 'getReservationsPage']] },
   'reservations.removeReservation': { path: (args) => `/v1/reservations/${args.reservationId ?? args.id ?? args}`, method: 'DELETE', invalidate: [['reservations', 'getReservationsPage']] },

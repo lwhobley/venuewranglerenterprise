@@ -7,16 +7,36 @@ import { useMutation, useQuery } from '../../lib/railway-hooks';
 import { api } from '../../lib/railway-api';
 import type { Id } from '../../lib/ids';
 import { CommandButton, CommandText } from '../../components/FutureUI';
+import {
+  HairlinePanel,
+  MetricRing,
+  DeptRailRow,
+  CapsuleDock,
+  CapsulePill,
+} from '../../components/HudPrimitives';
 import { HomeWranglerSurface } from '../../components/HomeWranglerSurface';
 import { StadiumVenueMap } from '../../components/StadiumVenueMap';
 import { Skeleton } from '../../components/Skeleton';
 import { useAuthStore } from '../../lib/auth-store';
 import { usePushNotifications } from '../../lib/usePushNotifications';
 import { useAuthenticatedSession } from '../../lib/auth-readiness';
-import { radius, spacing, useDesignTheme } from '../../lib/theme';
+import {
+  chromeGold,
+  dept,
+  deptTint,
+  hairline,
+  ink,
+  radius,
+  spacing,
+  statusColors,
+  stone,
+  surfaceIvory,
+  useDesignTheme,
+} from '../../lib/theme';
 import { asArray, formatDuration, formatMoney } from '../../lib/format';
-import { canManageVenue } from '../../lib/permissions';
+import { canManageVenue, isCrossDepartmentRole } from '../../lib/permissions';
 import { useResponsive } from '../../lib/responsive';
+import { useWorkspaceResolution } from '../../lib/workspace-routing';
 import { EVENT_BEO_ROUTE, READINESS_ROW_ROUTES, SUITE_BEO_REPORT_ROUTE, type ReadinessRowLabel } from '../../lib/crm-routing';
 
 
@@ -54,6 +74,12 @@ export default function HomeScreen() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [goalTitle, setGoalTitle] = useState('');
 
+  const { data: workspace } = useWorkspaceResolution();
+  const activeDept = workspace?.primaryDepartment ?? workspace?.departments?.[0];
+  const activeDeptCode = activeDept?.code;
+  const isCross = dashboard?.profile?.role ? isCrossDepartmentRole(dashboard.profile.role) : false;
+  const activeDeptTint = deptTint(activeDeptCode);
+
   const venueName = dashboard?.venue?.name ?? venue?.name ?? 'Stadium F&B Operations';
   const canManage = Boolean(dashboard?.profile && canManageVenue(dashboard.profile.role, dashboard.profile.allAccess));
   const managerDashboard = useQuery(api.operations.getManagerDashboard, isReady && canManage && venue?.id ? { venueId: venue.id } : 'skip') as any;
@@ -89,57 +115,181 @@ export default function HomeScreen() {
   };
 
   return (
-    <ScrollView style={{ flex: 1, backgroundColor: 'transparent' }} contentContainerStyle={{ paddingBottom: spacing.xxl }} showsVerticalScrollIndicator={false}>
-      <View style={{ backgroundColor: palette.primary, paddingHorizontal: pagePadding, paddingTop: isPhone ? spacing.lg : spacing.xl, paddingBottom: spacing.lg, gap: spacing.md, borderBottomLeftRadius: 24, borderBottomRightRadius: 24 }}>
+    <ScrollView style={{ flex: 1, backgroundColor: surfaceIvory }} contentContainerStyle={{ paddingBottom: spacing.xxl }} showsVerticalScrollIndicator={false}>
+      {/* Light Futurist Instrument Panel Header */}
+      <View style={{ backgroundColor: surfaceIvory, paddingHorizontal: pagePadding, paddingTop: isPhone ? spacing.lg : spacing.xl, paddingBottom: spacing.md, gap: spacing.sm, borderBottomWidth: hairline, borderColor: '#D8CFC0' }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md }}>
           <View style={{ flex: 1 }}>
             <Pressable onPress={() => router.push('/venue/settings')} style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1, flexDirection: 'row', alignItems: 'center', gap: 4 })}>
-              <CommandText palette={palette} variant="label" style={{ color: palette.buttonText, opacity: 0.7 }}>{venueName}</CommandText>
-              {venues.length > 1 ? <MaterialCommunityIcons name="swap-horizontal" size={16} color={palette.buttonText} style={{ opacity: 0.7 }} /> : null}
+              <CommandText palette={palette} variant="label" style={{ color: stone }}>{venueName}</CommandText>
+              {venues.length > 1 ? <MaterialCommunityIcons name="swap-horizontal" size={16} color={stone} /> : null}
             </Pressable>
-            <CommandText palette={palette} variant="hero" style={{ color: palette.buttonText, fontSize: isPhone ? 26 : undefined }}>Stadium F&B Command</CommandText>
+            <CommandText palette={palette} variant="hero" style={{ color: ink, fontSize: isPhone ? 24 : 28 }}>Stadium F&B Command</CommandText>
           </View>
           <Pressable onPress={() => setShowNotifications((value) => !value)} accessibilityRole="button" accessibilityLabel="Open notifications" style={({ pressed }) => ({ opacity: pressed ? 0.65 : 1, padding: 8 })}>
             <View>
-              <MaterialCommunityIcons name={unreadCount ? 'bell-ring-outline' : 'bell-outline'} size={24} color={String(palette.buttonText)} />
-              {unreadCount ? <View style={[styles.notificationBadge, { backgroundColor: palette.secondary }]}><CommandText palette={palette} variant="caption" style={{ color: palette.buttonText }}>{unreadCount}</CommandText></View> : null}
+              <MaterialCommunityIcons name={unreadCount ? 'bell-ring-outline' : 'bell-outline'} size={24} color={ink} />
+              {unreadCount ? (
+                <View style={[styles.notificationBadge, { backgroundColor: '#FFFFFF', borderWidth: 1.5, borderColor: dept.concessions }]}>
+                  <CommandText palette={palette} variant="caption" style={{ color: dept.concessions, fontWeight: '700', fontSize: 10 }}>{unreadCount}</CommandText>
+                </View>
+              ) : null}
             </View>
           </Pressable>
         </View>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, alignSelf: 'flex-start', backgroundColor: `${palette.buttonText}22`, borderRadius: radius.pill, paddingHorizontal: 10, paddingVertical: 5 }}>
-          <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: readiness?.status === 'blocked' ? palette.danger : readiness?.status === 'at-risk' ? palette.warning : palette.buttonText }} />
-          <CommandText palette={palette} variant="caption" style={{ color: palette.buttonText, fontWeight: '700' }}>
-            {readiness?.status === 'blocked' ? 'Needs attention' : readiness?.status === 'at-risk' ? 'Watch F&B operations' : 'F&B command ready'}
-          </CommandText>
-          <View style={{ width: StyleSheet.hairlineWidth, height: 12, backgroundColor: palette.buttonText, opacity: 0.3 }} />
-          <CommandText palette={palette} variant="caption" style={{ color: palette.buttonText, opacity: 0.85, fontVariant: ['tabular-nums'] }}>{currentDate}</CommandText>
+
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+          {/* Active Department Pill (Tint as border only) */}
+          {activeDept ? (
+            <CapsuleDock>
+              <CapsulePill
+                label={`WORKSPACE: ${activeDept.name.toUpperCase()}`}
+                active={true}
+                tint={activeDeptTint}
+                onPress={() => router.push('/(tabs)/more')}
+              />
+            </CapsuleDock>
+          ) : null}
+
+          {/* Readiness Status Pill */}
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#FFFFFF', borderRadius: radius.pill, borderWidth: hairline, borderColor: '#D8CFC0', paddingHorizontal: 10, paddingVertical: 5 }}>
+            <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: readiness?.status === 'blocked' ? statusColors.alert : readiness?.status === 'at-risk' ? statusColors.needs_review : statusColors.confirmed }} />
+            <CommandText palette={palette} variant="caption" style={{ color: ink, fontWeight: '700' }}>
+              {readiness?.status === 'blocked' ? 'Needs attention' : readiness?.status === 'at-risk' ? 'Watch operations' : 'Telemetry nominal'}
+            </CommandText>
+            <View style={{ width: hairline, height: 12, backgroundColor: '#D8CFC0' }} />
+            <CommandText palette={palette} variant="caption" style={{ color: stone, fontVariant: ['tabular-nums'] }}>{currentDate}</CommandText>
+          </View>
         </View>
       </View>
 
+      {/* Metric Rings for Suites / Kitchen / 86 / Staff */}
+      <View style={{ paddingHorizontal: pagePadding, paddingTop: spacing.md }}>
+        <HairlinePanel style={{ padding: spacing.md, backgroundColor: '#FFFFFF' }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.sm }}>
+            <CommandText palette={palette} variant="label" style={{ color: stone, letterSpacing: 0.8 }}>
+              OPERATIONAL HUD TELEMETRY
+            </CommandText>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: isCross ? chromeGold : activeDeptTint }} />
+              <CommandText palette={palette} variant="caption" style={{ color: stone, fontWeight: '700' }}>
+                {isCross ? 'ALL DEPARTMENTS' : `${activeDept?.name?.toUpperCase() ?? 'ISOLATED'} RAIL`}
+              </CommandText>
+            </View>
+          </View>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center' }}>
+            <MetricRing
+              value={readiness?.categories?.approvals ? `${readiness.categories.approvals}%` : '12'}
+              label="Suites"
+              tint={isCross ? dept.suites : activeDeptTint}
+              onPress={() => router.push(SUITE_BEO_REPORT_ROUTE as any)}
+            />
+            <MetricRing
+              value={readiness?.categories?.setup ? `${readiness.categories.setup}%` : '94%'}
+              label="Kitchen"
+              tint={isCross ? dept.culinary : activeDeptTint}
+              onPress={() => router.push(EVENT_BEO_ROUTE as any)}
+            />
+            <MetricRing
+              value={dailyBrief?.outOfStockCount ?? '0'}
+              label="86 List"
+              tint={isCross ? dept.concessions : activeDeptTint}
+              onPress={() => router.push('/(tabs)/inventory')}
+            />
+            <MetricRing
+              value={readiness?.categories?.staffing ? `${readiness.categories.staffing}%` : '28'}
+              label="Staffing"
+              tint={isCross ? dept.banquets : activeDeptTint}
+              onPress={() => router.push('/(tabs)/staff')}
+            />
+          </View>
+        </HairlinePanel>
+      </View>
+
+      {/* BEO Strip: Four DeptRail Rows */}
+      <View style={{ paddingHorizontal: pagePadding, paddingTop: spacing.md, gap: spacing.xs }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 }}>
+          <CommandText palette={palette} variant="label" style={{ color: stone, letterSpacing: 0.8 }}>
+            DEPARTMENT BEO STRIP
+          </CommandText>
+          <Pressable onPress={() => router.push(EVENT_BEO_ROUTE as any)} style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}>
+            <CommandText palette={palette} variant="caption" style={{ color: chromeGold, fontWeight: '700' }}>View Hub &rarr;</CommandText>
+          </Pressable>
+        </View>
+        <View style={{ gap: spacing.xs }}>
+          <DeptRailRow
+            tint={isCross ? dept.suites : activeDeptTint}
+            title="Luxury Suite BEOs"
+            subtitle="VIP Box Pre-Orders & Champagne"
+            meta="Kickoff - 2h · Level 3 Suite Deck"
+            status="confirmed"
+            onPress={() => router.push(SUITE_BEO_REPORT_ROUTE as any)}
+          />
+          <DeptRailRow
+            tint={isCross ? dept.culinary : activeDeptTint}
+            title="Commissary & Kitchens"
+            subtitle="Batch Prep, Prime Rib, Carvery"
+            meta="Station 1-4 · Service T-45m"
+            status="in_service"
+            onPress={() => router.push(EVENT_BEO_ROUTE as any)}
+          />
+          <DeptRailRow
+            tint={isCross ? dept.banquets : activeDeptTint}
+            title="Banquet Operations"
+            subtitle="Founders Club 320 Plated Rundown"
+            meta="Floor Captain Call 16:30"
+            status="needs_review"
+            onPress={() => router.push('/banquet-floor-plan')}
+          />
+          <DeptRailRow
+            tint={isCross ? dept.beverage : activeDeptTint}
+            title="Bars & Cellar Stock"
+            subtitle="Speed Rails, Draft Kegs, Club Bars"
+            meta="All Wells Verified · Par 100%"
+            status="confirmed"
+            onPress={() => router.push(EVENT_BEO_ROUTE as any)}
+          />
+        </View>
+      </View>
+
+      {/* Stadium Navigation HUD Tiles */}
       <View style={{ paddingHorizontal: pagePadding, paddingTop: spacing.md, gap: spacing.sm }}>
-        <Pressable onPress={() => router.push('/stadium-map')} style={({ pressed }) => [styles.heroTile, { backgroundColor: palette.primary, opacity: pressed ? 0.85 : 1 }]}>
-          <View style={[styles.heroIconBadge, { backgroundColor: `${palette.buttonText}22` }]}>
-            <MaterialCommunityIcons name="stadium" size={24} color={String(palette.buttonText)} />
+        <HairlinePanel
+          onPress={() => router.push('/stadium-map')}
+          style={{ padding: spacing.md, flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}
+        >
+          <View style={[styles.heroIconBadge, { backgroundColor: surfaceIvory, borderWidth: 1, borderColor: '#D8CFC0' }]}>
+            <MaterialCommunityIcons name="stadium" size={24} color={chromeGold} />
           </View>
           <View style={{ flex: 1 }}>
-            <CommandText palette={palette} variant="body" style={{ color: palette.buttonText, fontWeight: '700', fontSize: 16 }}>Stadium Map</CommandText>
-            <CommandText palette={palette} variant="caption" style={{ color: palette.buttonText, opacity: 0.75 }}>Zones, suites, stands</CommandText>
+            <CommandText palette={palette} variant="body" style={{ color: ink, fontWeight: '700', fontSize: 16 }}>Stadium Map</CommandText>
+            <CommandText palette={palette} variant="caption" style={{ color: stone }}>Zones, suites, stands</CommandText>
           </View>
-          <MaterialCommunityIcons name="chevron-right" size={20} color={String(palette.buttonText)} style={{ opacity: 0.7 }} />
-        </Pressable>
+          <MaterialCommunityIcons name="chevron-right" size={20} color={stone} />
+        </HairlinePanel>
+
         <View style={{ flexDirection: 'row', gap: spacing.sm }}>
-          <Pressable onPress={() => router.push('/event-command-center')} style={({ pressed }) => [styles.subTile, { backgroundColor: palette.surface, borderColor: palette.border, opacity: pressed ? 0.7 : 1 }]}>
-            <MaterialCommunityIcons name="shield-star-outline" size={18} color={String(palette.primary)} />
-            <CommandText palette={palette} variant="caption" style={{ fontWeight: '700', color: palette.charcoal }}>Command Center</CommandText>
-          </Pressable>
-          <Pressable onPress={() => router.push('/stadium/stand-sheet')} style={({ pressed }) => [styles.subTile, { backgroundColor: palette.surface, borderColor: palette.border, opacity: pressed ? 0.7 : 1 }]}>
-            <MaterialCommunityIcons name="clipboard-list-outline" size={18} color={String(palette.primary)} />
-            <CommandText palette={palette} variant="caption" style={{ fontWeight: '700', color: palette.charcoal }}>Stand Sheets</CommandText>
-          </Pressable>
-          <Pressable onPress={() => router.push(SUITE_BEO_REPORT_ROUTE as any)} style={({ pressed }) => [styles.subTile, { backgroundColor: palette.surface, borderColor: palette.border, opacity: pressed ? 0.7 : 1 }]}>
-            <MaterialCommunityIcons name="room-service-outline" size={18} color={String(palette.primary)} />
-            <CommandText palette={palette} variant="caption" style={{ fontWeight: '700', color: palette.charcoal }}>Suite BEOs</CommandText>
-          </Pressable>
+          <HairlinePanel
+            onPress={() => router.push('/event-command-center')}
+            style={styles.subTile}
+          >
+            <MaterialCommunityIcons name="shield-star-outline" size={18} color={chromeGold} />
+            <CommandText palette={palette} variant="caption" style={{ fontWeight: '700', color: ink }}>Command Center</CommandText>
+          </HairlinePanel>
+          <HairlinePanel
+            onPress={() => router.push('/stadium/stand-sheet')}
+            style={styles.subTile}
+          >
+            <MaterialCommunityIcons name="clipboard-list-outline" size={18} color={chromeGold} />
+            <CommandText palette={palette} variant="caption" style={{ fontWeight: '700', color: ink }}>Stand Sheets</CommandText>
+          </HairlinePanel>
+          <HairlinePanel
+            onPress={() => router.push(SUITE_BEO_REPORT_ROUTE as any)}
+            style={styles.subTile}
+          >
+            <MaterialCommunityIcons name="room-service-outline" size={18} color={chromeGold} />
+            <CommandText palette={palette} variant="caption" style={{ fontWeight: '700', color: ink }}>Suite BEOs</CommandText>
+          </HairlinePanel>
         </View>
       </View>
 
@@ -180,12 +330,12 @@ export default function HomeScreen() {
           </View>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.md }}>
             <Pressable onPress={() => router.push('/stadium-map?mode=3d')} style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1, flexDirection: 'row', alignItems: 'center', gap: 3 })}>
-              <MaterialCommunityIcons name="cube-outline" size={16} color="#013369" />
-              <CommandText palette={palette} variant="caption" style={{ color: '#013369', fontWeight: '800' }}>3D View</CommandText>
+              <MaterialCommunityIcons name="cube-outline" size={16} color={chromeGold} />
+              <CommandText palette={palette} variant="caption" style={{ color: chromeGold, fontWeight: '800' }}>3D View</CommandText>
             </Pressable>
             <Pressable onPress={() => router.push('/stadium-map')} style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1, flexDirection: 'row', alignItems: 'center', gap: 2 })}>
-              <CommandText palette={palette} variant="caption" style={{ color: palette.primary, fontWeight: '700' }}>Full screen</CommandText>
-              <MaterialCommunityIcons name="chevron-right" size={16} color={String(palette.primary)} />
+              <CommandText palette={palette} variant="caption" style={{ color: chromeGold, fontWeight: '700' }}>Full screen</CommandText>
+              <MaterialCommunityIcons name="chevron-right" size={16} color={chromeGold} />
             </Pressable>
           </View>
         </View>
@@ -271,9 +421,8 @@ const styles = StyleSheet.create({
   subTile: {
     flex: 1,
     alignItems: 'center',
+    justifyContent: 'center',
     gap: 6,
-    borderRadius: radius.md,
-    borderWidth: 1,
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.xs,
   },

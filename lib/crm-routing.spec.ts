@@ -66,6 +66,7 @@ describe('BEO entry point routing', () => {
     expect(parseReportDepartment('premium_hospitality')).toBe('premium_hospitality');
     expect(parseReportDepartment('checklist')).toBeUndefined();
     expect(parseReportDepartment(undefined)).toBeUndefined();
+    expect(parseWorkspaceView('hub')).toBe('hub');
     expect(parseWorkspaceView('events')).toBe('events');
     expect(parseWorkspaceView('checklist')).toBeUndefined();
   });

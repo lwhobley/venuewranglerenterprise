@@ -15,6 +15,7 @@ import { spacing, useDesignTheme, opsConsole } from '../../lib/theme';
 import { useVenueAuth } from '../../lib/useVenueAuth';
 import { apiRequest, useApiMutation, useApiQuery } from '../../lib/api-client';
 import { useResponsive } from '../../lib/responsive';
+import { ManagerGate } from '../../components/ManagerGate';
 
 type TabKey =
   | 'directory'
@@ -60,7 +61,8 @@ function VmsPill({
 export default function VendorManagementSystemScreen() {
   const palette = useDesignTheme();
   const { isPhone } = useResponsive();
-  const { venue } = useVenueAuth();
+  const { venue, canManage, profileLoading } = useVenueAuth();
+  const isAuthorized = canManage && Boolean(venue?.id);
 
   const [activeTab, setActiveTab] = useState<TabKey>('directory');
   const [vendorSearch, setVendorSearch] = useState('');
@@ -98,18 +100,57 @@ export default function VendorManagementSystemScreen() {
     specialRequirements: 'TIPS / LEAD Alcohol Certified',
   });
 
-  // Queries
+  // Queries (guarded by manager permissions & venue scope)
   const vendorsQuery = useApiQuery<any[]>(
     ['vms', 'vendors', vendorSearch, vendorFilter],
     `/v1/vms/vendors?${vendorFilter !== 'all' ? `vendorType=${vendorFilter}` : ''}${vendorSearch ? `&search=${encodeURIComponent(vendorSearch)}` : ''}`,
+    isAuthorized,
+    undefined,
+    { silent: true },
   );
 
-  const ordersQuery = useApiQuery<any[]>(['vms', 'orders'], '/v1/vms/orders');
-  const attendanceQuery = useApiQuery<any[]>(['vms', 'attendance'], '/v1/vms/attendance/reports');
-  const inventoryStatusQuery = useApiQuery<any>(['vms', 'inventory-status'], '/v1/vms/inventory/status');
-  const scorecardQuery = useApiQuery<any[]>(['vms', 'scorecard'], '/v1/vms/analytics/vendor-scorecard');
-  const anomaliesQuery = useApiQuery<any[]>(['vms', 'anomalies'], '/v1/vms/analytics/anomalies');
-  const auditLogsQuery = useApiQuery<any[]>(['vms', 'audit-logs'], '/v1/vms/audit-logs');
+  const ordersQuery = useApiQuery<any[]>(
+    ['vms', 'orders'],
+    '/v1/vms/orders',
+    isAuthorized,
+    undefined,
+    { silent: true },
+  );
+  const attendanceQuery = useApiQuery<any[]>(
+    ['vms', 'attendance'],
+    '/v1/vms/attendance/reports',
+    isAuthorized,
+    undefined,
+    { silent: true },
+  );
+  const inventoryStatusQuery = useApiQuery<any>(
+    ['vms', 'inventory-status'],
+    '/v1/vms/inventory/status',
+    isAuthorized,
+    undefined,
+    { silent: true },
+  );
+  const scorecardQuery = useApiQuery<any[]>(
+    ['vms', 'scorecard'],
+    '/v1/vms/analytics/vendor-scorecard',
+    isAuthorized,
+    undefined,
+    { silent: true },
+  );
+  const anomaliesQuery = useApiQuery<any[]>(
+    ['vms', 'anomalies'],
+    '/v1/vms/analytics/anomalies',
+    isAuthorized,
+    undefined,
+    { silent: true },
+  );
+  const auditLogsQuery = useApiQuery<any[]>(
+    ['vms', 'audit-logs'],
+    '/v1/vms/audit-logs',
+    isAuthorized,
+    undefined,
+    { silent: true },
+  );
 
   // Mutations
   const createVendorMutation = useApiMutation<any, any>(
@@ -219,7 +260,12 @@ export default function VendorManagementSystemScreen() {
   const auditLogs = auditLogsQuery.data || [];
 
   return (
-    <View style={[styles.container, { backgroundColor: palette.background }]}>
+    <ManagerGate
+      canManage={canManage}
+      profileLoading={profileLoading}
+      feature="Vendor Management System (VMS)"
+    >
+      <View style={[styles.container, { backgroundColor: palette.background }]}>
       {/* Header Bar */}
       <View style={[styles.header, isPhone && styles.headerPhone, { borderBottomColor: palette.border }]}>
         <View style={styles.headerLeft}>
@@ -1136,7 +1182,8 @@ export default function VendorManagementSystemScreen() {
           </View>
         </View>
       </Modal>
-    </View>
+      </View>
+    </ManagerGate>
   );
 }
 

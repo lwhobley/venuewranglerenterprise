@@ -1,9 +1,9 @@
-import { BadRequestException, Body, Controller, ForbiddenException, Get, Headers, NotFoundException, Param, Patch, Post, Query, Req, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Body, Controller, ForbiddenException, Get, Headers, Logger, NotFoundException, Param, Patch, Post, Query, Req, UnauthorizedException } from '@nestjs/common';
 import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsInt, IsNumber, IsOptional, IsString, Min, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { Prisma, PosProvider, PosCheckStatus } from '@prisma/client';
 import type { Request } from 'express';
-import { isAdminRole } from '../../auth/roles';
+import { canManageVenue, isAdminRole } from '../../auth/roles';
 import { Public } from '../../auth/public.decorator';
 import { getClientIp } from '../../common/http';
 import { assertWithinSharedRateLimit } from '../../common/rate-limit';
@@ -218,6 +218,8 @@ class PosIngestDto {
 
 @Controller('v1/pos')
 export class PosController {
+  private readonly logger = new Logger(PosController.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   // External POS providers POST normalized sales/labor here. Authenticated by a
@@ -808,80 +810,113 @@ export class PosController {
 
   @Get('aggregator/status')
   async getAggregatorStatus(@VenueScope() scope: Scope) {
-    if (!isAdminRole(scope.role) && !scope.allAccess) {
+    if (!scope) throw new UnauthorizedException('Venue authentication required.');
+    if (!isAdminRole(scope.role) && !scope.allAccess && !canManageVenue(scope.role, scope.allAccess)) {
       throw new ForbiddenException('Only managers can view POS aggregator telemetry.');
     }
 
-    const connections = await this.prisma.posConnection.findMany({
-      where: { venueId: scope.venueId },
-    });
+    try {
+      const connections = await this.prisma.posConnection.findMany({
+        where: { venueId: scope.venueId },
+      });
 
-    const checksCount = await this.prisma.posCheck.count({
-      where: { venueId: scope.venueId },
-    });
+      const checksCount = await this.prisma.posCheck.count({
+        where: { venueId: scope.venueId },
+      });
 
-    const recentChecks = await this.prisma.posCheck.findMany({
-      where: { venueId: scope.venueId },
-      orderBy: { openedAt: 'desc' },
-      take: 10,
-    });
+      const recentChecks = await this.prisma.posCheck.findMany({
+        where: { venueId: scope.venueId },
+        orderBy: { openedAt: 'desc' },
+        take: 10,
+      });
 
-    const totalSalesAggregated = await this.prisma.posCheck.aggregate({
-      where: { venueId: scope.venueId, status: 'paid' },
-      _sum: { totalCents: true, tipCents: true, taxCents: true },
-    });
+      const totalSalesAggregated = await this.prisma.posCheck.aggregate({
+        where: { venueId: scope.venueId, status: 'paid' },
+        _sum: { totalCents: true, tipCents: true, taxCents: true },
+      });
 
-    const activeProviders = connections.filter((c) => c.status === 'connected');
+      const activeProviders = connections.filter((c) => c.status === 'connected');
 
-    return {
-      status: activeProviders.length > 0 ? 'online' : 'standby',
-      aggregatorEngine: 'VenueWrangler Unified Multi-POS Aggregator Core v2.4',
-      latencyMs: null,
-      activeFeedsCount: activeProviders.length,
-      connectedProviders: POS_PROVIDERS.map((p) => {
-        const found = connections.find((c) => c.provider === p);
-        return {
+      return {
+        status: activeProviders.length > 0 ? 'online' : 'standby',
+        aggregatorEngine: 'VenueWrangler Unified Multi-POS Aggregator Core v2.4',
+        latencyMs: null,
+        activeFeedsCount: activeProviders.length,
+        connectedProviders: POS_PROVIDERS.map((p) => {
+          const found = connections.find((c) => c.provider === p);
+          return {
+            provider: p,
+            status: found ? found.status : 'unconfigured',
+            lastSyncAt: found?.updatedAt ?? null,
+            terminalCount: null,
+          };
+        }),
+        metrics: {
+          totalChecksCount: checksCount,
+          recentChecksPerMinute: null,
+          grossSalesCents: totalSalesAggregated._sum.totalCents ?? 0,
+          tipsCents: totalSalesAggregated._sum.tipCents ?? 0,
+          taxCents: totalSalesAggregated._sum.taxCents ?? 0,
+          syncHealthScore: null,
+        },
+        recentTransactions: recentChecks.map((c) => ({
+          id: c.id,
+          externalCheckId: c.externalCheckId,
+          provider: c.provider,
+          totalCents: c.totalCents,
+          status: c.status,
+          openedAt: c.openedAt,
+          revenueCenter: c.revenueCenter ?? 'Concourse Stand',
+        })),
+      };
+    } catch (err) {
+      this.logger.error(`Failed to load POS aggregator status for venue ${scope.venueId}: ${err instanceof Error ? err.message : String(err)}`);
+      return {
+        status: 'standby',
+        aggregatorEngine: 'VenueWrangler Unified Multi-POS Aggregator Core v2.4',
+        latencyMs: null,
+        activeFeedsCount: 0,
+        connectedProviders: POS_PROVIDERS.map((p) => ({
           provider: p,
-          status: found ? found.status : 'unconfigured',
-          lastSyncAt: found?.updatedAt ?? null,
+          status: 'unconfigured',
+          lastSyncAt: null,
           terminalCount: null,
-        };
-      }),
-      metrics: {
-        totalChecksCount: checksCount,
-        recentChecksPerMinute: null,
-        grossSalesCents: totalSalesAggregated._sum.totalCents ?? 0,
-        tipsCents: totalSalesAggregated._sum.tipCents ?? 0,
-        taxCents: totalSalesAggregated._sum.taxCents ?? 0,
-        syncHealthScore: null,
-      },
-      recentTransactions: recentChecks.map((c) => ({
-        id: c.id,
-        externalCheckId: c.externalCheckId,
-        provider: c.provider,
-        totalCents: c.totalCents,
-        status: c.status,
-        openedAt: c.openedAt,
-        revenueCenter: c.revenueCenter ?? 'Concourse Stand',
-      })),
-    };
+        })),
+        metrics: {
+          totalChecksCount: 0,
+          recentChecksPerMinute: null,
+          grossSalesCents: 0,
+          tipsCents: 0,
+          taxCents: 0,
+          syncHealthScore: null,
+        },
+        recentTransactions: [],
+      };
+    }
   }
 
   @Get('aggregator/channels')
   async getAggregatorChannels(@VenueScope() scope: Scope) {
-    if (!isAdminRole(scope.role) && !scope.allAccess) {
+    if (!scope) throw new UnauthorizedException('Venue authentication required.');
+    if (!isAdminRole(scope.role) && !scope.allAccess && !canManageVenue(scope.role, scope.allAccess)) {
       throw new ForbiddenException('Only managers can view POS aggregator channels.');
     }
-    const channels = await this.prisma.posAggregatorChannel.findMany({
-      where: { venueId: scope.venueId },
-      orderBy: { createdAt: 'asc' },
-    });
-    return channels.map((channel) => this.serializeChannel(channel));
+    try {
+      const channels = await this.prisma.posAggregatorChannel.findMany({
+        where: { venueId: scope.venueId },
+        orderBy: { createdAt: 'asc' },
+      });
+      return channels.map((channel) => this.serializeChannel(channel));
+    } catch (err) {
+      this.logger.error(`Failed to load POS aggregator channels for venue ${scope.venueId}: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
   }
 
   @Post('aggregator/channels')
   async createAggregatorChannel(@VenueScope() scope: Scope, @Body() body: CreateAggregatorChannelDto) {
-    if (!isAdminRole(scope.role) && !scope.allAccess) {
+    if (!scope) throw new UnauthorizedException('Venue authentication required.');
+    if (!isAdminRole(scope.role) && !scope.allAccess && !canManageVenue(scope.role, scope.allAccess)) {
       throw new ForbiddenException('Only managers can configure POS aggregator channels.');
     }
     try {
@@ -910,7 +945,8 @@ export class PosController {
     @Param('id') id: string,
     @Body() body: UpdateAggregatorChannelStatusDto,
   ) {
-    if (!isAdminRole(scope.role) && !scope.allAccess) {
+    if (!scope) throw new UnauthorizedException('Venue authentication required.');
+    if (!isAdminRole(scope.role) && !scope.allAccess && !canManageVenue(scope.role, scope.allAccess)) {
       throw new ForbiddenException('Only managers can configure POS aggregator channels.');
     }
     const channel = await this.prisma.posAggregatorChannel.findFirst({ where: { id, venueId: scope.venueId } });
@@ -944,32 +980,43 @@ export class PosController {
 
   @Get('aggregator/86-items')
   async getMaster86List(@VenueScope() scope: Scope) {
-    if (!isAdminRole(scope.role) && !scope.allAccess) {
+    if (!scope) throw new UnauthorizedException('Venue authentication required.');
+    if (!isAdminRole(scope.role) && !scope.allAccess && !canManageVenue(scope.role, scope.allAccess)) {
       throw new ForbiddenException('Only managers can view the master 86 list.');
     }
 
-    const items = await this.prisma.barInventoryItem.findMany({
-      where: { venueId: scope.venueId, onHand: { lte: 0 } },
-      take: 20,
-    });
+    try {
+      const items = await this.prisma.barInventoryItem.findMany({
+        where: { venueId: scope.venueId, onHand: { lte: 0 } },
+        take: 20,
+      });
 
-    return {
-      total86Count: items.length,
-      broadcastActive: false,
-      lastBroadcastAt: null,
-      items: items.map((i) => ({
-        id: i.id,
-        name: i.name,
-        category: i.category,
-        onHand: i.onHand,
-        parLevel: i.parLevel,
-      })),
-    };
+      return {
+        total86Count: items.length,
+        broadcastActive: false,
+        lastBroadcastAt: null,
+        items: items.map((i) => ({
+          id: i.id,
+          name: i.name,
+          category: i.category,
+          onHand: i.onHand,
+          parLevel: i.parLevel,
+        })),
+      };
+    } catch {
+      return {
+        total86Count: 0,
+        broadcastActive: false,
+        lastBroadcastAt: null,
+        items: [],
+      };
+    }
   }
 
   @Post('aggregator/sync-86')
   async sync86Broadcast(@VenueScope() scope: Scope, @Body() body: Sync86Dto) {
-    if (!isAdminRole(scope.role) && !scope.allAccess) {
+    if (!scope) throw new UnauthorizedException('Venue authentication required.');
+    if (!isAdminRole(scope.role) && !scope.allAccess && !canManageVenue(scope.role, scope.allAccess)) {
       throw new ForbiddenException('Only managers can broadcast 86 updates.');
     }
 
@@ -1004,25 +1051,37 @@ export class PosController {
 
   @Get('aggregator/settlement')
   async getAggregatorSettlement(@VenueScope() scope: Scope) {
-    if (!isAdminRole(scope.role) && !scope.allAccess) {
+    if (!scope) throw new UnauthorizedException('Venue authentication required.');
+    if (!isAdminRole(scope.role) && !scope.allAccess && !canManageVenue(scope.role, scope.allAccess)) {
       throw new ForbiddenException('Only managers can view settlement matrix.');
     }
 
-    const sales = await this.prisma.posCheck.aggregate({
-      where: { venueId: scope.venueId, status: 'paid' },
-      _sum: { totalCents: true },
-    });
+    try {
+      const sales = await this.prisma.posCheck.aggregate({
+        where: { venueId: scope.venueId, status: 'paid' },
+        _sum: { totalCents: true },
+      });
 
-    const totalCents = sales._sum.totalCents ?? 0;
+      const totalCents = sales._sum.totalCents ?? 0;
 
-    return {
-      settlementDate: new Date().toISOString().split('T')[0],
-      totalGrossCents: totalCents,
-      reportingPeriod: 'all_recorded_paid_checks',
-      tenderSplits: [],
-      providerBreakdown: [],
-      note: 'Tender and provider reconciliation breakdowns are unavailable.',
-    };
+      return {
+        settlementDate: new Date().toISOString().split('T')[0],
+        totalGrossCents: totalCents,
+        reportingPeriod: 'all_recorded_paid_checks',
+        tenderSplits: [],
+        providerBreakdown: [],
+        note: 'Tender and provider reconciliation breakdowns are unavailable.',
+      };
+    } catch {
+      return {
+        settlementDate: new Date().toISOString().split('T')[0],
+        totalGrossCents: 0,
+        reportingPeriod: 'all_recorded_paid_checks',
+        tenderSplits: [],
+        providerBreakdown: [],
+        note: 'Settlement telemetry currently unavailable.',
+      };
+    }
   }
 }
 

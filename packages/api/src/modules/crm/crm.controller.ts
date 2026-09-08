@@ -43,7 +43,7 @@ import { ExecutionAutopilotService } from '../operations/execution-autopilot.ser
 type Scope = VenueScopedRequest['venueScope'];
 
 const LEAD_STATUSES = ['new', 'contacted', 'qualified', 'proposal_sent', 'negotiating', 'won', 'lost', 'unqualified', 'on_hold'] as const;
-const BEO_STATUSES = ['draft', 'sent', 'reviewed', 'confirmed', 'amended', 'cancelled'] as const;
+const BEO_STATUSES = ['draft', 'sent', 'reviewed', 'confirmed', 'amended', 'cancelled', 'received', 'needs_review', 'in_service', 'closed'] as const;
 const CONTRACT_STATUSES = ['draft', 'sent', 'viewed', 'partially_signed', 'fully_signed', 'expired', 'cancelled', 'disputed'] as const;
 const BEO_EMAIL_MANAGER_LIMIT_MAX = 20;
 const BEO_EMAIL_MANAGER_LIMIT_WINDOW_MS = 15 * 60 * 1000;
@@ -178,6 +178,9 @@ class SaveBeoDto {
   @IsIn(BEO_STATUSES)
   @IsOptional()
   status?: string;
+
+  @IsOptional()
+  layoutJson?: Record<string, unknown>;
 }
 
 class SaveContractDto {
@@ -676,6 +679,7 @@ export class CrmController {
       specialRequirements: body.specialRequirements ?? null,
       internalNotes: body.internalNotes ?? null,
       assignedRepId: assignedRepId ?? null,
+      ...(body.layoutJson !== undefined ? { layoutJson: body.layoutJson as Prisma.InputJsonValue } : {}),
       updatedAt: now,
     };
 

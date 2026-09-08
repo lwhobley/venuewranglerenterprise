@@ -37,12 +37,17 @@ export function DistroPickupNotificationBanner({ serviceAreaId, zoneId }: Distro
     queryPath,
     true,
     15000,
+    { silent: true },
   );
 
   useStadiumLiveStream({
     events: ['distro_pickup_updated', 'distro_pickup_ready', 'distro_pickup_overdue'],
     invalidate: [DISTRO_TICKETS_KEY],
   });
+
+  if (query.isError || !query.data) {
+    return null;
+  }
 
   const tickets = Array.isArray(query.data) ? query.data : [];
   const readyTickets = tickets.filter((t: DistroTicketSummary) => t.status === 'ready' || t.status === 'overdue_pickup');

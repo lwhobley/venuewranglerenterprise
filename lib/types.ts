@@ -21,6 +21,7 @@ export type Role =
   | 'executive_chef'
   | 'warehouse_manager'
   | 'premium_manager'
+  | 'procurement_manager'
   | 'finance_viewer'
   | 'concourse_supervisor'
   | 'suite_manager'

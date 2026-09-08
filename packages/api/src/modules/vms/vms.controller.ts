@@ -68,14 +68,17 @@ export class VmsController {
     private readonly scheduler: VmsSchedulerService,
   ) {}
 
-  private assertManager(scope: Scope) {
-    if (!canManageVenue(scope.role, scope.allAccess)) {
+  private assertManager(scope?: Scope) {
+    if (!scope || !scope.venueId || !canManageVenue(scope.role, scope.allAccess)) {
       throw new ForbiddenException('Venue or workforce manager authorization required.');
     }
   }
 
   /** Resolves the org and guarantees the same-id Facility exists, so `facilityId` is safe as a facilityId. */
-  private async organizationIdFor(facilityId: string): Promise<string> {
+  private async organizationIdFor(facilityId?: string): Promise<string> {
+    if (!facilityId) {
+      throw new ForbiddenException('Venue or facility authorization required.');
+    }
     return organizationIdForPairedVenue(this.prisma, facilityId);
   }
 
@@ -308,6 +311,7 @@ export class VmsController {
     @VenueScope() scope: Scope,
     @Body() body: AuthorizePunchDto,
   ) {
+    if (!scope?.venueId) throw new ForbiddenException('Venue authorization required.');
     const orgId = await this.organizationIdFor(scope.venueId);
     return this.service.authorizePunch(orgId, scope.venueId, body);
   }
@@ -318,6 +322,7 @@ export class VmsController {
     @Body() body: ClockInDto,
     @Req() req: any,
   ) {
+    if (!scope?.venueId) throw new ForbiddenException('Venue authorization required.');
     const isManager = canManageVenue(scope.role, scope.allAccess);
     if (!isManager && !body.pin && !body.badgeCode && !body.punchAuthToken) {
       throw new ForbiddenException('Worker PIN, badge credential, or punch authorization token required for self-service clock punch.');
@@ -340,6 +345,7 @@ export class VmsController {
     @Body() body: ClockOutDto,
     @Req() req: any,
   ) {
+    if (!scope?.venueId) throw new ForbiddenException('Venue authorization required.');
     const isManager = canManageVenue(scope.role, scope.allAccess);
     if (!isManager && !body.pin && !body.badgeCode && !body.punchAuthToken) {
       throw new ForbiddenException('Worker PIN, badge credential, or punch authorization token required for self-service clock punch.');

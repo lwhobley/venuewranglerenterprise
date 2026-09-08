@@ -161,10 +161,10 @@ export default function FacilityScreen() {
         </View>
       </CommandSurface>
 
-      <CommandSurface palette={palette} strong style={{ gap: spacing.sm, borderColor: '#074426', borderWidth: 1 }}>
+      <CommandSurface palette={palette} strong style={{ gap: spacing.sm, borderColor: palette.border, borderWidth: 1 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: spacing.sm }}>
           <View style={{ flex: 1, minWidth: 200, gap: 2 }}>
-            <CommandText palette={palette} variant="title" style={{ color: '#074426' }}>
+            <CommandText palette={palette} variant="title" style={{ color: palette.charcoal }}>
               Banquet & Catering Floor Plan
             </CommandText>
             <CommandText palette={palette} variant="caption">
@@ -173,7 +173,8 @@ export default function FacilityScreen() {
           </View>
           <Button
             mode="contained"
-            buttonColor="#074426"
+            buttonColor={palette.primary}
+            textColor={palette.buttonText}
             icon="table-furniture"
             onPress={() => router.push('/banquet-floor-plan')}
           >

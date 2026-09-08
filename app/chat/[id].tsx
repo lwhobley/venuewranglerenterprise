@@ -287,9 +287,18 @@ export default function ConversationScreen() {
     setError(null);
     setSending(true);
     try {
+      const isHeic =
+        asset.mimeType === 'image/heic' ||
+        asset.mimeType === 'image/heif' ||
+        asset.fileName?.toLowerCase().endsWith('.heic') ||
+        asset.fileName?.toLowerCase().endsWith('.heif') ||
+        asset.uri?.toLowerCase().endsWith('.heic') ||
+        asset.uri?.toLowerCase().endsWith('.heif');
+      const resolvedMime = isHeic ? 'image/heic' : (asset.mimeType ?? 'image/jpeg');
+
       const { imageUrl } = await uploadImage({
         dataBase64: asset.base64,
-        mimeType: asset.mimeType ?? 'image/jpeg',
+        mimeType: resolvedMime,
       });
       await sendMessage({ conversationId, text: t('chatThread.sharedPhoto'), imageUrl });
     } catch (e) {

@@ -498,8 +498,8 @@ export class AppStaffController {
           ? await tx.user.findUniqueOrThrow({ where: { id: created.userId } })
           : await tx.user.upsert({
               where: { email: created.email },
-              update: {},
-              create: { email: created.email },
+              update: { emailVerifiedAt: new Date() },
+              create: { email: created.email, emailVerifiedAt: new Date() },
             });
         await tx.passwordCredential.upsert({
           where: { userId: account.id },

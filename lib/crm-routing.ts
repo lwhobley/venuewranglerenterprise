@@ -8,6 +8,7 @@
  */
 
 export type WorkspaceView =
+  | 'hub'
   | 'dashboard'
   | 'pipeline'
   | 'contacts'
@@ -17,6 +18,7 @@ export type WorkspaceView =
   | 'templates';
 
 const WORKSPACE_VIEWS: WorkspaceView[] = [
+  'hub',
   'dashboard',
   'pipeline',
   'contacts',

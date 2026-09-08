@@ -1,16 +1,24 @@
 import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { assertCanManageDepartment, BASELINE_DEPARTMENT_AREAS } from '../../auth/access-control.helper';
+import { assertCanManageDepartment, BASELINE_DEPARTMENT_AREAS, resolveBaselineDepartmentAreas } from '../../auth/access-control.helper';
 import type { OperationalAreaType } from '@prisma/client';
-import { canManageVenue, isAdminRole } from '../../auth/roles';
+import { canManageVenue, isAdminRole, isCrossDepartmentRole } from '../../auth/roles';
 import type { CreateUserAreaOverrideDto } from './departments.dto';
 
 export const STANDARD_VENUE_DEPARTMENTS = [
+  { code: 'CULINARY', name: 'Culinary Production & Kitchen', defaultRoute: '/stadium/kds', visibilityScope: 'isolated' as const },
+  { code: 'BANQUET_CATERING', name: 'Catering & Banquets', defaultRoute: '/banquet-floor-plan', visibilityScope: 'isolated' as const },
+  { code: 'BEVERAGE', name: 'Beverage Operations', defaultRoute: '/stadium/stand-sheet', visibilityScope: 'isolated' as const },
+  { code: 'SUITES', name: 'Suites & Premium Hospitality', defaultRoute: '/stadium/suite-attendant', visibilityScope: 'isolated' as const },
+  { code: 'CONCESSIONS', name: 'Concessions & Hawkers', defaultRoute: '/stadium/stand-sheet', visibilityScope: 'isolated' as const },
+  { code: 'WAREHOUSE', name: 'Warehouse Operations', defaultRoute: '/stadium/distro-pickup', visibilityScope: 'broad' as const },
+  { code: 'PROCUREMENT', name: 'Procurement & Purchasing', defaultRoute: '/stadium/distro-pickup', visibilityScope: 'broad' as const },
+  // legacy aliases for backward compatibility
   { code: 'suites', name: 'Suites & Premium Hospitality', defaultRoute: '/stadium/suite-attendant', visibilityScope: 'isolated' as const },
   { code: 'clubs', name: 'Clubs & Premium Lounges', defaultRoute: '/stadium/suite-attendant', visibilityScope: 'isolated' as const },
   { code: 'catering', name: 'Catering & Banquets', defaultRoute: '/stadium/commissary', visibilityScope: 'isolated' as const },
   { code: 'concessions', name: 'Concessions & Hawkers', defaultRoute: '/stadium/stand-sheet', visibilityScope: 'isolated' as const },
-  { code: 'culinary', name: 'Culinary Production & Kitchen', defaultRoute: '/stadium/kds', visibilityScope: 'operational' as const },
+  { code: 'culinary', name: 'Culinary Production & Kitchen', defaultRoute: '/stadium/kds', visibilityScope: 'isolated' as const },
   { code: 'maintenance', name: 'Maintenance & Facilities', defaultRoute: '/stadium/labor-dashboard', visibilityScope: 'operational' as const },
   { code: 'engineering', name: 'Engineering & Utilities', defaultRoute: '/stadium/labor-dashboard', visibilityScope: 'operational' as const },
   { code: 'security', name: 'Security & Safety', defaultRoute: '/event-command-center', visibilityScope: 'operational' as const },
@@ -108,7 +116,7 @@ export class DepartmentsService {
     }> = [];
 
     for (const dept of departments) {
-      const areas = BASELINE_DEPARTMENT_AREAS[dept.code.toLowerCase()];
+      const areas = resolveBaselineDepartmentAreas(dept.code) ?? BASELINE_DEPARTMENT_AREAS[dept.code.toLowerCase()];
       if (!areas) continue;
       for (const area of areas) {
         if (seen.has(`${dept.id}:${area}`)) continue;
@@ -164,16 +172,36 @@ export class DepartmentsService {
       orderBy: [{ isPrimary: 'desc' }, { createdAt: 'asc' }],
     });
 
-    const isBroadAdmin = profile.allAccess || isAdminRole(profile.role);
+    const isCross = isCrossDepartmentRole(profile.role);
+    const warehouseMembership = memberships.some((m) =>
+      ['WAREHOUSE', 'PROCUREMENT'].includes(m.department.code.toUpperCase())
+    );
+    const isLeadershipOrWarehouse = isCross || warehouseMembership;
 
     if (memberships.length === 0) {
-      if (isBroadAdmin) {
+      if (isLeadershipOrWarehouse) {
+        const allDepts = await this.prisma.department.findMany({
+          where: { facilityId, active: true },
+          orderBy: { name: 'asc' },
+        });
+        const primaryDept = allDepts.find((d) => d.code === 'operations') ?? allDepts[0];
         return {
           assigned: true,
-          primaryDepartment: { id: 'admin-ops', code: 'operations', name: 'Operations', defaultRoute: '/(tabs)/home' },
-          departments: [{ id: 'admin-ops', code: 'operations', name: 'Operations', defaultRoute: '/(tabs)/home', isPrimary: true }],
+          primaryDepartment: primaryDept ? {
+            id: primaryDept.id,
+            code: primaryDept.code,
+            name: primaryDept.name,
+            defaultRoute: primaryDept.defaultRoute,
+          } : undefined,
+          departments: allDepts.map((d) => ({
+            id: d.id,
+            code: d.code,
+            name: d.name,
+            defaultRoute: d.defaultRoute,
+            isPrimary: d.id === primaryDept?.id,
+          })),
           allowedOperationalAreas: ['suite', 'club', 'catering', 'concession', 'culinary', 'kitchen', 'distro', 'maintenance', 'engineering', 'security', 'custodial', 'administrative', 'shared', 'other'],
-          defaultRoute: '/(tabs)/home',
+          defaultRoute: primaryDept?.defaultRoute ?? '/(tabs)/home',
           effectiveRole: profile.role,
         };
       }
@@ -187,13 +215,27 @@ export class DepartmentsService {
     }
 
     const primary = memberships.find((m) => m.isPrimary) ?? memberships[0];
-    const departments = memberships.map((m) => ({
+    let departments = memberships.map((m) => ({
       id: m.department.id,
       code: m.department.code,
       name: m.department.name,
       defaultRoute: m.department.defaultRoute,
       isPrimary: m.isPrimary,
     }));
+
+    if (isLeadershipOrWarehouse) {
+      const allFacilityDepts = await this.prisma.department.findMany({
+        where: { facilityId, active: true },
+        orderBy: { name: 'asc' },
+      });
+      departments = allFacilityDepts.map((d) => ({
+        id: d.id,
+        code: d.code,
+        name: d.name,
+        defaultRoute: d.defaultRoute,
+        isPrimary: d.id === primary?.department.id,
+      }));
+    }
 
     // Collect baseline areas
     const allowedAreas = new Set<string>(['shared']);
@@ -235,6 +277,23 @@ export class DepartmentsService {
    * Switches the user's primary department workspace preference.
    */
   async switchPrimaryDepartment(facilityId: string, userId: string, targetDepartmentId: string): Promise<void> {
+    const profile = await this.prisma.profile.findFirst({
+      where: {
+        userId,
+        venueId: facilityId,
+        OR: [{ membershipStatus: null }, { membershipStatus: 'active' }],
+      },
+      select: { id: true, role: true },
+    });
+
+    const isCross = isCrossDepartmentRole(profile?.role);
+    const targetDept = await this.prisma.department.findFirst({
+      where: { id: targetDepartmentId, facilityId, active: true },
+    });
+    if (!targetDept) {
+      throw new NotFoundException('Department not found');
+    }
+
     const membership = await this.prisma.departmentMembership.findFirst({
       where: {
         facilityId,
@@ -244,20 +303,46 @@ export class DepartmentsService {
       },
     });
 
-    if (!membership) {
+    if (!membership && !isCross) {
       throw new ForbiddenException('Cannot switch to unassigned department');
     }
 
-    await this.prisma.$transaction([
-      this.prisma.departmentMembership.updateMany({
+    await this.prisma.$transaction(async (tx) => {
+      await tx.departmentMembership.updateMany({
         where: { facilityId, userId },
         data: { isPrimary: false },
-      }),
-      this.prisma.departmentMembership.update({
-        where: { id: membership.id },
-        data: { isPrimary: true },
-      }),
-    ]);
+      });
+      if (membership) {
+        await tx.departmentMembership.update({
+          where: { id: membership.id },
+          data: { isPrimary: true },
+        });
+      } else if (isCross && profile) {
+        await tx.departmentMembership.upsert({
+          where: {
+            organizationId_facilityId_departmentId_userId: {
+              organizationId: targetDept.organizationId,
+              facilityId,
+              departmentId: targetDepartmentId,
+              userId,
+            },
+          },
+          create: {
+            organizationId: targetDept.organizationId,
+            facilityId,
+            departmentId: targetDepartmentId,
+            userId,
+            profileId: profile.id,
+            isPrimary: true,
+            isActive: true,
+          },
+          update: {
+            isPrimary: true,
+            isActive: true,
+          },
+        });
+      }
+    });
   }
 
   /**

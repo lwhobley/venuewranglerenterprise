@@ -33,7 +33,7 @@ export function DataErrorBanner() {
     const read = (): Failure[] =>
       cache
         .getAll()
-        .filter((query) => query.getObserversCount() > 0 && query.state.status === 'error')
+        .filter((query) => query.getObserversCount() > 0 && query.state.status === 'error' && !(query.meta as { silent?: boolean } | undefined)?.silent)
         .map((query) => {
           const error = query.state.error;
           // A 401 already clears the session and bounces to sign-in; surfacing it

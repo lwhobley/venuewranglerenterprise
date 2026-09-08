@@ -46,6 +46,7 @@ import { StadiumModule } from './modules/stadium/stadium.module';
 import { AsyncWriteModule } from './async-write/async-write.module';
 import { DepartmentsModule } from './modules/departments/departments.module';
 import { VmsModule } from './modules/vms/vms.module';
+import { BeoHubModule } from './modules/beo-hub/beo-hub.module';
 
 @Module({
   imports: [
@@ -84,6 +85,7 @@ import { VmsModule } from './modules/vms/vms.module';
     AsyncWriteModule,
     DepartmentsModule,
     VmsModule,
+    BeoHubModule,
   ],
   controllers: [
     HealthController,

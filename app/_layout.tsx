@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { AppState, ImageBackground, Platform, View } from 'react-native';
+import { AppState, Platform, StatusBar, View } from 'react-native';
 import { Stack } from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { QueryClientProvider } from '@tanstack/react-query';
@@ -14,7 +14,7 @@ import {
 } from '@expo-google-fonts/fraunces';
 import { A0PurchaseProvider } from '../lib/a0-purchases-stub';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
-import { makePaperTheme, useAppearanceStore, designPalettes } from '../lib/theme';
+import { makePaperTheme, useAppearanceStore, designPalettes, surfaceIvory } from '../lib/theme';
 import { SubscriptionGate } from '../components/SubscriptionGate';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { useAuthStore, type AuthState } from '../lib/auth-store';
@@ -124,7 +124,8 @@ export default function RootLayout() {
         <QueryClientProvider client={queryClient}>
           <PaperProvider theme={makePaperTheme(themeMode)}>
             <A0PurchaseProvider config={{ appUserId: venueId ?? undefined, debug }}>
-              <View style={{ flex: 1, width: '100%', backgroundColor: '#FFFFFF' }}>
+              <View style={{ flex: 1, width: '100%', backgroundColor: surfaceIvory }}>
+                <StatusBar barStyle="dark-content" backgroundColor={surfaceIvory} />
                 <SafeAreaView style={{ flex: 1, backgroundColor: 'transparent' }} edges={['top', 'left', 'right']}>
                   <ErrorBoundary>
                     <OfflineBanner />

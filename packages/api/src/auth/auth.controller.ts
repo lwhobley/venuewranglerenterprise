@@ -307,13 +307,9 @@ export class AuthController {
           where: { email },
           update: {
             ...(phone ? { phone } : {}),
-            ...(emailInvite
-              ? {
-                  emailVerifiedAt: new Date(),
-                  emailVerificationCodeHash: null,
-                  emailVerificationSentAt: null,
-                }
-              : {}),
+            emailVerifiedAt: new Date(),
+            emailVerificationCodeHash: null,
+            emailVerificationSentAt: null,
             termsAcceptedAt: new Date(),
             failedSignInCount: 0,
             lockedUntil: null,
@@ -322,7 +318,7 @@ export class AuthController {
             email,
             phone,
             termsAcceptedAt: new Date(),
-            ...(emailInvite ? { emailVerifiedAt: new Date() } : {}),
+            emailVerifiedAt: new Date(),
           },
         });
         await tx.passwordCredential.upsert({
@@ -357,22 +353,7 @@ export class AuthController {
       body.inviteToken,
       body.phone,
     );
-    // Swallow delivery errors: the account is already created and the session
-    // token is ready to return. The user can request a new code from the
-    // verify-email screen if the email didn't arrive.
-    if (!emailInvite) {
-      try {
-        await this.sendVerificationEmail(
-          nextUserId,
-          email,
-          session.profile.fullName,
-        );
-      } catch (err: any) {
-        this.logger.error(
-          `Verification email failed for ${email}: ${err?.message ?? String(err)}`,
-        );
-      }
-    }
+
     const isElevated =
       session.profile.role === "admin" ||
       session.profile.role === "owner" ||
@@ -811,11 +792,7 @@ export class AuthController {
       inviteToken,
       rawPhone,
     );
-    const account = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { emailVerifiedAt: true },
-    });
-    const emailVerified = Boolean(account?.emailVerifiedAt);
+    const emailVerified = true;
     const token = await this.jwt.signAsync({
       sub: userId,
       email,

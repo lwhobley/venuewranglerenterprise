@@ -39,6 +39,7 @@ export const FACILITY_SCOPED_MODELS: ReadonlySet<string> = new Set([
   'FacilityZone', 'Outlet', 'SubVenue', 'Terminal',
   'KitchenFulfillmentTicket', 'KitchenFulfillmentStatusHistory',
   'Department', 'DepartmentMembership', 'DepartmentAreaRule', 'UserAreaOverride',
+  'DepartmentInventoryItem', 'DepartmentInventoryMovement',
   'DailyTemporaryRoster', 'DailyTemporaryRosterWorker', 'DailyTemporaryRosterHistory',
   'VmsVendor', 'VmsStaffMember', 'VmsStaffingOrder',
   'VmsTimeAttendance', 'VmsInventorySyncLog', 'VmsAuditLog',
@@ -67,7 +68,7 @@ export const FACILITY_SCOPED_MODELS: ReadonlySet<string> = new Set([
  * schema is accounted for one way or the other.
  */
 export const FACILITY_ID_WILDCARD_MODELS: ReadonlySet<string> = new Set([
-  'ScopeAssignment', 'EnterpriseSsoGroupRoleMapping',
+  'ScopeAssignment', 'EnterpriseSsoGroupRoleMapping', 'CrmBeo',
 ]);
 
 export function scopeFieldForModel(model: string | undefined | null): 'venueId' | 'facilityId' | null {

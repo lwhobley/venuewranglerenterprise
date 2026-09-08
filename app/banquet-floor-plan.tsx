@@ -22,7 +22,18 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useVenueAuth } from '../lib/useVenueAuth';
 import { useMutation, useQueryState } from '../lib/railway-hooks';
 import { api } from '../lib/railway-api';
-import { colors, radius, spacing } from '../lib/theme';
+import {
+  chromeGold,
+  colors,
+  dept,
+  hairline,
+  ink,
+  radius,
+  shadowSoft,
+  spacing,
+  stone,
+  surfaceIvory,
+} from '../lib/theme';
 import {
   generateBanquetLayout,
   summarizeEquipment,
@@ -55,6 +66,7 @@ export interface CrmBeoRecord {
   setupStyle?: string | null;
   specialRequirements?: string | null;
   internalNotes?: string | null;
+  layoutJson?: any;
   status?: string;
   assignedRepId?: string | null;
   createdAt?: string;
@@ -157,8 +169,10 @@ export default function BanquetFloorPlanScreen() {
 
     setEventName(found.eventName ?? 'Banquet Event');
 
-    // 1. Check if saved banquet layout JSON exists in the BEO notes
-    const savedData = parseSavedBanquetData(found.internalNotes);
+    // 1. Check if structured layoutJson or saved banquet layout JSON exists in the BEO
+    const savedData = (found.layoutJson && typeof found.layoutJson === 'object' && Array.isArray((found.layoutJson as any).elements))
+      ? (found.layoutJson as any)
+      : parseSavedBanquetData(found.internalNotes);
     if (savedData && savedData.elements?.length) {
       setGuestCount(savedData.guestCount ?? found.guestCount ?? 0);
       setSetupStyle(savedData.setupStyle ?? 'banquet_rounds_10');
@@ -403,6 +417,7 @@ export default function BanquetFloorPlanScreen() {
         setupStyle: setupStyle.replace(/_/g, ' '),
         guestCount: guestCount > 0 ? guestCount : (found.guestCount ?? 0),
         internalNotes: updatedNotes,
+        layoutJson: payload as any,
       });
 
       setStatusMessage(`Banquet layout and duty roster saved successfully to BEO "${eventName || found.eventName}"!`);
@@ -561,10 +576,10 @@ export default function BanquetFloorPlanScreen() {
           <Button
             mode="outlined"
             icon="alert-circle-outline"
-            textColor="#B45309"
+            textColor={stone}
             disabled={isSaving || elements.length === 0}
             onPress={() => setShowDeployConfirm(true)}
-            style={{ borderRadius: radius.sharp, borderColor: '#FDE68A' }}
+            style={{ borderRadius: radius.control, borderColor: '#D8CFC0' }}
           >
             Deploy to Live Floor
           </Button>
@@ -572,11 +587,12 @@ export default function BanquetFloorPlanScreen() {
           <Button
             mode="contained"
             icon="content-save"
-            buttonColor="#074426"
+            buttonColor={chromeGold}
+            textColor={ink}
             loading={isSaving}
             disabled={isSaving || !selectedBeoId}
             onPress={() => void handleSaveToBEO()}
-            style={{ borderRadius: radius.sharp }}
+            style={{ borderRadius: radius.control }}
           >
             Save Layout to BEO
           </Button>
@@ -584,12 +600,10 @@ export default function BanquetFloorPlanScreen() {
       </View>
 
       {statusMessage ? (
-        <Card style={styles.statusCard}>
-          <Card.Content style={styles.statusCardContent}>
-            <MaterialCommunityIcons name="information" size={20} color="#074426" />
-            <Text style={styles.statusText}>{statusMessage}</Text>
-          </Card.Content>
-        </Card>
+        <View style={styles.statusCard}>
+          <MaterialCommunityIcons name="information" size={20} color={dept.banquets} />
+          <Text style={styles.statusText}>{statusMessage}</Text>
+        </View>
       ) : null}
 
       {!printMode ? (
@@ -599,8 +613,8 @@ export default function BanquetFloorPlanScreen() {
             <Card.Content style={{ gap: spacing.md }}>
               <View style={styles.cardHeaderRow}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                  <MaterialCommunityIcons name="clipboard-text-outline" size={22} color="#074426" />
-                  <Text variant="titleMedium" style={{ fontWeight: '700', color: '#074426' }}>
+                  <MaterialCommunityIcons name="clipboard-text-outline" size={22} color={ink} />
+                  <Text variant="titleMedium" style={{ fontWeight: '700', color: ink }}>
                     1. BEO Specifications
                   </Text>
                 </View>
@@ -682,17 +696,17 @@ export default function BanquetFloorPlanScreen() {
               <View style={styles.togglesRow}>
                 <View style={styles.toggleItem}>
                   <Text style={styles.toggleLabel}>Stage / Podium</Text>
-                  <Switch value={includeStage} onValueChange={setIncludeStage} color="#074426" />
+                  <Switch value={includeStage} onValueChange={setIncludeStage} color={dept.banquets} />
                 </View>
 
                 <View style={styles.toggleItem}>
                   <Text style={styles.toggleLabel}>Dance Floor</Text>
-                  <Switch value={includeDanceFloor} onValueChange={setIncludeDanceFloor} color="#074426" />
+                  <Switch value={includeDanceFloor} onValueChange={setIncludeDanceFloor} color={dept.banquets} />
                 </View>
 
                 <View style={styles.toggleItem}>
                   <Text style={styles.toggleLabel}>Head Table</Text>
-                  <Switch value={includeHeadTable} onValueChange={setIncludeHeadTable} color="#074426" />
+                  <Switch value={includeHeadTable} onValueChange={setIncludeHeadTable} color={dept.banquets} />
                 </View>
 
                 <View style={styles.toggleItem}>
@@ -731,9 +745,10 @@ export default function BanquetFloorPlanScreen() {
               <Button
                 mode="contained"
                 icon="auto-fix"
-                buttonColor="#074426"
+                buttonColor={chromeGold}
+                textColor={ink}
                 onPress={handleAutoBuild}
-                style={{ borderRadius: radius.sharp, alignSelf: 'flex-start' }}
+                style={{ borderRadius: radius.control, alignSelf: 'flex-start' }}
               >
                 Auto-Build Floor Plan from BEO
               </Button>
@@ -745,8 +760,8 @@ export default function BanquetFloorPlanScreen() {
             <Card.Content style={{ gap: spacing.md }}>
               <View style={styles.cardHeaderRow}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                  <MaterialCommunityIcons name="account-group" size={22} color="#074426" />
-                  <Text variant="titleMedium" style={{ fontWeight: '700', color: '#074426' }}>
+                  <MaterialCommunityIcons name="account-group" size={22} color={ink} />
+                  <Text variant="titleMedium" style={{ fontWeight: '700', color: ink }}>
                     2. Assigned Event Staff Roster (Working Titles for Today)
                   </Text>
                 </View>
@@ -756,7 +771,7 @@ export default function BanquetFloorPlanScreen() {
                     mode="contained"
                     compact
                     icon="account-clock"
-                    buttonColor="#1E3A8A"
+                    buttonColor={dept.beverage}
                     loading={isSyncingRoster}
                     disabled={isSyncingRoster || staffRoster.length === 0}
                     onPress={() => void handleSyncToDailyRoster()}
@@ -775,7 +790,7 @@ export default function BanquetFloorPlanScreen() {
                     mode="text"
                     compact
                     icon="refresh"
-                    textColor="#074426"
+                    textColor={stone}
                     disabled={guestCount <= 0}
                     onPress={() => setStaffRoster(generateSuggestedStaffRoster(guestCount, equipment))}
                   >
@@ -903,7 +918,7 @@ export default function BanquetFloorPlanScreen() {
               </Text>
               <ProgressBar
                 progress={capacityPct}
-                color={equipment.totalSeats >= guestCount && guestCount > 0 ? '#074426' : '#E65100'}
+                color={equipment.totalSeats >= guestCount && guestCount > 0 ? dept.banquets : '#E65100'}
                 style={{ height: 6, borderRadius: 3, marginTop: 4 }}
               />
             </View>
@@ -932,22 +947,22 @@ export default function BanquetFloorPlanScreen() {
         </>
       ) : (
         /* Print / Diagram Mode Header */
-        <Card style={[styles.controlCard, { backgroundColor: '#F8FAFC' }]}>
+        <Card style={[styles.controlCard, { backgroundColor: surfaceIvory }]}>
           <Card.Content>
-            <Text variant="titleLarge" style={{ fontWeight: '800', color: '#074426' }}>
+            <Text variant="titleLarge" style={{ fontWeight: '800', color: ink }}>
               {eventName || 'Banquet Event'} — Setup Specification Diagram
             </Text>
-            <Text style={{ color: colors.muted, marginTop: 2 }}>
+            <Text style={{ color: stone, marginTop: 2 }}>
               Guest Count: {guestCount} | Seats Placed: {equipment.totalSeats} | Style: {setupStyle.replace(/_/g, ' ')}
             </Text>
-            <Text style={{ fontSize: 12, color: colors.charcoal, marginTop: 4 }}>
+            <Text style={{ fontSize: 12, color: ink, marginTop: 4 }}>
               Equipment: {equipment.roundTableCount}x Rounds, {equipment.rectTableCount}x Rectangular, {equipment.buffetCount}x Buffets, {equipment.barCount}x Bars, {equipment.totalSeats}x Banquet Chairs
             </Text>
 
             {/* Staff Duty Lineup on Print Diagram */}
-            <View style={{ marginTop: spacing.md, paddingTop: spacing.sm, borderTopWidth: 1, borderColor: '#CBD5E1', gap: 6 }}>
+            <View style={{ marginTop: spacing.md, paddingTop: spacing.sm, borderTopWidth: 1, borderColor: '#D8CFC0', gap: 6 }}>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text style={{ fontWeight: '800', color: '#074426', fontSize: 13, textTransform: 'uppercase' }}>
+                <Text style={{ fontWeight: '800', color: ink, fontSize: 13, textTransform: 'uppercase' }}>
                   Pre-Shift Staffing Duty Lineup ({staffRoster.length} Staff Assigned)
                 </Text>
                 <Text style={{ fontSize: 10, color: '#B45309', fontWeight: '700' }}>
@@ -956,11 +971,11 @@ export default function BanquetFloorPlanScreen() {
               </View>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
                 {staffRoster.map((s) => (
-                  <View key={s.id} style={{ minWidth: 200, padding: 6, backgroundColor: '#FFFFFF', borderRadius: 4, borderWidth: 1, borderColor: '#E2E8F0' }}>
-                    <Text style={{ fontWeight: '700', fontSize: 11, color: '#074426' }}>
-                      {s.workingTitle}: <Text style={{ color: '#1E293B' }}>{s.staffName}</Text>
+                  <View key={s.id} style={{ minWidth: 200, padding: 6, backgroundColor: '#FFFFFF', borderRadius: 4, borderWidth: 1, borderColor: '#D8CFC0' }}>
+                    <Text style={{ fontWeight: '700', fontSize: 11, color: ink }}>
+                      {s.workingTitle}: <Text style={{ color: stone }}>{s.staffName}</Text>
                     </Text>
-                    <Text style={{ fontSize: 10, color: colors.muted }}>
+                    <Text style={{ fontSize: 10, color: stone }}>
                       Station: {s.assignedStation} {s.shiftHours ? `· ${s.shiftHours}` : ''}
                     </Text>
                   </View>
@@ -974,14 +989,14 @@ export default function BanquetFloorPlanScreen() {
       {/* Interactive Canvas Toolbar */}
       {!printMode ? (
         <View style={styles.canvasToolbar}>
-          <Text style={{ fontSize: 13, fontWeight: '700', color: '#074426' }}>
+          <Text style={{ fontSize: 13, fontWeight: '700', color: ink }}>
             Interactive Floor Map (Drag to Move)
           </Text>
 
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <Text style={{ fontSize: 12, color: colors.muted }}>Grid Snap</Text>
-              <Switch value={snapToGrid} onValueChange={setSnapToGrid} color="#074426" />
+              <Text style={{ fontSize: 12, color: stone }}>Grid Snap</Text>
+              <Switch value={snapToGrid} onValueChange={setSnapToGrid} color={chromeGold} />
             </View>
 
             <Button
@@ -1004,7 +1019,7 @@ export default function BanquetFloorPlanScreen() {
               mode="text"
               icon="cloud-download-outline"
               compact
-              textColor="#074426"
+              textColor={stone}
               onPress={handleLoadActiveVenueFloor}
             >
               Load Venue Active Floor
@@ -1051,8 +1066,8 @@ export default function BanquetFloorPlanScreen() {
           <Card.Content style={{ gap: spacing.sm }}>
             <View style={styles.cardHeaderRow}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <MaterialCommunityIcons name="table-furniture" size={22} color="#074426" />
-                <Text variant="titleMedium" style={{ fontWeight: '700', color: '#074426' }}>
+                <MaterialCommunityIcons name="table-furniture" size={22} color={ink} />
+                <Text variant="titleMedium" style={{ fontWeight: '700', color: ink }}>
                   Selected: {selectedElement.label}
                 </Text>
               </View>
@@ -1114,7 +1129,7 @@ export default function BanquetFloorPlanScreen() {
         <Dialog
           visible={showDeployConfirm}
           onDismiss={() => setShowDeployConfirm(false)}
-          style={{ backgroundColor: '#FFFFFF', borderRadius: 8 }}
+          style={{ backgroundColor: '#FFFFFF', borderRadius: radius.control }}
         >
           <Dialog.Title style={{ fontWeight: '800', color: '#B91C1C' }}>
             Replace Live Restaurant Floor Plan?
@@ -1124,7 +1139,7 @@ export default function BanquetFloorPlanScreen() {
               <Text style={{ fontWeight: '700', color: '#B91C1C' }}>CRITICAL WARNING: </Text>
               This action overwrites your venue's live operational restaurant floor plan (active table sections, reservations, and waitlist tables) with these banquet event tables.
             </Text>
-            <Text style={{ color: '#074426', fontSize: 13, lineHeight: 18, fontWeight: '600', backgroundColor: '#E8F5E9', padding: 8, borderRadius: 6 }}>
+            <Text style={{ color: ink, fontSize: 13, lineHeight: 18, fontWeight: '600', backgroundColor: surfaceIvory, borderWidth: hairline, borderColor: '#D8CFC0', padding: 8, borderRadius: 6 }}>
               Safety Backup: A timestamped copy of your existing active floor plan will be automatically saved to your archived floor plans so the original FOH layout can be restored at any time.
             </Text>
             <Text style={{ color: '#64748B', fontSize: 13, lineHeight: 18 }}>
@@ -1153,9 +1168,9 @@ export default function BanquetFloorPlanScreen() {
         <Dialog
           visible={showArchivesModal}
           onDismiss={() => setShowArchivesModal(false)}
-          style={{ backgroundColor: '#FFFFFF', maxWidth: 540, alignSelf: 'center', width: '92%' }}
+          style={{ backgroundColor: '#FFFFFF', maxWidth: 540, alignSelf: 'center', width: '92%', borderRadius: radius.control }}
         >
-          <Dialog.Title style={{ color: '#074426', fontWeight: '800' }}>
+          <Dialog.Title style={{ color: ink, fontWeight: '800' }}>
             Archived Floor Plan Backups
           </Dialog.Title>
           <Dialog.Content style={{ gap: 12, maxHeight: 400 }}>
@@ -1174,10 +1189,10 @@ export default function BanquetFloorPlanScreen() {
                       key={arch.id}
                       style={{
                         padding: 12,
-                        backgroundColor: '#F8FAFC',
-                        borderRadius: 6,
-                        borderWidth: 1,
-                        borderColor: '#E2E8F0',
+                        backgroundColor: '#FFFFFF',
+                        borderRadius: radius.control,
+                        borderWidth: hairline,
+                        borderColor: '#D8CFC0',
                         flexDirection: 'row',
                         alignItems: 'center',
                         justifyContent: 'space-between',
@@ -1194,7 +1209,8 @@ export default function BanquetFloorPlanScreen() {
                       <Button
                         mode="contained"
                         compact
-                        buttonColor="#074426"
+                        buttonColor={chromeGold}
+                        textColor={ink}
                         loading={isRestoring}
                         disabled={isRestoring}
                         onPress={() => void handleRestoreArchive(arch.id, arch.name)}
@@ -1263,9 +1279,9 @@ function MovableElement({
   const isBar = element.category === 'bar';
   const isHead = element.category === 'head_table';
 
-  let bgColor = '#E8F5E9'; // Light emerald
-  let borderColor = '#074426';
-  let textColor = '#074426';
+  let bgColor = '#FFFFFF';
+  let borderColor: string = dept.banquets;
+  let textColor: string = ink;
 
   if (isStage) {
     bgColor = '#1E293B';
@@ -1332,7 +1348,7 @@ function MovableElement({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F4FAFC',
+    backgroundColor: surfaceIvory,
   },
   contentContainer: {
     padding: spacing.md,
@@ -1346,9 +1362,10 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     backgroundColor: '#FFFFFF',
     padding: spacing.md,
-    borderRadius: radius.sharp,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderRadius: radius.control,
+    borderWidth: hairline,
+    borderColor: '#D8CFC0',
+    ...shadowSoft,
   },
   headerTitleRow: {
     flexDirection: 'row',
@@ -1359,11 +1376,11 @@ const styles = StyleSheet.create({
   },
   title: {
     fontWeight: '800',
-    color: '#074426',
+    color: ink,
     letterSpacing: -0.3,
   },
   subtitle: {
-    color: colors.muted,
+    color: stone,
   },
   headerActions: {
     flexDirection: 'row',
@@ -1371,27 +1388,33 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   statusCard: {
-    backgroundColor: '#E8F5E9',
-    borderColor: '#A5D6A7',
+    backgroundColor: '#FFFFFF',
+    borderColor: dept.banquets,
     borderWidth: 1,
-    borderRadius: radius.sharp,
+    borderRadius: radius.control,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    padding: spacing.sm,
+    ...shadowSoft,
   },
   statusCardContent: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.xs,
-    paddingVertical: 8,
+    paddingVertical: 4,
   },
   statusText: {
-    color: '#074426',
+    color: ink,
     fontWeight: '600',
     fontSize: 13,
   },
   controlCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: radius.sharp,
-    borderColor: '#E2E8F0',
-    borderWidth: 1,
+    borderRadius: radius.control,
+    borderColor: '#D8CFC0',
+    borderWidth: hairline,
+    ...shadowSoft,
   },
   cardHeaderRow: {
     flexDirection: 'row',
@@ -1404,15 +1427,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: '#FEF3C7',
+    backgroundColor: '#FFFFFF',
     padding: 8,
-    borderRadius: 4,
+    borderRadius: radius.control,
     borderWidth: 1,
-    borderColor: '#FDE68A',
+    borderColor: '#D8CFC0',
   },
   rosterNoticeText: {
     fontSize: 12,
-    color: '#92400E',
+    color: stone,
     fontWeight: '600',
     flex: 1,
   },
@@ -1428,7 +1451,7 @@ const styles = StyleSheet.create({
   fieldLabel: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#074426',
+    color: ink,
     marginBottom: 4,
   },
   togglesRow: {
@@ -1436,9 +1459,11 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: spacing.md,
     alignItems: 'center',
-    backgroundColor: '#F8FAFC',
+    backgroundColor: surfaceIvory,
     padding: spacing.sm,
-    borderRadius: radius.sharp,
+    borderRadius: radius.control,
+    borderWidth: hairline,
+    borderColor: '#D8CFC0',
   },
   toggleItem: {
     flexDirection: 'row',
@@ -1448,19 +1473,20 @@ const styles = StyleSheet.create({
   toggleLabel: {
     fontSize: 12,
     fontWeight: '600',
-    color: '#1E293B',
+    color: ink,
   },
   metricsBar: {
     flexDirection: 'row',
     backgroundColor: '#FFFFFF',
     padding: spacing.md,
-    borderRadius: radius.sharp,
-    borderColor: '#E2E8F0',
-    borderWidth: 1,
+    borderRadius: radius.control,
+    borderColor: '#D8CFC0',
+    borderWidth: hairline,
     alignItems: 'center',
     justifyContent: 'space-around',
     flexWrap: 'wrap',
     gap: spacing.sm,
+    ...shadowSoft,
   },
   metricItem: {
     minWidth: 120,
@@ -1468,20 +1494,20 @@ const styles = StyleSheet.create({
   },
   metricLabel: {
     fontSize: 11,
-    color: colors.muted,
+    color: stone,
     fontWeight: '600',
     textTransform: 'uppercase',
   },
   metricValue: {
     fontSize: 18,
     fontWeight: '800',
-    color: '#074426',
+    color: dept.banquets,
     marginTop: 2,
   },
   metricDivider: {
-    width: 1,
+    width: hairline,
     height: 32,
-    backgroundColor: '#E2E8F0',
+    backgroundColor: '#D8CFC0',
   },
   canvasToolbar: {
     flexDirection: 'row',
@@ -1494,11 +1520,12 @@ const styles = StyleSheet.create({
     width: CANVAS_WIDTH,
     height: CANVAS_HEIGHT,
     backgroundColor: '#FFFFFF',
-    borderRadius: 8,
-    borderWidth: 2,
-    borderColor: '#CBD5E1',
+    borderRadius: radius.control,
+    borderWidth: hairline,
+    borderColor: '#D8CFC0',
     position: 'relative',
     overflow: 'hidden',
+    ...shadowSoft,
   },
   emptyCanvasContainer: {
     flex: 1,
@@ -1511,11 +1538,11 @@ const styles = StyleSheet.create({
   emptyCanvasTitle: {
     fontSize: 17,
     fontWeight: '700',
-    color: '#64748B',
+    color: stone,
   },
   emptyCanvasSubtitle: {
     fontSize: 13,
-    color: '#94A3B8',
+    color: stone,
     textAlign: 'center',
     maxWidth: 440,
     lineHeight: 18,
@@ -1530,7 +1557,7 @@ const styles = StyleSheet.create({
   wallIndicatorText: {
     fontSize: 9,
     fontWeight: '800',
-    color: '#94A3B8',
+    color: stone,
     letterSpacing: 1.5,
   },
   elementBase: {
@@ -1551,7 +1578,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: -6,
     right: -6,
-    backgroundColor: '#074426',
+    backgroundColor: dept.banquets,
     borderRadius: 10,
     width: 18,
     height: 18,
@@ -1565,15 +1592,16 @@ const styles = StyleSheet.create({
   },
   inspectorCard: {
     backgroundColor: '#FFFFFF',
-    borderColor: '#3B82F6',
+    borderColor: dept.banquets,
     borderWidth: 1.5,
-    borderRadius: radius.sharp,
+    borderRadius: radius.control,
+    ...shadowSoft,
   },
   staffCard: {
-    backgroundColor: '#F8FAFC',
-    borderColor: '#E2E8F0',
-    borderWidth: 1,
-    borderRadius: 6,
+    backgroundColor: '#FFFFFF',
+    borderColor: '#D8CFC0',
+    borderWidth: hairline,
+    borderRadius: radius.control,
     padding: spacing.sm,
     gap: 6,
   },

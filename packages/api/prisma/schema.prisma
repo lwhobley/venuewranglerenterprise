@@ -22,6 +22,7 @@ enum Role {
   executive_chef
   warehouse_manager
   premium_manager
+  procurement_manager
   finance_viewer
   concourse_supervisor
   suite_manager
@@ -176,6 +177,10 @@ enum BeoStatus {
   confirmed
   amended
   cancelled
+  received
+  needs_review
+  in_service
+  closed
 }
 
 enum ContractStatus {
@@ -485,6 +490,8 @@ model Organization {
   departmentMemberships         DepartmentMembership[]
   departmentAreaRules           DepartmentAreaRule[]
   userAreaOverrides             UserAreaOverride[]
+  departmentInventoryItems      DepartmentInventoryItem[]
+  departmentInventoryMovements  DepartmentInventoryMovement[]
   dailyTemporaryRosters         DailyTemporaryRoster[]
   dailyTemporaryRosterWorkers   DailyTemporaryRosterWorker[]
   dailyTemporaryRosterHistories DailyTemporaryRosterHistory[]
@@ -539,6 +546,8 @@ model Facility {
   departmentMemberships         DepartmentMembership[]
   departmentAreaRules           DepartmentAreaRule[]
   userAreaOverrides             UserAreaOverride[]
+  departmentInventoryItems      DepartmentInventoryItem[]
+  departmentInventoryMovements  DepartmentInventoryMovement[]
   dailyTemporaryRosters         DailyTemporaryRoster[]
   dailyTemporaryRosterWorkers   DailyTemporaryRosterWorker[]
   dailyTemporaryRosterHistories DailyTemporaryRosterHistory[]
@@ -1681,7 +1690,22 @@ model CrmNote {
 model CrmBeo {
   id                  String          @id @default(cuid())
   venueId             String
+  facilityId          String?
   leadId              String?
+  eventId             String?
+  spaceId             String?
+  externalSource      String?
+  externalId          String?
+  serviceDate         String?
+  loadInAt            DateTime?
+  serviceStartAt      DateTime?
+  serviceEndAt        DateTime?
+  loadOutAt           DateTime?
+  departmentSlices    Json?
+  layoutJson          Json?
+  sourcePayload       Json?
+  sourceFileUrl       String?
+  sourceUpdatedAt     DateTime?
   eventName           String
   eventDate           DateTime?
   eventType           String?
@@ -1703,14 +1727,19 @@ model CrmBeo {
   updatedAt           DateTime        @updatedAt
   venue               Venue           @relation(fields: [venueId], references: [id], onDelete: Cascade)
   lead                CrmLead?        @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  event               VenueEvent?     @relation(fields: [eventId], references: [id], onDelete: SetNull)
   /**
    * Operational suite orders raised against this sales BEO.
    */
   suiteOrders         SuiteBeoOrder[]
 
+  @@unique([venueId, externalSource, externalId])
   @@index([venueId])
   @@index([leadId])
   @@index([venueId, status])
+  @@index([venueId, serviceDate])
+  @@index([venueId, eventId])
+  @@index([facilityId, spaceId, serviceStartAt])
 }
 
 model CrmContract {
@@ -2189,6 +2218,7 @@ model VenueEvent {
   closeout            EventCloseout?
   planSnapshot        EventPlanSnapshot?
   beoReports          EventBeoReport[]
+  crmBeos             CrmBeo[]
 
   @@unique([venueId, eventCode])
   @@index([venueId, startsAt])
@@ -2821,22 +2851,29 @@ model StandSheet {
 }
 
 model InventoryTransferRequest {
-  id             String         @id @default(cuid())
-  organizationId String
-  facilityId     String
-  fromOutletId   String
-  toOutletId     String
-  eventId        String?
-  requestedBy    String?
-  status         TransferStatus @default(pending)
-  items          Json
-  createdAt      DateTime       @default(now())
-  completedAt    DateTime?
-  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  facility       Facility       @relation(fields: [organizationId, facilityId], references: [organizationId, id], onDelete: Cascade)
+  id               String         @id @default(cuid())
+  organizationId   String
+  facilityId       String
+  fromOutletId     String?
+  toOutletId       String?
+  fromDepartmentId String?
+  toDepartmentId   String?
+  approvedBy       String?
+  eventId          String?
+  requestedBy      String?
+  status           TransferStatus @default(pending)
+  items            Json
+  createdAt        DateTime       @default(now())
+  completedAt      DateTime?
+  organization     Organization   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  facility         Facility       @relation(fields: [organizationId, facilityId], references: [organizationId, id], onDelete: Cascade)
+  fromDepartment   Department?    @relation("TransferFromDept", fields: [fromDepartmentId], references: [id], onDelete: SetNull)
+  toDepartment     Department?    @relation("TransferToDept", fields: [toDepartmentId], references: [id], onDelete: SetNull)
 
   @@index([organizationId, facilityId, status])
   @@index([toOutletId, createdAt])
+  @@index([fromDepartmentId, status])
+  @@index([toDepartmentId, status])
 }
 
 model HawkerVendorSession {
@@ -3176,8 +3213,12 @@ model Department {
   facility      Facility               @relation(fields: [organizationId, facilityId], references: [organizationId, id], onDelete: Cascade)
   memberships   DepartmentMembership[]
   areaRules     DepartmentAreaRule[]
-  userOverrides UserAreaOverride[]
-  dailyRosters  DailyTemporaryRoster[]
+  userOverrides         UserAreaOverride[]
+  dailyRosters          DailyTemporaryRoster[]
+  inventoryItems        DepartmentInventoryItem[]
+  inventoryMovements    DepartmentInventoryMovement[]
+  transfersFrom         InventoryTransferRequest[] @relation("TransferFromDept")
+  transfersTo           InventoryTransferRequest[] @relation("TransferToDept")
 
   @@unique([organizationId, facilityId, code])
   @@unique([organizationId, facilityId, id])
@@ -3259,6 +3300,60 @@ model UserAreaOverride {
 
   @@index([facilityId, userId, active, expiresAt])
   @@index([departmentId])
+}
+
+model DepartmentInventoryItem {
+  id             String                      @id @default(cuid())
+  organizationId String
+  facilityId     String
+  departmentId   String
+  sku            String
+  name           String
+  unit           String
+  onHand         Float                       @default(0)
+  par            Float                       @default(0)
+  reserved       Float                       @default(0)
+  costCents      Int?
+  location       String?
+  category       String?
+  status         String                      @default("active")
+  needsReview    Boolean                     @default(false)
+  createdAt      DateTime                    @default(now())
+  updatedAt      DateTime                    @updatedAt
+
+  organization   Organization                @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  facility       Facility                    @relation(fields: [organizationId, facilityId], references: [organizationId, id], onDelete: Cascade)
+  department     Department                  @relation(fields: [organizationId, facilityId, departmentId], references: [organizationId, facilityId, id], onDelete: Restrict)
+  movements      DepartmentInventoryMovement[]
+
+  @@unique([facilityId, departmentId, sku])
+  @@index([facilityId, departmentId])
+  @@index([departmentId, name])
+  @@index([facilityId, status])
+}
+
+model DepartmentInventoryMovement {
+  id             String                  @id @default(cuid())
+  organizationId String
+  facilityId     String
+  departmentId   String
+  itemId         String
+  movementType   String
+  quantity       Float
+  previousOnHand Float
+  newOnHand      Float
+  referenceId    String?
+  notes          String?
+  actorId        String?
+  createdAt      DateTime                @default(now())
+
+  organization   Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  facility       Facility                @relation(fields: [organizationId, facilityId], references: [organizationId, id], onDelete: Cascade)
+  department     Department              @relation(fields: [organizationId, facilityId, departmentId], references: [organizationId, facilityId, id], onDelete: Restrict)
+  item           DepartmentInventoryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@index([facilityId, departmentId])
+  @@index([itemId, createdAt])
 }
 
 model DailyTemporaryRoster {

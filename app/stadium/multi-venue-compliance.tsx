@@ -28,30 +28,30 @@ export default function MultiVenueComplianceScreen() {
       showsVerticalScrollIndicator={false}
     >
       {/* Header Banner */}
-      <View style={[styles.headerBanner, { backgroundColor: '#074426' }]}>
+      <View style={[styles.headerBanner, { backgroundColor: palette.surface, borderBottomWidth: 1, borderColor: palette.border }]}>
         <View style={styles.headerTopRow}>
           <Pressable
             onPress={() => router.back()}
             style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1, flexDirection: 'row', alignItems: 'center', gap: 6 })}
           >
-            <MaterialCommunityIcons name="arrow-left" size={20} color="#FFFFFF" />
-            <CommandText palette={palette} variant="label" style={{ color: '#B6D6BE' }}>
+            <MaterialCommunityIcons name="arrow-left" size={20} color={palette.charcoal} />
+            <CommandText palette={palette} variant="label" style={{ color: palette.muted }}>
               BACK
             </CommandText>
           </Pressable>
 
           <View style={styles.liveIndicator}>
             <View style={styles.liveDot} />
-            <CommandText palette={palette} variant="caption" style={{ color: '#FFFFFF', fontWeight: '800' }}>
+            <CommandText palette={palette} variant="caption" style={{ color: palette.charcoal, fontWeight: '800' }}>
               COMPLIANCE OVERVIEW
             </CommandText>
           </View>
         </View>
 
-        <CommandText palette={palette} variant="hero" style={{ color: '#FFFFFF', marginTop: spacing.xs }}>
+        <CommandText palette={palette} variant="hero" style={{ color: palette.charcoal, marginTop: spacing.xs }}>
           Multi-Venue Compliance Command
         </CommandText>
-        <CommandText palette={palette} variant="body" style={{ color: '#D9EBDD', marginTop: 2 }}>
+        <CommandText palette={palette} variant="body" style={{ color: palette.muted, marginTop: 2 }}>
           Enterprise oversight across stadiums, arenas, and convention centers. Monitoring Union CBAs, meal break penalties, cross-venue clopening conflicts, and alcohol/food certifications.
         </CommandText>
       </View>

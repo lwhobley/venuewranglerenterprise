@@ -127,6 +127,9 @@ export class KitchenDistroFulfillmentController {
       }
       return;
     }
+    if (['server', 'staff'].includes(scope.role)) {
+      return;
+    }
     throw new ForbiddenException('Operational stadium access is required.');
   }
 

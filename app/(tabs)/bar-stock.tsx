@@ -8,7 +8,22 @@ import * as ImagePicker from 'expo-image-picker';
 import { useAction, useMutation, useQuery } from '../../lib/railway-hooks';
 import { api } from '../../lib/railway-api';
 import type { Id } from '../../lib/ids';
-import { accents, colors, radius, spacing } from '../../lib/theme';
+import {
+  accents,
+  chromeGold,
+  colors,
+  dept,
+  deptTint,
+  hairline,
+  ink,
+  radius,
+  shadowSoft,
+  spacing,
+  statusColors,
+  stone,
+  surfaceIvory,
+} from '../../lib/theme';
+import { StatusChip } from '../../components/HudPrimitives';
 import { useVenueAuth } from '../../lib/useVenueAuth';
 import { asArray, errorMessage } from '../../lib/format';
 import { useI18n } from '../../lib/i18n';
@@ -1242,21 +1257,21 @@ export default function BarStockScreen() {
         </Card>
 
         {/* Inventory Item Listing */}
-        <Card style={{ backgroundColor: colors.surface, borderRadius: radius.sharp }}>
+        <Card style={{ backgroundColor: '#FFFFFF', borderRadius: radius.control, borderWidth: hairline, borderColor: '#D8CFC0', ...shadowSoft }}>
           <Card.Content style={{ gap: spacing.sm }}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Text variant="titleMedium" style={{ fontWeight: '700' }}>
+              <Text variant="titleMedium" style={{ fontWeight: '800', color: ink }}>
                 Stock Catalog ({items.length} items)
               </Text>
               {activeLocation !== 'all' && (
-                <Chip compact style={{ backgroundColor: accents[0].bg }}>
-                  {activeLocation}
+                <Chip compact style={{ backgroundColor: surfaceIvory, borderWidth: hairline, borderColor: '#D8CFC0' }}>
+                  <Text style={{ color: ink, fontWeight: '700', fontSize: 11 }}>{activeLocation}</Text>
                 </Chip>
               )}
             </View>
 
             {items.length === 0 ? (
-              <Text style={{ color: colors.muted, paddingVertical: spacing.md, textAlign: 'center' }}>
+              <Text style={{ color: stone, paddingVertical: spacing.md, textAlign: 'center' }}>
                 No items match your active filter.
               </Text>
             ) : (
@@ -1265,79 +1280,108 @@ export default function BarStockScreen() {
                 const isBelowPar = item.onHand <= effectivePar;
                 const isCritical = item.onHand === 0;
 
+                const isBev = beverageCategories.includes(item.category as any);
+                const isFood = foodCategories.includes(item.category as any);
+                const itemRailTint = isBev
+                  ? dept.beverage
+                  : isFood
+                  ? dept.culinary
+                  : (item.area && /suite/i.test(item.area))
+                  ? dept.suites
+                  : (item.area && /concession|stand/i.test(item.area))
+                  ? dept.concessions
+                  : dept.warehouse;
+
                 return (
-                  <View key={item._id} style={{ borderTopWidth: 1, borderTopColor: colors.border, paddingTop: spacing.sm, gap: 4 }}>
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: spacing.sm }}>
-                      <View style={{ flex: 1 }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                          <Text style={{ fontWeight: '800', fontSize: 14 }}>{item.name}</Text>
-                          {item.sku ? <Text style={{ color: colors.muted, fontSize: 11 }}>[{item.sku}]</Text> : null}
-                        </View>
-                        <Text style={{ color: colors.muted, fontSize: 12 }}>
-                          {item.category} · Location: <Text style={{ fontWeight: '700', color: colors.charcoal }}>{item.area ?? 'Main Warehouse'}</Text> · {money(item.unitCostCents)}/{item.unit}
-                        </Text>
-                      </View>
-                      <View style={{ alignItems: 'flex-end', gap: 2 }}>
-                        <Chip compact style={{ backgroundColor: isCritical ? '#EF4444' : isBelowPar ? accents[4].bg : accents[2].bg }}>
-                          <Text style={{ color: isCritical ? '#fff' : isBelowPar ? accents[4].fg : accents[2].fg, fontWeight: '700' }}>
-                            {item.onHand} / {effectivePar} {item.unit}
+                  <View
+                    key={item._id}
+                    style={{
+                      borderRadius: radius.control,
+                      borderWidth: hairline,
+                      borderColor: '#D8CFC0',
+                      backgroundColor: '#FFFFFF',
+                      flexDirection: 'row',
+                      overflow: 'hidden',
+                      marginTop: spacing.xs,
+                      ...shadowSoft,
+                    }}
+                  >
+                    {/* 4px Department Category Left Rail */}
+                    <View style={{ width: 4, backgroundColor: itemRailTint }} />
+
+                    <View style={{ flex: 1, padding: 12, gap: 4 }}>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: spacing.sm, alignItems: 'flex-start' }}>
+                        <View style={{ flex: 1 }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <Text style={{ fontWeight: '700', fontSize: 14, color: ink }}>{item.name}</Text>
+                            {item.sku ? <Text style={{ color: stone, fontSize: 11 }}>[{item.sku}]</Text> : null}
+                          </View>
+                          <Text style={{ color: stone, fontSize: 12 }}>
+                            {item.category} · Location: <Text style={{ fontWeight: '600', color: ink }}>{item.area ?? 'Main Warehouse'}</Text> · {money(item.unitCostCents)}/{item.unit}
                           </Text>
-                        </Chip>
-                        {eventParMultiplier > 1 && (
-                          <Text style={{ fontSize: 10, color: colors.muted }}>Base Par: {item.parLevel}</Text>
-                        )}
+                        </View>
+                        <View style={{ alignItems: 'flex-end', gap: 2 }}>
+                          <StatusChip
+                            status={isCritical ? 'alert' : isBelowPar ? 'needs_review' : 'confirmed'}
+                            label={isCritical ? '0 / OUT' : `${item.onHand} / ${effectivePar} ${item.unit}`}
+                            size="small"
+                          />
+                          {eventParMultiplier > 1 && (
+                            <Text style={{ fontSize: 10, color: stone }}>Base Par: {item.parLevel}</Text>
+                          )}
+                        </View>
                       </View>
+
+                      {/* Action Bar per Item */}
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+                        <Button compact mode="outlined" textColor={chromeGold} onPress={() => { setCountMode(true); setCountIndex(Math.max(0, countItems.findIndex((row) => row._id === item._id))); setCountValue(String(item.onHand)); setMessage(null); }}>
+                          Count
+                        </Button>
+                        <Button compact mode="outlined" textColor={dept.banquets} onPress={() => void recordInventoryMovement(item._id, 'received', 1)}>
+                          +1 In
+                        </Button>
+                        <Button compact mode="outlined" textColor={dept.concessions} onPress={() => setWasteItem(item)}>
+                          Waste
+                        </Button>
+                        <Button compact mode="outlined" textColor={dept.beverage} onPress={() => { setTransferItem(item); setTransferFromArea(item.area ?? 'Main Warehouse'); }}>
+                          Transfer
+                        </Button>
+                        <Button compact mode="outlined" textColor={stone} onPress={() => setHistoryItemId(historyItemId === item._id ? null : item._id)}>
+                          {historyItemId === item._id ? 'Hide Log' : 'History'}
+                        </Button>
+                        <Button compact mode="outlined" textColor={stone} onPress={() => {
+                          if (editCostItemId === item._id) { setEditCostItemId(null); return; }
+                          setEditCostItemId(item._id);
+                          setEditCostValue(item.unitCostCents != null ? (item.unitCostCents / 100).toFixed(2) : '');
+                        }}>
+                          Cost
+                        </Button>
+                      </View>
+
+                      {/* Inline Cost Editor */}
+                      {editCostItemId === item._id && (
+                        <View style={{ flexDirection: 'row', gap: spacing.sm, paddingTop: spacing.xs }}>
+                          <TextInput
+                            label="New Unit Cost ($)"
+                            value={editCostValue}
+                            onChangeText={setEditCostValue}
+                            keyboardType="numeric"
+                            mode="outlined"
+                            dense
+                            style={{ flex: 1, backgroundColor: '#FFFFFF' }}
+                          />
+                          <Button compact mode="contained" buttonColor={chromeGold} textColor={ink} onPress={() => void saveCostUpdate(item._id)}>Save</Button>
+                          <Button compact mode="text" textColor={stone} onPress={() => setEditCostItemId(null)}>Cancel</Button>
+                        </View>
+                      )}
+
+                      {/* Inline Movement Timeline */}
+                      {historyItemId === item._id && venue?.id && (
+                        <View style={{ paddingLeft: spacing.sm, paddingTop: spacing.xs }}>
+                          <MovementTimeline itemId={item._id} />
+                        </View>
+                      )}
                     </View>
-
-                    {/* Action Bar per Item */}
-                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
-                      <Button compact mode="outlined" textColor={colors.primary} onPress={() => { setCountMode(true); setCountIndex(Math.max(0, countItems.findIndex((row) => row._id === item._id))); setCountValue(String(item.onHand)); setMessage(null); }}>
-                        Count
-                      </Button>
-                      <Button compact mode="outlined" textColor={colors.success} onPress={() => void recordInventoryMovement(item._id, 'received', 1)}>
-                        +1 In
-                      </Button>
-                      <Button compact mode="outlined" textColor={colors.danger} onPress={() => setWasteItem(item)}>
-                        Waste
-                      </Button>
-                      <Button compact mode="outlined" textColor="#4F46E5" onPress={() => { setTransferItem(item); setTransferFromArea(item.area ?? 'Main Warehouse'); }}>
-                        Transfer
-                      </Button>
-                      <Button compact mode="outlined" textColor={colors.muted} onPress={() => setHistoryItemId(historyItemId === item._id ? null : item._id)}>
-                        {historyItemId === item._id ? 'Hide Log' : 'History'}
-                      </Button>
-                      <Button compact mode="outlined" textColor={colors.muted} onPress={() => {
-                        if (editCostItemId === item._id) { setEditCostItemId(null); return; }
-                        setEditCostItemId(item._id);
-                        setEditCostValue(item.unitCostCents != null ? (item.unitCostCents / 100).toFixed(2) : '');
-                      }}>
-                        Cost
-                      </Button>
-                    </View>
-
-                    {/* Inline Cost Editor */}
-                    {editCostItemId === item._id && (
-                      <View style={{ flexDirection: 'row', gap: spacing.sm, paddingTop: spacing.xs }}>
-                        <TextInput
-                          label="New Unit Cost ($)"
-                          value={editCostValue}
-                          onChangeText={setEditCostValue}
-                          keyboardType="numeric"
-                          mode="outlined"
-                          dense
-                          style={{ flex: 1, backgroundColor: colors.surface }}
-                        />
-                        <Button compact mode="contained" buttonColor={colors.primary} onPress={() => void saveCostUpdate(item._id)}>Save</Button>
-                        <Button compact mode="text" textColor={colors.muted} onPress={() => setEditCostItemId(null)}>Cancel</Button>
-                      </View>
-                    )}
-
-                    {/* Inline Movement Timeline */}
-                    {historyItemId === item._id && venue?.id && (
-                      <View style={{ paddingLeft: spacing.sm, paddingTop: spacing.xs }}>
-                        <MovementTimeline itemId={item._id} />
-                      </View>
-                    )}
                   </View>
                 );
               })

@@ -1,7 +1,21 @@
 import { BadRequestException } from '@nestjs/common';
 
-export const ALLOWED_IMAGE_MIME = ['image/jpeg', 'image/png', 'image/webp', 'image/heic'] as const;
+export const ALLOWED_IMAGE_MIME = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'] as const;
 export type AllowedImageMime = (typeof ALLOWED_IMAGE_MIME)[number];
+
+const HEIC_BRANDS = new Set([
+  'heic',
+  'heix',
+  'heim',
+  'heis',
+  'hevc',
+  'hevx',
+  'heio',
+  'hevm',
+  'mif1',
+  'msf1',
+  'MiPr',
+]);
 
 /** Detect image MIME from magic bytes. Returns null when unrecognized. */
 export function detectImageMime(data: Buffer): AllowedImageMime | null {
@@ -28,11 +42,16 @@ export function detectImageMime(data: Buffer): AllowedImageMime | null {
   ) {
     return 'image/webp';
   }
-  // HEIC/HEIF: ISO BMFF with ftyp box and a heic/heif/mif1/msf1 brand.
+  // HEIC/HEIF: ISO BMFF with ftyp box and a recognized brand in major or compatible brands list.
   if (data.length >= 12 && data.toString('ascii', 4, 8) === 'ftyp') {
-    const brand = data.toString('ascii', 8, 12);
-    if (brand === 'heic' || brand === 'heif' || brand === 'mif1' || brand === 'msf1') {
-      return 'image/heic';
+    const ftypLength = data.readUInt32BE(0);
+    const boxEnd = Math.min(data.length, ftypLength > 0 ? ftypLength : data.length);
+    for (let offset = 8; offset + 4 <= boxEnd; offset += 4) {
+      if (offset === 12) continue; // minor_version field
+      const brand = data.toString('ascii', offset, offset + 4);
+      if (HEIC_BRANDS.has(brand)) {
+        return 'image/heic';
+      }
     }
   }
   return null;
@@ -53,7 +72,11 @@ export function assertAllowedImageBytes(
   if (claimedMime && claimedMime !== detected) {
     // Treat heif as interchangeable with heic for client labels.
     const claimedNorm = claimedMime === 'image/heif' ? 'image/heic' : claimedMime;
+    // On iOS, expo-image-picker may report image/jpeg or application/octet-stream for camera-roll HEIC photos.
     if (claimedNorm !== detected) {
+      if (detected === 'image/heic' && (claimedMime === 'image/jpeg' || claimedMime === 'application/octet-stream')) {
+        return 'image/heic';
+      }
       throw new BadRequestException('Image content does not match the declared type.');
     }
   }

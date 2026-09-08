@@ -138,16 +138,30 @@ function ScheduleScreen() {
         </Card>
       ) : canManage ? (
         <>
-          <SegmentedButtons
-            value={managerTab}
-            onValueChange={(v) => setManagerTab(v as 'calendar' | 'forecast' | 'requests' | 'blackouts')}
-            buttons={[
-              { value: 'calendar', label: t('schedule.tabCalendar') },
-              { value: 'forecast', label: t('schedule.tabForecast') },
-              { value: 'requests', label: t('schedule.tabRequests') },
-              { value: 'blackouts', label: t('schedule.tabBlackouts') },
-            ]}
-          />
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm }}>
+            {[
+              { key: 'calendar' as const, label: t('schedule.tabCalendar'), icon: 'calendar' },
+              { key: 'forecast' as const, label: t('schedule.tabForecast'), icon: 'chart-bell-curve' },
+              { key: 'requests' as const, label: t('schedule.tabRequests'), icon: 'swap-horizontal' },
+              { key: 'blackouts' as const, label: t('schedule.tabBlackouts'), icon: 'calendar-remove' },
+            ].map((tab) => {
+              const active = managerTab === tab.key;
+              return (
+                <Button
+                  key={tab.key}
+                  mode={active ? 'contained' : 'outlined'}
+                  buttonColor={active ? colors.primary : undefined}
+                  textColor={active ? '#FFFFFF' : colors.charcoal}
+                  icon={tab.icon}
+                  onPress={() => setManagerTab(tab.key)}
+                  style={{ borderRadius: radius.sharp }}
+                  labelStyle={{ fontWeight: active ? '700' : '600' }}
+                >
+                  {tab.label}
+                </Button>
+              );
+            })}
+          </View>
           <AnimatedTab tabKey={managerTab}>
             {managerTab === 'calendar' ? (
               <ManagerCalendar venueId={venue.id} />

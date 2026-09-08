@@ -24,7 +24,27 @@ const OPERATIONAL_MANAGER_ROLES = [
   'executive_chef',
   'warehouse_manager',
   'premium_manager',
+  'procurement_manager',
 ] as const;
+
+/**
+ * Roles that see across all departments (leadership, directors, warehouse, and procurement).
+ */
+export const CROSS_DEPARTMENT_ROLES = [
+  'admin',
+  'owner',
+  'platform_admin',
+  'organization_admin',
+  'manager',
+  'fnb_director',
+  'event_manager',
+  'warehouse_manager',
+  'procurement_manager',
+] as const;
+
+export function isCrossDepartmentRole(role: RoleName) {
+  return CROSS_DEPARTMENT_ROLES.includes(role as (typeof CROSS_DEPARTMENT_ROLES)[number]);
+}
 
 /** Billing is an ownership-tier action, not something an operational manager does. */
 const BILLING_ROLES = ['admin', 'owner', 'platform_admin', 'organization_admin'] as const;

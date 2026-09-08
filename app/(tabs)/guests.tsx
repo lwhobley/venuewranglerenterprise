@@ -11,7 +11,7 @@ import { useVenueAuth } from '../../lib/useVenueAuth';
 import { asArray, errorMessage, formatFullDateTime, formatMoney, formatShortDate, formatShortDateTime, splitTags } from '../../lib/format';
 import { PremiumFeatureGate } from '../../components/PremiumFeatureGate';
 import { SectionHeader } from '../../components/AppCard';
-import { CrmSalesWorkspace } from '../../components/CrmSalesWorkspace';
+import { BeoHubWorkspace } from '../../components/BeoHubWorkspace';
 import { parseWorkspaceView } from '../../lib/crm-routing';
 import { useI18n } from '../../lib/i18n';
 
@@ -471,7 +471,7 @@ function GuestsScreenInner() {
             subtitle={t('guests.header.subtitle', { venue: venue?.name ?? t('guests.header.yourVenue') })}
           />
 
-          <CrmSalesWorkspace venueId={venue?.id} enabled={isReady && canManage} initialView={crmView} initialEventName={crmEvent} initialBeoId={crmBeoId} />
+          <BeoHubWorkspace venueId={venue?.id} enabled={isReady && canManage} initialView={crmView} initialEventName={crmEvent} initialBeoId={crmBeoId} />
 
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm }}>
             {[

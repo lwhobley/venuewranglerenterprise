@@ -152,7 +152,7 @@ export default function EventCommandCenterScreen() {
         </View>
       </View>
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm }}>
-        <Button mode="contained" buttonColor="#074426" icon="stadium" onPress={() => router.push('/stadium-map')}>Stadium Map</Button>
+        <Button mode="contained" buttonColor={palette.primary} textColor={palette.buttonText} icon="stadium" onPress={() => router.push('/stadium-map')}>Stadium Map</Button>
         <Button mode="outlined" textColor="#17643B" icon="shield-check" onPress={() => router.push('/stadium/multi-venue-compliance')}>Compliance Command</Button>
         <Button mode="outlined" textColor="#17643B" icon="cash-register" onPress={() => router.push('/stadium/pos-aggregator')}>POS Aggregator</Button>
       </View>

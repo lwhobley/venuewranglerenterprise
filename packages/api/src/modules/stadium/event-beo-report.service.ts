@@ -155,9 +155,26 @@ export interface EventBeoReportDocument {
     /** Chronological by delivery window. */
     rows: SuiteBeoReportRow[];
   };
+  hubBeos?: EventBeoReportHubBeoRow[];
   departments: ReportDepartmentSection[];
   totals: { lineCount: number; openLineCount: number; departmentCount: number };
   dataGaps: string[];
+}
+
+export interface EventBeoReportHubBeoRow {
+  id: string;
+  eventName: string;
+  spaceName: string;
+  spaceId?: string | null;
+  serviceDate: string | null;
+  loadInAt: string | null;
+  serviceStartAt: string | null;
+  serviceEndAt: string | null;
+  loadOutAt: string | null;
+  guestCount: number;
+  status: string;
+  externalSource: string | null;
+  externalId?: string | null;
 }
 
 /** Sorts chronologically, with untimed lines last and ties broken by title. */
@@ -220,7 +237,7 @@ export class EventBeoReportService {
     });
     if (!event) throw new NotFoundException('Stadium event not found.');
 
-    const [venue, suiteBeos, workspaces, readiness] = await Promise.all([
+    const [venue, suiteBeos, workspaces, readiness, hubBeoRecords] = await Promise.all([
       this.prisma.venue.findUniqueOrThrow({ where: { id: venueId }, select: { id: true, name: true } }),
       this.prisma.suiteBeoOrder.findMany({
         where: { facilityId: venueId, eventId },
@@ -273,6 +290,25 @@ export class EventBeoReportService {
           zone: { select: { code: true, name: true, department: true } },
         },
       }),
+      this.prisma.crmBeo.findMany({
+        where: { venueId, eventId },
+        orderBy: { serviceStartAt: 'asc' },
+        select: {
+          id: true,
+          eventName: true,
+          venueSpace: true,
+          spaceId: true,
+          serviceDate: true,
+          loadInAt: true,
+          serviceStartAt: true,
+          serviceEndAt: true,
+          loadOutAt: true,
+          guestCount: true,
+          status: true,
+          externalSource: true,
+          externalId: true,
+        },
+      }),
     ]);
 
     const sections = new Map<ReportDepartment, ReportLine[]>();
@@ -321,6 +357,34 @@ export class EventBeoReportService {
         detail: `${row.guestCount} guests · ${row.lineItems.length} catering items`,
         status: row.status,
         reference: row.beoNumber,
+      });
+    }
+
+    const hubBeos: EventBeoReportHubBeoRow[] = hubBeoRecords.map((b) => ({
+      id: b.id,
+      eventName: b.eventName,
+      spaceName: b.venueSpace || 'Event Space',
+      spaceId: b.spaceId,
+      serviceDate: b.serviceDate,
+      loadInAt: b.loadInAt ? b.loadInAt.toISOString() : null,
+      serviceStartAt: b.serviceStartAt ? b.serviceStartAt.toISOString() : null,
+      serviceEndAt: b.serviceEndAt ? b.serviceEndAt.toISOString() : null,
+      loadOutAt: b.loadOutAt ? b.loadOutAt.toISOString() : null,
+      guestCount: b.guestCount ?? 0,
+      status: b.status,
+      externalSource: b.externalSource,
+      externalId: b.externalId,
+    }));
+
+    for (const b of hubBeos) {
+      pushLine('catering_banquets', {
+        id: `beo:${b.id}`,
+        kind: 'task',
+        at: b.serviceStartAt,
+        title: `${b.spaceName} — ${b.eventName}`,
+        detail: `${b.guestCount} guests · ${b.status}`,
+        status: b.status === 'confirmed' || b.status === 'in_service' ? 'ready' : b.status,
+        reference: b.id,
       });
     }
 
@@ -433,6 +497,7 @@ export class EventBeoReportService {
         linkedToSalesCount: suiteRows.length - unlinkedSuiteCount,
         rows: suiteRows,
       },
+      hubBeos,
       departments,
       totals: {
         lineCount,

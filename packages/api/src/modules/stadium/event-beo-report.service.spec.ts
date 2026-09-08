@@ -49,6 +49,7 @@ function buildService(data: {
   suiteBeos?: unknown[];
   workspaces?: unknown[];
   readiness?: unknown[];
+  crmBeos?: unknown[];
 }) {
   const prisma = {
     venueEvent: { findFirst: vi.fn().mockResolvedValue(EVENT) },
@@ -56,6 +57,7 @@ function buildService(data: {
     suiteBeoOrder: { findMany: vi.fn().mockResolvedValue(data.suiteBeos ?? []) },
     eventExecutionWorkspace: { findMany: vi.fn().mockResolvedValue(data.workspaces ?? []) },
     eventFnbReadiness: { findMany: vi.fn().mockResolvedValue(data.readiness ?? []) },
+    crmBeo: { findMany: vi.fn().mockResolvedValue(data.crmBeos ?? []) },
   };
   return new EventBeoReportService(prisma as never);
 }
@@ -270,6 +272,57 @@ describe('EventBeoReportService.buildReport', () => {
     expect(report.suites.rows[0].lineItems[0].name).toBe('Crab tower');
   });
 
+  it('includes ingested hub BEOs with space, window, and status', async () => {
+    const service = buildService({
+      crmBeos: [
+        {
+          id: 'beo_hub_1',
+          beoNumber: 'BEO-2026-H1',
+          eventName: 'Board Banquet',
+          venueSpace: 'Ballroom A',
+          spaceId: 'space_ballroom_a',
+          guestCount: 85,
+          status: 'confirmed',
+          externalSource: 'ungerboeck',
+          externalId: 'ub_999',
+          loadInAt: new Date('2026-09-13T14:00:00Z'),
+          serviceStartAt: new Date('2026-09-13T17:00:00Z'),
+          serviceEndAt: new Date('2026-09-13T21:00:00Z'),
+          loadOutAt: new Date('2026-09-13T22:30:00Z'),
+          departmentSlices: {
+            banquetFloor: { tablesCount: 9 },
+          },
+        },
+      ],
+    });
+
+    const report = await service.buildReport('ven_1', 'evt_1');
+
+    expect(report.hubBeos).toHaveLength(1);
+    expect(report.hubBeos?.[0]).toMatchObject({
+      id: 'beo_hub_1',
+      eventName: 'Board Banquet',
+      spaceName: 'Ballroom A',
+      spaceId: 'space_ballroom_a',
+      guestCount: 85,
+      status: 'confirmed',
+      externalSource: 'ungerboeck',
+      externalId: 'ub_999',
+    });
+
+    const catering = report.departments.find((d) => d.code === 'catering_banquets');
+    expect(catering).toBeDefined();
+    expect(catering?.lines).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reference: 'beo_hub_1',
+          kind: 'task',
+          title: 'Ballroom A — Board Banquet',
+        }),
+      ])
+    );
+  });
+
   it('fails closed and returns null if scheduled advisory lock query throws a database error', async () => {
     const prisma = {
       venueEvent: {
@@ -280,6 +333,7 @@ describe('EventBeoReportService.buildReport', () => {
       suiteBeoOrder: { findMany: vi.fn().mockResolvedValue([]) },
       eventExecutionWorkspace: { findMany: vi.fn().mockResolvedValue([]) },
       eventFnbReadiness: { findMany: vi.fn().mockResolvedValue([]) },
+      crmBeo: { findMany: vi.fn().mockResolvedValue([]) },
       $transaction: vi.fn((cb: any) =>
         cb({
           $queryRaw: vi.fn().mockRejectedValue(new Error('connection timeout to postgres')),
@@ -303,6 +357,7 @@ describe('EventBeoReportService.buildReport', () => {
       suiteBeoOrder: { findMany: vi.fn().mockResolvedValue([]) },
       eventExecutionWorkspace: { findMany: vi.fn().mockResolvedValue([]) },
       eventFnbReadiness: { findMany: vi.fn().mockResolvedValue([]) },
+      crmBeo: { findMany: vi.fn().mockResolvedValue([]) },
       $transaction: vi.fn((cb: any) =>
         cb({
           $queryRaw: vi.fn().mockResolvedValue([{ acquired: false }]),

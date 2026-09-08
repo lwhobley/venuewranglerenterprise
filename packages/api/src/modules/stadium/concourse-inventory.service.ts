@@ -279,7 +279,7 @@ export class ConcourseInventoryService {
       const destSheet = await tx.standSheet.findFirst({
         where: {
           facilityId,
-          outletId: transfer.toOutletId,
+          outletId: transfer.toOutletId ?? undefined,
           ...eventFilter,
           status: { in: ['count_in_recorded', 'active_event'] },
         },
@@ -305,7 +305,7 @@ export class ConcourseInventoryService {
       const sourceSheet = await tx.standSheet.findFirst({
         where: {
           facilityId,
-          outletId: transfer.fromOutletId,
+          outletId: transfer.fromOutletId ?? undefined,
           ...eventFilter,
           status: { in: ['count_in_recorded', 'active_event'] },
         },

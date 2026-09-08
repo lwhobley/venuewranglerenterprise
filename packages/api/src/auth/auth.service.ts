@@ -45,11 +45,8 @@ export class AuthService {
   async issueSession(userId: string, email: string, fullName?: string, inviteToken?: string, rawPhone?: string) {
     // Enterprise licensing has no self-serve trial: issuing a session never
     // stamps a trial deadline. Profiles that already carry one keep it.
-    const account = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { emailVerifiedAt: true },
-    });
-    const emailVerified = Boolean(account?.emailVerifiedAt);
+    // All enterprise users are added directly by management; email verification is not required.
+    const emailVerified = true;
     
     const inviteValue = inviteToken?.trim();
     const invite = inviteValue

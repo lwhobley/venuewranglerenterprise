@@ -100,6 +100,11 @@ describe('VmsController', () => {
     await expect(controller.listVendors(staffScope)).rejects.toThrow(ForbiddenException);
   });
 
+  it('forbids request with undefined or missing scope cleanly with ForbiddenException', async () => {
+    await expect(controller.listVendors(undefined as any)).rejects.toThrow(ForbiddenException);
+    await expect(controller.listOrders(undefined as any)).rejects.toThrow(ForbiddenException);
+  });
+
   it('allows manager to create a staffing order', async () => {
     const res = await controller.createOrder(managerScope, {
       title: 'Game Day Concessions',

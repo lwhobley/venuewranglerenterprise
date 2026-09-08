@@ -552,16 +552,6 @@ function StaffScreen() {
             subtitle={t("staff.subtitle", {
               venue: venue?.name ?? t("common.yourVenue"),
             })}
-            trailing={
-              <Button
-                mode="outlined"
-                icon="account-check"
-                textColor={colors.primary}
-                onPress={() => router.push("/join-requests")}
-              >
-                {t("staff.joinRequests")}
-              </Button>
-            }
           />
 
           {/* Multi-Venue Compliance Command Tile */}

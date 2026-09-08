@@ -699,7 +699,8 @@ function EventsView({
               compact
               mode="contained"
               icon="table-furniture"
-              buttonColor="#074426"
+              buttonColor={colors.primary}
+              textColor={colors.buttonText}
               onPress={() => router.push(`/banquet-floor-plan?beoId=${beo._id}`)}
             >
               Floor Plan

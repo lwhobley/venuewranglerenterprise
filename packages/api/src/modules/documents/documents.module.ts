@@ -8,5 +8,6 @@ import { S3DocumentService } from './s3-document.service';
   imports: [PrismaModule, BillingModule],
   controllers: [DocumentsController],
   providers: [S3DocumentService],
+  exports: [S3DocumentService],
 })
 export class DocumentsModule {}

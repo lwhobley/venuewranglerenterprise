@@ -68,6 +68,7 @@ describe('canManageVenue', () => {
     'executive_chef',
     'warehouse_manager',
     'premium_manager',
+    'procurement_manager',
   ])('grants manager access to %s', (role) => {
     expect(canManageVenue(role)).toBe(true);
   });

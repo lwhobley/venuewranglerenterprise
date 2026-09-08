@@ -117,6 +117,8 @@ export class VmsIntegrationsService {
   async syncInventory(params: {
     organizationId: string;
     facilityId: string;
+    departmentId?: string;
+    writeToInventory?: boolean;
     system?: VmsSyncSystem;
     syncType?: string;
     customItems?: Array<{ sku: string; name: string; quantity: number }>;
@@ -124,73 +126,17 @@ export class VmsIntegrationsService {
     const system = params.system || VmsSyncSystem.yellow_dog;
     const syncType = params.syncType || 'shift_supplies';
 
-    // Baseline catalog of stadium workforce gear and equipment tracked in Yellow Dog
-    const defaultCatalog: ShiftSupplyItem[] = [
-      {
-        sku: 'YD-UNI-STAD-01',
-        name: 'Stadium Staff Polo (Black - Unisex)',
-        category: 'uniform',
-        allocatedQuantity: 140,
-        consumedQuantity: 132,
-        remainingStock: 420,
-        unitCostCents: 1850,
-      },
-      {
-        sku: 'YD-UNI-APRON-02',
-        name: 'Culinary Bistro Apron (Embroidery)',
-        category: 'uniform',
-        allocatedQuantity: 65,
-        consumedQuantity: 60,
-        remainingStock: 180,
-        unitCostCents: 1200,
-      },
-      {
-        sku: 'YD-EQ-POS-MOB-09',
-        name: 'Handheld Mobile Concession POS Device',
-        category: 'equipment',
-        allocatedQuantity: 45,
-        consumedQuantity: 45,
-        remainingStock: 60,
-        unitCostCents: 45000,
-      },
-      {
-        sku: 'YD-EQ-RADIO-VHF',
-        name: 'Motorola CP200d Stadium Two-Way Radio',
-        category: 'equipment',
-        allocatedQuantity: 30,
-        consumedQuantity: 30,
-        remainingStock: 50,
-        unitCostCents: 28000,
-      },
-      {
-        sku: 'YD-PPE-GLOVE-NITRILE',
-        name: 'Food Grade Nitrile Gloves Box (L)',
-        category: 'ppe',
-        allocatedQuantity: 25,
-        consumedQuantity: 22,
-        remainingStock: 340,
-        unitCostCents: 950,
-      },
-      {
-        sku: 'YD-PPE-EAR-PRO',
-        name: 'High-Decibel Concert Ear Plugs (Pairs)',
-        category: 'ppe',
-        allocatedQuantity: 100,
-        consumedQuantity: 95,
-        remainingStock: 800,
-        unitCostCents: 150,
-      },
-    ];
+    if (params.writeToInventory && !params.departmentId) {
+      throw new BadRequestException('Inventory sync writes require an explicit departmentId');
+    }
 
     let syncStatus: 'success' | 'partial' | 'failed' | 'demo_mode' = 'demo_mode';
-    let syncMessage = `Demonstration sync completed for ${defaultCatalog.length} items (using baseline inventory catalog). Configure live integration endpoint for direct cloud push.`;
+    let syncMessage = 'No live integration configured; remote returns zero stock.';
 
     const remoteUrl = process.env.YELLOW_DOG_API_URL;
     const remoteKey = process.env.YELLOW_DOG_API_KEY;
 
-    // Items returned by the remote system, when the sync is live. Kept separate
-    // from the baseline catalog so a demo run can never be mistaken for real
-    // stock levels.
+    // Items returned by the remote system, when the sync is live.
     let remoteSupplies: ShiftSupplyItem[] | null = null;
 
     if (remoteUrl && remoteKey) {
@@ -243,8 +189,9 @@ export class VmsIntegrationsService {
       }
     }
 
-    const supplies = remoteUrl && remoteKey ? (remoteSupplies ?? []) : remoteSupplies
-      ? remoteSupplies
+    // Do not invent stock. Empty remote ≠ invented stock.
+    const supplies: ShiftSupplyItem[] = (remoteUrl && remoteKey)
+      ? (remoteSupplies ?? [])
       : params.customItems
       ? params.customItems.map((item, idx) => ({
           sku: item.sku || `YD-CUSTOM-${idx + 1}`,
@@ -252,10 +199,44 @@ export class VmsIntegrationsService {
           category: 'equipment' as const,
           allocatedQuantity: item.quantity,
           consumedQuantity: Math.round(item.quantity * 0.9),
-          remainingStock: 100,
+          remainingStock: item.quantity,
           unitCostCents: 2000,
         }))
-      : defaultCatalog;
+      : [];
+
+    if (params.writeToInventory && params.departmentId && supplies.length > 0) {
+      for (const s of supplies) {
+        await this.prisma.departmentInventoryItem.upsert({
+          where: {
+            facilityId_departmentId_sku: {
+              facilityId: params.facilityId,
+              departmentId: params.departmentId,
+              sku: s.sku,
+            },
+          },
+          create: {
+            organizationId: params.organizationId,
+            facilityId: params.facilityId,
+            departmentId: params.departmentId,
+            sku: s.sku,
+            name: s.name,
+            unit: 'ea',
+            onHand: s.remainingStock,
+            par: s.allocatedQuantity,
+            costCents: s.unitCostCents,
+            category: s.category,
+            status: 'active',
+          },
+          update: {
+            name: s.name,
+            onHand: s.remainingStock,
+            par: s.allocatedQuantity,
+            costCents: s.unitCostCents,
+            category: s.category,
+          },
+        });
+      }
+    }
 
     // Record sync log in database
     await this.prisma.vmsInventorySyncLog.create({

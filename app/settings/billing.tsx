@@ -24,11 +24,11 @@ export default function BillingScreen() {
 
       <CommandSurface palette={palette} style={{ padding: spacing.lg, gap: spacing.md }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.md }}>
-          <View style={[styles.badgeIcon, { backgroundColor: '#E8F5E9' }]}>
-            <MaterialCommunityIcons name="domain" size={28} color="#074426" />
+          <View style={[styles.badgeIcon, { backgroundColor: palette.surface }]}>
+            <MaterialCommunityIcons name="domain" size={28} color={palette.success} />
           </View>
           <View style={{ flex: 1 }}>
-            <CommandText palette={palette} variant="label" style={{ color: '#074426' }}>
+            <CommandText palette={palette} variant="label" style={{ color: palette.success }}>
               ORGANIZATION PLAN
             </CommandText>
             <CommandText palette={palette} variant="title">

@@ -89,6 +89,17 @@ export const BASELINE_DEPARTMENT_AREAS: Record<string, Set<string>> = {
   ]),
 };
 
+export function resolveBaselineDepartmentAreas(code: string): Set<string> | undefined {
+  const upper = code.toUpperCase();
+  if (upper === 'CULINARY') return BASELINE_DEPARTMENT_AREAS.culinary;
+  if (upper === 'BANQUET_CATERING') return BASELINE_DEPARTMENT_AREAS.catering;
+  if (upper === 'BEVERAGE') return BASELINE_DEPARTMENT_AREAS.clubs;
+  if (upper === 'SUITES') return BASELINE_DEPARTMENT_AREAS.suites;
+  if (upper === 'CONCESSIONS') return BASELINE_DEPARTMENT_AREAS.concessions;
+  if (upper === 'WAREHOUSE' || upper === 'PROCUREMENT') return BASELINE_DEPARTMENT_AREAS.operations;
+  return BASELINE_DEPARTMENT_AREAS[code.toLowerCase()] || BASELINE_DEPARTMENT_AREAS[code];
+}
+
 /**
  * Pure evaluation function for in-memory and testable access verification.
  */
@@ -159,7 +170,7 @@ export function evaluateAccessRules(params: {
     if (!isBroadAdmin && !hasActiveOverride) {
       let areaPermitted = false;
       for (const dept of activeDepartmentCodes) {
-        const allowedAreas = BASELINE_DEPARTMENT_AREAS[dept.toLowerCase()];
+        const allowedAreas = resolveBaselineDepartmentAreas(dept);
         if (allowedAreas && allowedAreas.has(areaLower)) {
           areaPermitted = true;
           break;

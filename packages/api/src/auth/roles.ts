@@ -7,7 +7,27 @@ export function isAdminRole(role?: string | null): boolean {
 
 /** Venue-level manager access, including internal/support profiles. */
 export function canManageVenue(role?: string | null, allAccess = false): boolean {
-  return allAccess || isAdminRole(role) || ['event_manager', 'outlet_manager', 'executive_chef', 'warehouse_manager', 'premium_manager'].includes(role ?? '');
+  return allAccess || isAdminRole(role) || ['event_manager', 'outlet_manager', 'executive_chef', 'warehouse_manager', 'premium_manager', 'procurement_manager'].includes(role ?? '');
+}
+
+/**
+ * Roles that see across all departments (leadership, directors, warehouse, and procurement).
+ * All other roles (executive_chef, premium_manager, outlet_manager, etc.) remain strictly department-scoped.
+ */
+export const CROSS_DEPARTMENT_ROLES = [
+  'admin',
+  'owner',
+  'platform_admin',
+  'organization_admin',
+  'manager',
+  'fnb_director',
+  'event_manager',
+  'warehouse_manager',
+  'procurement_manager',
+] as const;
+
+export function isCrossDepartmentRole(role?: string | null): boolean {
+  return CROSS_DEPARTMENT_ROLES.includes((role ?? '') as any);
 }
 
 /**
@@ -79,6 +99,7 @@ export const ROLE_RANK: Record<string, number> = {
   executive_chef: 2,
   warehouse_manager: 2,
   premium_manager: 2,
+  procurement_manager: 2,
   owner: 3,
   admin: 3,
   platform_admin: 3,
