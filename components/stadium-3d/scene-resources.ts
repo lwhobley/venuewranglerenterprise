@@ -29,21 +29,32 @@ export function isolateMaterials(root: THREE.Object3D) {
   originals.forEach((material) => { if (!stillInUse.has(material)) material.dispose(); });
 }
 
-export function applyHighlights(root: THREE.Object3D, selectedId: string | null, states: Record<string, OperationalHighlightStatus>) {
+export function applyHighlights(
+  root: THREE.Object3D,
+  selectedId: string | null,
+  states: Record<string, OperationalHighlightStatus>,
+  selectedPulse = 1,
+) {
   root.traverse((object) => {
     const mesh = object as THREE.Mesh;
     if (!mesh.isMesh) return;
     const binding = findZoneByMeshName(mesh.name);
     if (!binding) return;
     const operational = states[binding.zoneId] ?? 'normal';
-    const status = selectedId === binding.zoneId && !['critical', 'attention'].includes(operational)
+    const isSelected = selectedId === binding.zoneId;
+    const status = isSelected && !['critical', 'attention'].includes(operational)
       ? 'selected' : operational;
     const color = getHighlightColor(status);
     for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
       const standard = material as THREE.MeshStandardMaterial;
       if (standard.isMeshStandardMaterial) {
         standard.emissive.set(color.emissiveColor);
-        standard.emissiveIntensity = color.intensity;
+        // Selection must remain obvious even when the zone keeps its critical
+        // or attention colour. The canvas varies selectedPulse to create the
+        // glow; unselected operational lighting stays completely stable.
+        standard.emissiveIntensity = isSelected
+          ? Math.max(color.intensity, 1.3) * selectedPulse
+          : color.intensity;
       }
     }
   });

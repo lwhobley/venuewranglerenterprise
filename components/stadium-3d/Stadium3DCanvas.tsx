@@ -404,6 +404,7 @@ function StadiumScene({
 
     // 9. Animation Render Loop
     let animationFrame = 0;
+    let lastGlowUpdate = 0;
 
     const animate = () => {
       if (disposed || failed) return;
@@ -419,6 +420,19 @@ function StadiumScene({
 
         const changed = controls.update();
         const moving = transitioning.current;
+
+        // Pulse only the selected stadium area. Emissive lighting makes the
+        // bound suite, club, seating, concession, or service geometry glow
+        // without adding an expensive post-processing pass on mobile GPUs.
+        const selectedZone = selectedZoneIdRef.current;
+        const now = performance.now();
+        const shouldUpdateGlow = Boolean(selectedZone) && !reducedMotionRef.current && now - lastGlowUpdate >= 33;
+        if (shouldUpdateGlow && modelRootRef.current) {
+          const pulse = 0.86 + ((Math.sin(now * 0.004) + 1) / 2) * 0.42;
+          applyHighlights(modelRootRef.current, selectedZone, highlightedZonesRef.current, pulse);
+          lastGlowUpdate = now;
+          needsRender.current = true;
+        }
 
         // Smoothly interpolate camera towards target preset
         if (transitioning.current) {

@@ -73,8 +73,19 @@ describe('bundled stadium asset contract', () => {
     const suite = scene.getObjectByName('Node_Suites_300_Balcony') as THREE.Mesh;
     const club = scene.getObjectByName('Node_Bowl_200_Club') as THREE.Mesh;
     expect(suite.material).not.toBe(club.material);
-    expect((suite.material as THREE.MeshStandardMaterial).emissiveIntensity).toBe(0.9);
+    expect((suite.material as THREE.MeshStandardMaterial).emissiveIntensity).toBe(1.3);
     expect((club.material as THREE.MeshStandardMaterial).emissiveIntensity).toBe(0);
+    disposeScene(scene);
+  });
+
+  it('pulses only the selected stadium area', async () => {
+    const { scene } = await loadModel();
+    isolateMaterials(scene);
+    applyHighlights(scene, 'zone-200-club', {}, 1.2);
+    const club = scene.getObjectByName('Node_Bowl_200_Club') as THREE.Mesh;
+    const suites = scene.getObjectByName('Node_Suites_300_Balcony') as THREE.Mesh;
+    expect((club.material as THREE.MeshStandardMaterial).emissiveIntensity).toBeCloseTo(1.56);
+    expect((suites.material as THREE.MeshStandardMaterial).emissiveIntensity).toBe(0);
     disposeScene(scene);
   });
 

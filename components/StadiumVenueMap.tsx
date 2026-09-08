@@ -42,11 +42,16 @@ export function StadiumVenueMap({
   const palette = useDesignTheme();
   const { width: windowWidth, isMobile } = useResponsive();
   const venueName = useAuthStore((state) => state.venue?.name);
+  const initialUnitId = initialSelectedUnitId ?? 'u-302';
 
   const [mobileTab, setMobileTab] = useState<'map' | 'directory'>('map');
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedZoneId, setSelectedZoneId] = useState<string>(initialZoneId ?? 'ALL');
-  const [selectedUnitId, setSelectedUnitId] = useState<string | null>(initialSelectedUnitId ?? 'u-302');
+  const [selectedZoneId, setSelectedZoneId] = useState<string>(() =>
+    initialZoneId
+      ?? COMPREHENSIVE_STADIUM_ZONES.find((zone) => zone.units.some((unit) => unit.id === initialUnitId))?.id
+      ?? 'ALL'
+  );
+  const [selectedUnitId, setSelectedUnitId] = useState<string | null>(initialUnitId);
   const [activeModalUnit, setActiveModalUnit] = useState<StadiumZoneItem | null>(null);
   const [viewPerspective, setViewPerspective] = useState<'3d_isometric' | '2d_plan'>(
     initialViewMode === '3d' ? '3d_isometric' : '2d_plan'
