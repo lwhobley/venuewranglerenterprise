@@ -27,7 +27,9 @@ export function useSwitchWorkspace() {
     mutationFn: async (departmentId: string) => {
       return apiRequest<{ success: boolean; switchedDepartmentId: string }>('/v1/departments/switch', {
         method: 'POST',
-        body: JSON.stringify({ departmentId }),
+        // apiRequest serializes the body itself; stringifying here too sends a
+        // JSON string literal, which the strict body parser rejects.
+        body: { departmentId },
       });
     },
     onSuccess: () => {

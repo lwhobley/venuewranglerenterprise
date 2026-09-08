@@ -64,17 +64,36 @@ export class TempStaffingService {
     return { salt, hash: hash.toString('hex') };
   }
 
-  private async credentialsFor(facilityId: string): Promise<{ pinCode: string; qrToken: string; pinLookupTag: string; qrLookupTag: string; pinSalt: string; pinHash: string; qrSalt: string; qrHash: string }> {
+  /**
+   * Issues a unique worker credential.
+   *
+   * `reserved` carries the lookup tags already drawn earlier in the same batch.
+   * The database check alone cannot see them — none of the batch's rows are
+   * persisted yet — so without it a PIN collision inside one import violates
+   * WorkerProfile_pinLookupTag_key and rolls the whole import back. The PIN
+   * space is 900k, so a 500-row import collides with itself about 13% of the
+   * time.
+   */
+  private async credentialsFor(facilityId: string, reserved?: Set<string>): Promise<{ pinCode: string; qrToken: string; pinLookupTag: string; qrLookupTag: string; pinSalt: string; pinHash: string; qrSalt: string; qrHash: string }> {
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const pinCode = String(randomInt(100_000, 1_000_000));
       const qrToken = `QR-${randomBytes(24).toString('base64url')}`;
       const pinLookupTag = this.lookupTag(facilityId, 'pin', pinCode);
       const qrLookupTag = this.lookupTag(facilityId, 'qr', qrToken);
+      if (reserved?.has(pinLookupTag) || reserved?.has(qrLookupTag)) continue;
+      // Claim synchronously, before the first await, so concurrent draws in the
+      // same batch cannot both pass the check on the same value.
+      reserved?.add(pinLookupTag);
+      reserved?.add(qrLookupTag);
       const existing = await this.prisma.workerProfile.findFirst({
         where: { facilityId, OR: [{ pinLookupTag }, { qrLookupTag }] },
         select: { id: true },
       });
-      if (existing) continue;
+      if (existing) {
+        reserved?.delete(pinLookupTag);
+        reserved?.delete(qrLookupTag);
+        continue;
+      }
       const [pin, qr] = await Promise.all([this.hashCredential(pinCode), this.hashCredential(qrToken)]);
       return { pinCode, qrToken, pinLookupTag, qrLookupTag, pinSalt: pin.salt, pinHash: pin.hash, qrSalt: qr.salt, qrHash: qr.hash };
     }
@@ -93,7 +112,8 @@ export class TempStaffingService {
       });
     }
 
-    const prepared = await Promise.all(rows.map(async (row) => ({ row, credential: await this.credentialsFor(facilityId) })));
+    const reserved = new Set<string>();
+    const prepared = await Promise.all(rows.map(async (row) => ({ row, credential: await this.credentialsFor(facilityId, reserved) })));
     const created = await this.prisma.$transaction(async (tx) => {
       await applyTenantSessionSettings(tx, {
         organizationId,

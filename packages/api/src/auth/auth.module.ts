@@ -2,7 +2,7 @@ import { Global, Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AuthGuard } from './auth.guard';
-import { AuthService } from './auth.service';
+import { AuthService, SESSION_DURATION_MS } from './auth.service';
 
 @Global()
 @Module({
@@ -22,7 +22,7 @@ import { AuthService } from './auth.service';
         const audience = config.get<string>('JWT_AUDIENCE', 'venue-wrangler-mobile');
         return {
           secret,
-          signOptions: { expiresIn: '8h', issuer, audience, algorithm: 'HS256' },
+          signOptions: { expiresIn: SESSION_DURATION_MS / 1000, issuer, audience, algorithm: 'HS256' },
           verifyOptions: { issuer, audience, algorithms: ['HS256'] },
         };
       },

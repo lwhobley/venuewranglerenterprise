@@ -145,7 +145,10 @@ export class TimeClockController {
             severity: 'danger',
             profileId: entry.profile.id,
             memberName: entry.profile.fullName,
-            detail: `Clocked in since ${entry.clockInAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.`,
+            // Render in the venue's zone like the late_clock_in alert above.
+            // toLocaleTimeString would use the server's zone (UTC on Cloud Run)
+            // and point the manager at the wrong shift.
+            detail: `Clocked in since ${minutesToTime(zonedMinutesOfDay(tz, entry.clockInAt.getTime()))}.`,
           });
         }
       }

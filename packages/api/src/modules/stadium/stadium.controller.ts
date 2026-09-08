@@ -379,7 +379,7 @@ export class StadiumController {
     try {
       return await withTenantTransaction(this.prisma, async (tx) => {
         if (body.clientMutationId) {
-          const existing = await tx.eventIssue.findFirst({ where: { organizationId, clientMutationId: body.clientMutationId } });
+          const existing = await tx.eventIssue.findFirst({ where: { venueId: scope.venueId, clientMutationId: body.clientMutationId } });
           if (existing) return existing;
         }
         const issue = await tx.eventIssue.create({ data: { organizationId, venueId: scope.venueId, eventId, outletId: body.outletId ?? null, issueType: body.issueType.trim(), severity: body.severity, title: body.title.trim(), description: body.description.trim(), reportedByUserId: scope.profileId, ownerUserId: body.ownerUserId?.trim() || null, clientMutationId: body.clientMutationId ?? null } });
@@ -388,7 +388,7 @@ export class StadiumController {
       }, { venueId: scope.venueId });
     } catch (error) {
       if ((error as { code?: string }).code === 'P2002' && body.clientMutationId) {
-        const existing = await this.prisma.eventIssue.findFirst({ where: { organizationId, clientMutationId: body.clientMutationId } });
+        const existing = await this.prisma.eventIssue.findFirst({ where: { venueId: scope.venueId, clientMutationId: body.clientMutationId } });
         if (existing) return existing;
       }
       throw error;

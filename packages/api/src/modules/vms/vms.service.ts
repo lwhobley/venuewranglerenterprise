@@ -1612,7 +1612,12 @@ export class VmsService {
       (r): r is typeof r & { staffMember: NonNullable<typeof r.staffMember> } => r.staffMember !== null,
     );
 
-    return this.integrationsService.generateAdpExportCsv(validRecords);
+    const facility = await this.prisma.facility.findUnique({
+      where: { id: facilityId },
+      select: { timezone: true },
+    });
+
+    return this.integrationsService.generateAdpExportCsv(validRecords, undefined, facility?.timezone ?? null);
   }
 
   async exportPayrollGusto(organizationId: string, facilityId: string) {

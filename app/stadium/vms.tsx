@@ -699,13 +699,16 @@ export default function VendorManagementSystemScreen() {
                   style={[styles.tableRow, { borderBottomColor: palette.border }]}
                 >
                   <View style={styles.col1}>
+                    {/* staffMember is null for an unfilled confirmed slot (the
+                        no-show sweep clears it), so every read here is guarded
+                        — the API labels the same case 'Unassigned Slot'. */}
                     <Text style={[styles.bold, { color: palette.charcoal }]}>
-                      {a.staffMember.firstName} {a.staffMember.lastName}
+                      {a.staffMember ? `${a.staffMember.firstName} ${a.staffMember.lastName}` : 'Unassigned Slot'}
                     </Text>
-                    <Text style={styles.rowSub}>ID: {a.staffMember.id.slice(-6)}</Text>
+                    <Text style={styles.rowSub}>ID: {a.staffMember ? a.staffMember.id.slice(-6) : '—'}</Text>
                   </View>
                   <Text style={[styles.col2, { color: palette.muted }]}>
-                    {a.staffMember.vendor?.name || 'Internal Roster'}
+                    {a.staffMember?.vendor?.name || 'Internal Roster'}
                   </Text>
                   <View style={styles.col3}>
                     <Text style={{ color: palette.charcoal }}>

@@ -2277,7 +2277,7 @@ model EventIssue {
   event            VenueEvent         @relation(fields: [eventId], references: [id], onDelete: Cascade)
   outlet           FnbOperationUnit?  @relation(fields: [outletId], references: [id], onDelete: SetNull)
 
-  @@unique([organizationId, clientMutationId])
+  @@unique([venueId, clientMutationId])
   @@index([organizationId, venueId, eventId, status])
   @@index([venueId, eventId, severity, status])
   @@index([outletId])

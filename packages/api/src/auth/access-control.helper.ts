@@ -138,11 +138,31 @@ export function evaluateAccessRules(params: {
           return { allowed: false, reason: 'Payroll, financial, and billing data require explicit management authorization' };
         }
       }
-    } else if (sensitiveCategory === 'hr_disciplinary' || sensitiveCategory === 'employee_pii') {
+    } else if (sensitiveCategory === 'payment_data') {
+      const allowedBillingRoles = ['owner', 'admin', 'platform_admin', 'organization_admin'];
+      if (!allAccess && !allowedBillingRoles.includes(role ?? '')) {
+        if (!(role === 'finance_viewer' && action === 'view')) {
+          return { allowed: false, reason: 'Payment data requires explicit financial authorization' };
+        }
+      }
+    } else if (
+      sensitiveCategory === 'hr_disciplinary' ||
+      sensitiveCategory === 'employee_pii' ||
+      sensitiveCategory === 'guest_sensitive_pii' ||
+      sensitiveCategory === 'sensitive_audit'
+    ) {
       const allowedHrRoles = ['owner', 'admin', 'platform_admin', 'organization_admin'];
       if (!allAccess && !allowedHrRoles.includes(role ?? '')) {
         return { allowed: false, reason: 'Confidential personnel data is restricted' };
       }
+    } else {
+      // Fail closed on any category without an explicit branch. The chain
+      // previously ended here silently, so tagging a route with an unhandled
+      // category applied no restriction at all while reading as though it did.
+      // The never-assignment makes a newly added category a compile error
+      // rather than a silent hole.
+      const unhandled: never = sensitiveCategory;
+      return { allowed: false, reason: `Unrecognized sensitive resource category: ${String(unhandled)}` };
     }
   }
 
@@ -430,18 +450,25 @@ export async function getAuthorizedOperationalAreas(params: {
     }
   }
 
-  // Check active user area overrides
+  // Check active user area overrides.
+  //
+  // Guarded on both identifiers like the membership fetch above: Prisma treats
+  // an undefined field as "no filter", so an unidentified principal would
+  // otherwise match every override at the facility and inherit the union of
+  // every user's granted areas.
   const now = new Date();
-  const overrides = await prisma.userAreaOverride?.findMany({
-    where: {
-      facilityId: venueId,
-      userId,
-      active: true,
-      startsAt: { lte: now },
-      expiresAt: { gte: now },
-    },
-    select: { areaType: true },
-  });
+  const overrides = userId && venueId
+    ? await prisma.userAreaOverride?.findMany({
+        where: {
+          facilityId: venueId,
+          userId,
+          active: true,
+          startsAt: { lte: now },
+          expiresAt: { gte: now },
+        },
+        select: { areaType: true },
+      })
+    : null;
 
   if (overrides) {
     for (const ov of overrides) {

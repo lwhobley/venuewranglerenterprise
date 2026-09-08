@@ -171,9 +171,13 @@ export class ConcourseInventoryService {
       const expectedSold = cIn + restockQty - cOut - wasteQty;
       if (expectedSold < 0) throw new BadRequestException(`Count out and waste exceed available stock for ${code}.`);
       const varianceQuantity = expectedSold - posSoldQty;
-      const itemExpectedRevenue = expectedSold * item.unitPriceCents;
+      // Counts are deliberately fractional (kegs and other by-weight or
+      // by-volume stock), but the cents columns these feed are Int. Round each
+      // line here rather than letting a fractional total reach Prisma, which
+      // rejects it and leaves the sheet impossible to close.
+      const itemExpectedRevenue = Math.round(expectedSold * item.unitPriceCents);
       expectedSalesRevenueCents += itemExpectedRevenue;
-      const varianceDollarsCents = varianceQuantity * item.unitPriceCents;
+      const varianceDollarsCents = Math.round(varianceQuantity * item.unitPriceCents);
 
       inventoryVariance.push({
         code,

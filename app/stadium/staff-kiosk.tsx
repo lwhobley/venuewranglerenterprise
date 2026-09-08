@@ -83,8 +83,18 @@ export default function StaffGateKioskScreen() {
             <TouchableOpacity style={styles.keyBtn} onPress={() => handleKeyPress('0')}>
               <Text style={styles.keyText}>0</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={[styles.keyBtn, styles.scanBtn]} onPress={() => submitCheckIn('QR-STADIUM-100001')}>
-              <Text style={styles.keyTextAux}>SCAN QR</Text>
+            {/* No scanner is wired to this screen. The button previously
+                submitted a hardcoded credential that the server rejects anyway
+                (its suffix is 14 characters against a 16-character minimum);
+                lengthening the placeholder would only make fabricated input
+                pass validation. Disabled until a real scan source exists. */}
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityState={{ disabled: true }}
+              disabled
+              style={[styles.keyBtn, styles.scanBtn]}
+            >
+              <Text style={styles.keyTextAux}>SCAN UNAVAILABLE</Text>
             </TouchableOpacity>
           </View>
         </View>

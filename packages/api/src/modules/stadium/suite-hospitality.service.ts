@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { applyTenantSessionSettings, withTenantTransaction } from '../../prisma/tenant-transaction';
 import { SuiteHospitalityGateway } from './suite-hospitality.gateway';
@@ -236,13 +236,21 @@ export class SuiteHospitalityService {
         facilityId,
         venueId: facilityId,
       });
-      const order = await tx.suiteBeoOrder.update({
-        where: { id: beoOrderId },
+      // Compare-and-swap on the status we validated the transition against.
+      // Without it two concurrent callers both read the same prior status, both
+      // pass the transition check, and both write — logging the transition
+      // twice and emitting the billing webhook twice for one BEO.
+      const claimed = await tx.suiteBeoOrder.updateMany({
+        where: { id: beoOrderId, facilityId, status: existing.status },
         data: {
           status: toStatus,
           ...(toStatus === 'delivered' ? { deliveredAt: new Date() } : {}),
         },
       });
+      if (claimed.count !== 1) {
+        throw new ConflictException('This BEO was already advanced by another update. Reload and retry.');
+      }
+      const order = await tx.suiteBeoOrder.findFirstOrThrow({ where: { id: beoOrderId, facilityId } });
 
       await tx.suiteBeoStatusLog.create({
         data: {
@@ -288,8 +296,10 @@ export class SuiteHospitalityService {
         facilityId,
         venueId: facilityId,
       });
-      const order = await tx.suiteBeoOrder.update({
-        where: { id: beoOrderId },
+      // Same compare-and-swap as updateOrderStatus: only the caller that moves
+      // the row off 'en_route' records the delivery.
+      const claimed = await tx.suiteBeoOrder.updateMany({
+        where: { id: beoOrderId, facilityId, status: 'en_route' },
         data: {
           status: 'delivered',
           deliveredAt: new Date(),
@@ -298,6 +308,10 @@ export class SuiteHospitalityService {
           deliveryPhotoUrl: dto.deliveryPhotoUrl ?? null,
         },
       });
+      if (claimed.count !== 1) {
+        throw new ConflictException('This BEO was already marked delivered by another update.');
+      }
+      const order = await tx.suiteBeoOrder.findFirstOrThrow({ where: { id: beoOrderId, facilityId } });
 
       await tx.suiteBeoStatusLog.create({
         data: {

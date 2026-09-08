@@ -29,8 +29,14 @@ export class WranglerHistoryService {
     const avgReservations = avg(samples.map((row) => row.reservations));
     const salesSamples = samples.filter((row) => row.salesCents > 0);
     const avgSales = salesSamples.length ? avg(salesSamples.map((row) => row.salesCents)) : 0;
-    const laborSamples = samples.filter((row) => row.laborCents > 0);
-    const avgLaborPct = laborSamples.length && avgSales > 0 ? (avg(laborSamples.map((row) => row.laborCents)) / avgSales) * 100 : 0;
+    // Labor as a percent of sales is only meaningful over days that have BOTH
+    // figures. Averaging labor over one day set and sales over another (a day
+    // whose POS totals have not posted yet has labor but zero sales) produces a
+    // ratio that matches no actual day and overstates labor.
+    const laborPctSamples = samples.filter((row) => row.salesCents > 0 && row.laborCents > 0);
+    const avgLaborPct = laborPctSamples.length
+      ? (avg(laborPctSamples.map((row) => row.laborCents)) / avg(laborPctSamples.map((row) => row.salesCents))) * 100
+      : 0;
     const totalReservations = samples.reduce((sum, row) => sum + row.reservations, 0);
     const noShowRate = totalReservations ? (samples.reduce((sum, row) => sum + row.noShows, 0) / totalReservations) * 100 : 0;
     const patterns: WranglerHistoricalPattern[] = [];

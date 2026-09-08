@@ -39,8 +39,6 @@ import { EmailService } from "../email/email.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { AuthService } from "./auth.service";
 
-// Matches the JWT's 30-day expiry so a session and its token expire together.
-const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
 const EMAIL_CODE_TTL_MS = 24 * 60 * 60 * 1000;
 const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000;
 const PASSWORD_ITERATIONS = 600_000;
@@ -189,6 +187,16 @@ export class AuthController {
             DUMMY_PASSWORD_HASH,
           );
       if (!credential || !passwordMatches) {
+        // Enforce the lockout recordFailedSignIn writes. It is consulted only
+        // on the failure path, so a correct credential still signs in and
+        // clears the lock above — an attacker cannot lock a victim out of their
+        // own account — but once MAX_FAILED_SIGN_INS wrong PINs have been
+        // submitted, further wrong ones are refused for the rest of the window
+        // without extending it or consuming limiter budget. The message stays
+        // generic so lock state does not reveal whether the account exists.
+        if (user?.lockedUntil && user.lockedUntil.getTime() > Date.now()) {
+          throw new UnauthorizedException("Invalid email or password.");
+        }
         // Apply the account-level limiter only after password verification so
         // a valid credential can always clear an attacker-induced lockout.
         await assertWithinSharedRateLimit(

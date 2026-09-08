@@ -13,8 +13,10 @@ describe('SuiteHospitalityService', () => {
         findMany: vi.fn(),
         findUnique: vi.fn(),
         findFirst: vi.fn(),
+        findFirstOrThrow: vi.fn(),
         create: vi.fn(),
         update: vi.fn(),
+        updateMany: vi.fn(),
       },
       suiteBeoStatusLog: {
         create: vi.fn(),
@@ -90,12 +92,39 @@ describe('SuiteHospitalityService', () => {
     };
 
     prisma.suiteBeoOrder.findFirst.mockResolvedValue(existing);
-    prisma.suiteBeoOrder.update.mockResolvedValue({ ...existing, status: 'closed_invoiced' });
+    prisma.suiteBeoOrder.updateMany.mockResolvedValue({ count: 1 });
+    prisma.suiteBeoOrder.findFirstOrThrow.mockResolvedValue({ ...existing, status: 'closed_invoiced' });
 
     const result = await service.updateOrderStatus('facility-1', 'beo_1', 'closed_invoiced', 'user_1', 'Chef', 'Closing order');
 
     expect(result.status).toBe('closed_invoiced');
     expect(webhooks.emitSuiteBeoWebhook).toHaveBeenCalledWith(expect.objectContaining({ eventType: 'suite.beo.closed_invoiced' }));
+    // The write must be conditional on the status the transition was validated
+    // against, so a concurrent caller cannot repeat it.
+    expect(prisma.suiteBeoOrder.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'beo_1', facilityId: 'facility-1', status: 'delivered' } }),
+    );
+  });
+
+  it('refuses a status transition already applied by a concurrent caller', async () => {
+    prisma.suiteBeoOrder.findFirst.mockResolvedValue({
+      id: 'beo_1',
+      organizationId: 'org-1',
+      facilityId: 'facility-1',
+      status: 'delivered',
+      zoneId: 'zone-1',
+      subVenueId: 'sub-1',
+      totalCents: 50000,
+      cateringLineItems: [],
+    });
+    // The compare-and-swap matches no row because the other caller already moved it.
+    prisma.suiteBeoOrder.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(
+      service.updateOrderStatus('facility-1', 'beo_1', 'closed_invoiced', 'user_1', 'Chef'),
+    ).rejects.toThrow('already advanced');
+    expect(prisma.suiteBeoStatusLog.create).not.toHaveBeenCalled();
+    expect(webhooks.emitSuiteBeoWebhook).not.toHaveBeenCalled();
   });
 
   it('creates quick replenishment request and broadcasts alert via WebSocket', async () => {

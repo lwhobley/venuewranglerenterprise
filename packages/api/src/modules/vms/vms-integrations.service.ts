@@ -1,15 +1,18 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { VmsSyncSystem } from '@prisma/client';
+import { zonedIsoDate } from '../../common/venue-time';
 
 export interface ShiftSupplyItem {
   sku: string;
   name: string;
   category: 'uniform' | 'equipment' | 'ppe' | 'cutlery' | 'disposable';
   allocatedQuantity: number;
-  consumedQuantity: number;
+  /** Null when nothing has actually been counted — never an assumed rate. */
+  consumedQuantity: number | null;
   remainingStock: number;
-  unitCostCents: number;
+  /** Null when no priced source reported a cost — never a placeholder price. */
+  unitCostCents: number | null;
 }
 
 export interface InventorySyncResult {
@@ -198,9 +201,13 @@ export class VmsIntegrationsService {
           name: item.name,
           category: 'equipment' as const,
           allocatedQuantity: item.quantity,
-          consumedQuantity: Math.round(item.quantity * 0.9),
+          // Nothing has been counted and no priced source was consulted, so
+          // report neither a consumption rate nor a unit cost. A 90% draw-down
+          // and a flat $20 price were invented figures that reached the caller
+          // and the sync log indistinguishable from measured data.
+          consumedQuantity: null,
           remainingStock: item.quantity,
-          unitCostCents: 2000,
+          unitCostCents: null,
         }))
       : [];
 
@@ -314,6 +321,7 @@ export class VmsIntegrationsService {
       deviationFlags: string[];
     }>,
     companyCode = 'VNW',
+    timeZone: string | null = null,
   ): { csvContent: string; rowCount: number; rows: AdpPayrollRow[] } {
     const rows: AdpPayrollRow[] = [];
 
@@ -323,7 +331,11 @@ export class VmsIntegrationsService {
       const doubleTimeHours = Math.max(0, a.hoursWorked - 12.0);
       const hasMealPenalty = a.deviationFlags.includes('meal_break_penalty');
 
-      const dateStr = new Date(a.clockIn).toISOString().split('T')[0];
+      // The business date is the venue's calendar day, not UTC's. A shift that
+      // starts at 19:30 local is still that evening's event; toISOString would
+      // file it under the next day and move a whole night game's labor into the
+      // following batch.
+      const dateStr = zonedIsoDate(timeZone, new Date(a.clockIn).getTime());
       const fullName = `${a.staffMember.lastName}, ${a.staffMember.firstName}`;
 
       if (regularHours > 0) {

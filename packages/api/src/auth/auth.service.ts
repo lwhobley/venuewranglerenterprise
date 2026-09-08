@@ -6,7 +6,15 @@ import { promisify } from 'util';
 import { hashInviteToken } from '../common/invite-token';
 
 const pbkdf2Async = promisify(pbkdf2);
-const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
+/**
+ * Lifetime of a Session row. The JWT is signed with the same lifetime (see
+ * auth.module.ts) so a token and the session backing it expire together —
+ * there is no refresh endpoint, so a shorter token would force re-entry of the
+ * PIN while the session row was still valid. Revocation does not depend on the
+ * token lifetime: AuthGuard re-reads the session row and its token hash on
+ * every request, so logout takes effect immediately.
+ */
+export const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
 const PASSWORD_ITERATIONS = 600_000;
 const PASSWORD_KEY_LENGTH = 32;
 const PASSWORD_DIGEST = 'sha256';
