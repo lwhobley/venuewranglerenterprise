@@ -373,7 +373,13 @@ export class ConcourseInventoryService {
       const checkedInQty = checkedInMap.get(code) || 0;
       if (checkedInQty > item.quantity) throw new BadRequestException(`Returned quantity exceeds checkout quantity for ${code}.`);
       const quantitySold = item.quantity - checkedInQty;
-      const subtotalCents = quantitySold * item.unitPriceCents;
+      // Round per line, not on the total. Quantities are deliberately
+      // fractional (TransferItemDto allows a 0.001 minimum for by-weight and
+      // by-volume stock) but grossSalesCents is an Int column, so an unrounded
+      // total is rejected on write. Rounding per line also matches how the
+      // settlement form computes expected gross, so the tender equality check
+      // below cannot reject a correct settlement over a sub-cent disagreement.
+      const subtotalCents = Math.round(quantitySold * item.unitPriceCents);
       grossSalesCents += subtotalCents;
 
       itemsSold.push({

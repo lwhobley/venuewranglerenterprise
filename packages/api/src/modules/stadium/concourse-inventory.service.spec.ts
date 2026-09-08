@@ -162,6 +162,32 @@ describe('ConcourseInventoryService', () => {
     expect(settled.status).toBe('settled');
   });
 
+  it('settles a by-weight hawker line without writing fractional cents', async () => {
+    prisma.hawkerVendorSession.findFirst.mockResolvedValue({
+      id: 'hawker_2',
+      hawkerId: 'HAWKER-90',
+      // Quantities are fractional by design (TransferItemDto allows 0.001), so
+      // an odd unit price makes the raw product fractional.
+      itemsCheckedOut: [{ code: 'KEG-IPA', name: 'IPA Keg', quantity: 3, unitPriceCents: 375 }],
+      commissionRateBps: 1500,
+      status: 'active',
+    });
+    prisma.hawkerVendorSession.update.mockImplementation(async ({ data }: any) => ({ id: 'hawker_2', ...data }));
+
+    // 3 - 1.5 = 1.5 sold; 1.5 * 375 = 562.5, which must round to 563 rather
+    // than reaching the Int grossSalesCents column unrounded.
+    const settled = await service.settleHawkerSession('facility-2', 'hawker_2', {
+      itemsCheckedIn: [{ code: 'KEG-IPA', name: 'IPA Keg', quantity: 1.5 }],
+      cashCollectedCents: 563,
+      cardCollectedCents: 0,
+    });
+
+    expect(settled.grossSalesCents).toBe(563);
+    expect(Number.isInteger(settled.grossSalesCents)).toBe(true);
+    expect(Number.isInteger(settled.commissionPayoutCents)).toBe(true);
+    expect((settled.itemsSold as any)[0].subtotalCents).toBe(563);
+  });
+
   it('does not duplicate a completed transfer after a retry', async () => {
     prisma.inventoryTransferRequest.findFirst.mockResolvedValue({
       id: 't_done', facilityId: 'facility-1', status: 'completed', toOutletId: 'STAND-112', items: [],
