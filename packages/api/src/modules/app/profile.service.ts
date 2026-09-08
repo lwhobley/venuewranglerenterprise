@@ -104,7 +104,11 @@ export class ProfileService {
     return account.email;
   }
 
-  async isEmailVerified(_userId: string) {
-    return true;
+  async isEmailVerified(userId: string): Promise<boolean> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { emailVerifiedAt: true },
+    });
+    return user?.emailVerifiedAt != null;
   }
 }

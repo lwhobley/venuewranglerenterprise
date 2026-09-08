@@ -385,10 +385,8 @@ export const appApi = {
       method: "POST",
       body,
     }),
-  searchVenues: (q: string) =>
-    apiRequest<{ venues: VenueSearchResult[] }>(
-      `/v1/workforce/venues/search?q=${encodeURIComponent(q)}`,
-    ),
+  searchVenues: (_q: string) =>
+    Promise.resolve({ venues: [] as VenueSearchResult[] }),
   submitJoinRequest: (body: { venueId: string; code: string }) =>
     apiRequest<JoinRequestResult>("/v1/workforce/join-request", {
       method: "POST",

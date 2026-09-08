@@ -34,9 +34,13 @@ function makeController() {
     },
     user: {
       findUniqueOrThrow: vi.fn(),
+      findUnique: vi.fn().mockResolvedValue(null),
+      create: vi.fn().mockResolvedValue({ id: 'user-x' }),
       upsert: vi.fn().mockResolvedValue({ id: 'user-x' }),
     },
     passwordCredential: {
+      findUnique: vi.fn().mockResolvedValue(null),
+      create: vi.fn().mockResolvedValue({}),
       upsert: vi.fn().mockResolvedValue({}),
     },
     $executeRaw: vi.fn().mockResolvedValue(undefined),
@@ -326,15 +330,27 @@ describe('AppStaffController', () => {
       } as any);
 
       expect(auth.hashPassword).toHaveBeenCalledWith('123456');
-      expect(prisma.user.upsert).toHaveBeenCalledWith(expect.objectContaining({ where: { email: 'new@example.com' } }));
-      expect(prisma.passwordCredential.upsert).toHaveBeenCalledWith(expect.objectContaining({
-        where: { userId: 'user-x' },
+      expect(prisma.user.create).toHaveBeenCalledWith(expect.objectContaining({ data: { email: 'new@example.com' } }));
+      expect(prisma.passwordCredential.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ userId: 'user-x' }),
       }));
       expect(prisma.profile.update).toHaveBeenCalledWith(expect.objectContaining({
         where: { id: 'new-1' },
         data: { userId: 'user-x' },
       }));
       expect(result.email).toBe('new@example.com');
+    });
+
+    it('throws ConflictException when assigning a PIN to an existing account that already has credentials', async () => {
+      const { controller, prisma, profiles } = makeController();
+      profiles.requireManagerProfile.mockResolvedValue(ownerViewer);
+      prisma.profile.findFirst.mockResolvedValue(null);
+      prisma.profile.create.mockResolvedValue(profileRow({ id: 'new-1', email: 'victim@example.com', role: 'staff', userId: null }));
+      prisma.user.findUnique.mockResolvedValue({ id: 'victim-user-id', email: 'victim@example.com', password: { id: 'cred-1' } });
+
+      await expect(controller.upsertVenueStaff(user, {
+        venueId: 'venue-1', email: 'victim@example.com', fullName: 'Victim User', role: 'staff', jobTitle: 'Server', onboardingPin: '123456',
+      } as any)).rejects.toThrow('An account with this email address already exists on the platform.');
     });
 
     it('blocks a manager (non-administrator) from assigning a PIN at all', async () => {

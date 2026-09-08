@@ -1015,12 +1015,13 @@ function mapReservationBody(args: any) {
 }
 
 function mapFloorPlanBody(args: any) {
-  const { venueId, tables, chairs, name, width, height, backgroundImageUrl } = args ?? {};
+  const { venueId, tables, chairs, name, width, height, backgroundImageUrl, backupPriorPlan } = args ?? {};
   return {
     ...(name ? { name } : {}),
     ...(typeof width === 'number' ? { width } : {}),
     ...(typeof height === 'number' ? { height } : {}),
     ...(typeof backgroundImageUrl === 'string' ? { backgroundImageUrl } : {}),
+    ...(typeof backupPriorPlan === 'boolean' ? { backupPriorPlan } : {}),
     tables: (tables ?? []).map((table: any) => ({
       id: table.id,
       label: table.label,

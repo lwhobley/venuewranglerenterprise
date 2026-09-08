@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Body,
+  ConflictException,
   Controller,
   Delete,
   ForbiddenException,
@@ -494,32 +495,58 @@ export class AppStaffController {
         await this.ensureOnboardingTasks(body.venueId, created.id, tx);
       }
       if (pinCredential) {
-        const account = created.userId
-          ? await tx.user.findUniqueOrThrow({ where: { id: created.userId } })
-          : await tx.user.upsert({
-              where: { email: created.email },
-              update: { emailVerifiedAt: new Date() },
-              create: { email: created.email, emailVerifiedAt: new Date() },
-            });
-        await tx.passwordCredential.upsert({
-          where: { userId: account.id },
-          update: {
-            salt: pinCredential.salt,
-            passwordHash: pinCredential.hash,
-            iterations: 600_000,
-          },
-          create: {
-            userId: account.id,
-            salt: pinCredential.salt,
-            passwordHash: pinCredential.hash,
-            iterations: 600_000,
-          },
-        });
-        if (!created.userId)
-          created = await tx.profile.update({
-            where: { id: created.id },
-            data: { userId: account.id },
+        if (created.userId) {
+          const existingCred = await tx.passwordCredential.findUnique({
+            where: { userId: created.userId },
           });
+          if (existingCred) {
+            throw new ConflictException(
+              "This staff member already has an established platform account and password. Onboarding PIN cannot overwrite existing account credentials.",
+            );
+          }
+          await tx.passwordCredential.create({
+            data: {
+              userId: created.userId,
+              salt: pinCredential.salt,
+              passwordHash: pinCredential.hash,
+              iterations: 600_000,
+            },
+          });
+        } else {
+          const existingAccount = await tx.user.findUnique({
+            where: { email: created.email },
+            include: { password: true },
+          });
+          if (existingAccount) {
+            if (existingAccount.password) {
+              throw new ConflictException(
+                "An account with this email address already exists on the platform. Onboarding PIN cannot overwrite existing credentials; the user must sign in directly.",
+              );
+            }
+            created = await tx.profile.update({
+              where: { id: created.id },
+              data: { userId: existingAccount.id },
+            });
+          } else {
+            const account = await tx.user.create({
+              data: {
+                email: created.email,
+              },
+            });
+            await tx.passwordCredential.create({
+              data: {
+                userId: account.id,
+                salt: pinCredential.salt,
+                passwordHash: pinCredential.hash,
+                iterations: 600_000,
+              },
+            });
+            created = await tx.profile.update({
+              where: { id: created.id },
+              data: { userId: account.id },
+            });
+          }
+        }
       }
       await this.writeAuditLog(
         {

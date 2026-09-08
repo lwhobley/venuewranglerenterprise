@@ -9,7 +9,8 @@ import {
   Query,
   UseInterceptors,
 } from '@nestjs/common';
-import { IsIn, IsNumber, IsOptional, IsString, Min } from 'class-validator';
+import { IsArray, IsIn, IsNumber, IsOptional, IsString, Min, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
 import { RequireSubscription } from '../../billing/require-subscription.decorator';
 import { VenueScope } from '../../venue/venue-scope.decorator';
 import type { VenueScopedRequest } from '../../venue/venue-scope.interceptor';
@@ -105,11 +106,26 @@ export class RecordMovementDto {
   referenceId?: string;
 }
 
+export class TransferItemDto {
+  @IsString()
+  sku!: string;
+
+  @IsString()
+  name!: string;
+
+  @IsNumber()
+  @Min(1)
+  quantity!: number;
+}
+
 export class CreateTransferDto {
   @IsString()
   toDepartmentId!: string;
 
-  items!: Array<{ sku: string; name: string; quantity: number }>;
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => TransferItemDto)
+  items!: TransferItemDto[];
 
   @IsOptional()
   @IsString()

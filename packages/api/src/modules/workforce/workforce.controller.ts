@@ -208,7 +208,7 @@ export class WorkforceController {
     return { status: 'not_found' };
   }
 
-  // ─── Public: venue search ──────────────────────────────────────────────────
+  // ─── Public: venue search (Retired: join requests decommissioned) ──────────
 
   @Public()
   @Get('venues/search')
@@ -222,37 +222,8 @@ export class WorkforceController {
     if (term.length > 120) {
       throw new BadRequestException('Search query must be 120 characters or fewer.');
     }
-    if (!term) {
-      return { venues: [] };
-    }
-
-    // Exact code match takes priority; then name/address fuzzy match.
-    const [byCode, byText] = await Promise.all([
-      this.prisma.venue.findMany({
-        where: { code: { equals: term, mode: 'insensitive' } },
-        select: { id: true, name: true, address: true },
-        take: 3,
-      }),
-      this.prisma.venue.findMany({
-        where: {
-          OR: [
-            { name: { contains: term, mode: 'insensitive' } },
-            { address: { contains: term, mode: 'insensitive' } },
-          ],
-        },
-        select: { id: true, name: true, address: true },
-        take: 10,
-      }),
-    ]);
-
-    // Merge: code matches first, then text matches without duplicates.
-    const seen = new Set(byCode.map((v) => v.id));
-    const merged = [
-      ...byCode,
-      ...byText.filter((v) => !seen.has(v.id)),
-    ].slice(0, 10);
-
-    return { venues: merged };
+    // Join requests have been decommissioned; unauthenticated venue enumeration is disabled.
+    return { venues: [] };
   }
 
   // ─── Authenticated: user's own join requests (Disabled: users added by management) ─────

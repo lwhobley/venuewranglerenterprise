@@ -379,6 +379,24 @@ export class FloorService {
       });
 
       if (activePlan) {
+        const activeTables = tx.floorTable?.findMany
+          ? await tx.floorTable.findMany({
+              where: { floorPlanId: activePlan.id },
+              select: { id: true },
+            })
+          : [];
+        const activeTableIds = activeTables.map((t) => t.id);
+        if (activeTableIds.length > 0 && tx.tableAssignment?.count) {
+          const activeAssignments = await tx.tableAssignment.count({
+            where: { venueId, tableId: { in: activeTableIds }, releasedAt: null },
+          });
+          if (activeAssignments > 0) {
+            throw new ConflictException(
+              'Release active table assignments before restoring an archived floor plan',
+            );
+          }
+        }
+
         await tx.floorPlan.update({
           where: { id: activePlan.id },
           data: { isActive: false },

@@ -7,6 +7,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { withSerializableRetry } from '../../common/tx-retry';
 import {
   assertDepartmentAccess,
   canAccessAllDepartments,
@@ -226,7 +227,7 @@ export class DepartmentInventoryService {
   ) {
     await assertDepartmentAccess(scope, facilityId, departmentId, this.prisma);
 
-    return this.prisma.$transaction(async (tx) => {
+    return withSerializableRetry(this.prisma, async (tx) => {
       const item = await tx.departmentInventoryItem.findFirst({
         where: { id: itemId, facilityId, departmentId },
       });
@@ -306,6 +307,13 @@ export class DepartmentInventoryService {
       throw new BadRequestException('Source and destination departments must be different');
     }
 
+    const toDept = await this.prisma.department.findFirst({
+      where: { id: dto.toDepartmentId, facilityId },
+    });
+    if (!toDept) {
+      throw new NotFoundException('Destination department not found in this facility');
+    }
+
     const venue = await this.prisma.venue.findUniqueOrThrow({
       where: { id: facilityId },
       select: { organizationId: true },
@@ -335,7 +343,7 @@ export class DepartmentInventoryService {
       throw new ForbiddenException('Only warehouse, procurement, or venue leadership may approve stock transfers');
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    return withSerializableRetry(this.prisma, async (tx) => {
       const transfer = await tx.inventoryTransferRequest.findUnique({
         where: { id: transferId },
       });

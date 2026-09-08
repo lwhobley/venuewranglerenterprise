@@ -48,7 +48,11 @@ export function parseGenericJsonPayload(raw: unknown): CanonicalBeoInput {
     guestCount: Number.isFinite(guestCount) ? guestCount : null,
     departmentSlices: Object.keys(departmentSlices).length ? departmentSlices : null,
     layoutJson: data.layoutJson ?? null,
-    sourcePayload: data,
+    sourcePayload: (() => {
+      const sanitized = typeof data === 'object' && data !== null ? { ...data } : {};
+      delete (sanitized as any).secret;
+      return sanitized;
+    })(),
     sourceUpdatedAt: data.updatedAt ? new Date(data.updatedAt) : new Date(),
     specialRequirements: data.specialRequirements ? String(data.specialRequirements) : null,
     internalNotes: data.internalNotes ? String(data.internalNotes) : null,

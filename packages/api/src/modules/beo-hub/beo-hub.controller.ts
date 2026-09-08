@@ -23,6 +23,8 @@ import { Public } from '../../auth/public.decorator';
 import { canManageVenue } from '../../auth/roles';
 import { canAccessAllDepartments } from '../../auth/department-auth.helper';
 import { secretsMatch } from '../../common/webhook-auth';
+import { getClientIp } from '../../common/http';
+import { assertWithinSharedRateLimit } from '../../common/rate-limit';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TenantRequestTransactionInterceptor } from '../../prisma/tenant-request-transaction.interceptor';
 import { withTenantTransaction } from '../../prisma/tenant-transaction';
@@ -139,8 +141,9 @@ export class BeoHubController {
     @Headers('x-webhook-secret') secretHeader: string | undefined,
     @Headers('x-beo-hub-secret') hubSecretHeader: string | undefined,
     @Body() body: any,
+    @Req() req?: Request,
   ) {
-    const venueId = queryVenueId ?? body?.venueId;
+    const venueId = queryVenueId ?? (typeof body?.venueId === 'string' ? body.venueId : undefined);
     if (!venueId) {
       throw new BadRequestException('venueId is required either as a query parameter or in the payload');
     }
@@ -151,18 +154,21 @@ export class BeoHubController {
     });
     if (!venue) throw new NotFoundException(`Venue ${venueId} not found`);
 
-    const providedSecret = secretHeader ?? hubSecretHeader ?? (typeof body?.secret === 'string' ? body.secret : undefined);
-    const expectedSecret = venue.leadsWebhookSecret ?? process.env.BEO_HUB_WEBHOOK_SECRET;
-
-    // Fail closed in production if secret is unconfigured or does not match
-    const isProduction = process.env.NODE_ENV === 'production';
-    if (isProduction && !expectedSecret) {
-      this.logger.error(`BEO Hub webhook received for venue ${venueId}, but no webhook secret is configured. Failing closed.`);
-      throw new UnauthorizedException('Webhook secret is not configured on this venue.');
+    const providedSecret = secretHeader ?? hubSecretHeader;
+    if (!venue.leadsWebhookSecret || !secretsMatch(providedSecret, venue.leadsWebhookSecret)) {
+      throw new UnauthorizedException('Invalid or missing webhook authorization secret.');
     }
 
-    if (expectedSecret && !secretsMatch(providedSecret, expectedSecret)) {
-      throw new UnauthorizedException('Invalid or missing webhook authorization secret.');
+    await assertWithinSharedRateLimit(
+      this.prisma,
+      `beo-hub-webhook:${venueId}:${getClientIp(req ?? ({} as Request))}`,
+      60,
+      60_000,
+      'Too many webhook requests.',
+    );
+
+    if (body && typeof body === 'object' && 'secret' in body) {
+      delete body.secret;
     }
 
     let canonical: CanonicalBeoInput;
@@ -577,7 +583,18 @@ export class BeoHubController {
     if (body.loadOutAt !== undefined) updateData.loadOutAt = body.loadOutAt ? new Date(body.loadOutAt) : null;
     if (body.venueSpace !== undefined) updateData.venueSpace = body.venueSpace;
     if (body.spaceId !== undefined) updateData.spaceId = body.spaceId;
-    if (body.eventId !== undefined) updateData.eventId = body.eventId;
+    if (body.eventId !== undefined) {
+      if (body.eventId !== null) {
+        const event = await this.prisma.venueEvent.findFirst({
+          where: { id: body.eventId, venueId: scope.venueId },
+          select: { id: true },
+        });
+        if (!event) throw new NotFoundException('Event not found in this venue');
+        updateData.eventId = event.id;
+      } else {
+        updateData.eventId = null;
+      }
+    }
     if (body.guestCount !== undefined) updateData.guestCount = body.guestCount;
     if (body.status !== undefined) updateData.status = body.status;
     if (body.departmentSlices !== undefined) updateData.departmentSlices = body.departmentSlices;
@@ -717,10 +734,13 @@ export class BeoHubController {
     if (!beo) throw new NotFoundException('BEO not found');
 
     const slices = beo.departmentSlices as any;
-    const roles = slices?.staffing?.requiredRoles ?? [
-      { role: 'Banquet Captain', count: 1 },
-      { role: 'Server', count: Math.max(1, Math.round((beo.guestCount ?? 10) / 15)) },
-    ];
+    const rawRoles = slices?.staffing?.requiredRoles;
+    const roles = Array.isArray(rawRoles)
+      ? rawRoles
+      : [
+          { role: 'Banquet Captain', count: 1 },
+          { role: 'Server', count: Math.max(1, Math.round((beo.guestCount ?? 10) / 15)) },
+        ];
 
     const venue = await this.prisma.venue.findUniqueOrThrow({
       where: { id: scope.venueId },
@@ -729,13 +749,15 @@ export class BeoHubController {
 
     const operationalDate = beo.serviceDate || (beo.serviceStartAt ? beo.serviceStartAt.toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10));
 
-    const workers = roles.flatMap((r: any, rIdx: number) => {
-      const count = r.count || 1;
+    const workers = roles.flatMap((r: any) => {
+      const rawCount = Number(r?.count);
+      const count = Number.isFinite(rawCount) ? Math.max(1, Math.min(Math.floor(rawCount), 50)) : 1;
+      const roleName = typeof r?.role === 'string' && r.role.trim() ? r.role.trim() : 'Staff';
       return Array.from({ length: count }, (_, i) => ({
-        workerName: `${r.role} ${i + 1}`,
-        workerRole: r.role,
+        workerName: `${roleName} ${i + 1}`,
+        workerRole: roleName,
         assignedStation: beo.venueSpace || 'Banquet Floor',
-        shiftHours: r.hours || '4.0',
+        shiftHours: typeof r?.hours === 'string' && r.hours.trim() ? r.hours.trim() : '4.0',
         notes: `Auto-synced from BEO ${beo.eventName}`,
       }));
     });

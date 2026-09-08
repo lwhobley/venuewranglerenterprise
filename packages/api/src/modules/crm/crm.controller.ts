@@ -689,7 +689,25 @@ export class CrmController {
       });
       if (!existing) throw new NotFoundException('BEO not found');
 
-      const patch: Record<string, any> = { ...fields };
+      const patch: Record<string, any> = { updatedAt: now };
+      if (body.leadId !== undefined) patch.leadId = body.leadId ?? null;
+      if (body.eventName !== undefined) patch.eventName = body.eventName;
+      if (body.eventDate !== undefined) patch.eventDate = body.eventDate ? new Date(body.eventDate) : null;
+      if (body.eventType !== undefined) patch.eventType = body.eventType ?? null;
+      if (body.guestCount !== undefined) patch.guestCount = body.guestCount ?? null;
+      if (body.venueSpace !== undefined) patch.venueSpace = body.venueSpace ?? null;
+      if (body.setupStyle !== undefined) patch.setupStyle = body.setupStyle ?? null;
+      if (body.fbMinimumCents !== undefined) patch.fbMinimumCents = body.fbMinimumCents ?? null;
+      if (body.depositCents !== undefined) patch.depositCents = body.depositCents ?? null;
+      if (body.depositDueDate !== undefined) patch.depositDueDate = body.depositDueDate ? new Date(body.depositDueDate) : null;
+      if (body.menuAppetizers !== undefined) patch.menuAppetizers = body.menuAppetizers ?? null;
+      if (body.menuEntrees !== undefined) patch.menuEntrees = body.menuEntrees ?? null;
+      if (body.menuDesserts !== undefined) patch.menuDesserts = body.menuDesserts ?? null;
+      if (body.menuBarPackage !== undefined) patch.menuBarPackage = body.menuBarPackage ?? null;
+      if (body.specialRequirements !== undefined) patch.specialRequirements = body.specialRequirements ?? null;
+      if (body.internalNotes !== undefined) patch.internalNotes = body.internalNotes ?? null;
+      if (body.assignedRepId !== undefined) patch.assignedRepId = assignedRepId ?? null;
+      if (body.layoutJson !== undefined) patch.layoutJson = body.layoutJson as Prisma.InputJsonValue;
       if (body.status !== undefined) patch.status = body.status as BeoStatus;
       // Update the BEO and sync its reservation atomically. A hold conflict
       // throws inside syncBeoToReservation, which rolls back the BEO update so

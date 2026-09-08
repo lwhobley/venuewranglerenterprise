@@ -10,6 +10,12 @@ describe('DepartmentInventoryService', () => {
     transfer?: any;
   }) => {
     return {
+      department: {
+        findFirst: vi.fn().mockImplementation(async ({ where }: any) => {
+          if (where?.id) return { id: where.id, facilityId: where.facilityId };
+          return null;
+        }),
+      },
       departmentMembership: {
         findFirst: vi.fn().mockImplementation(async ({ where }: any) => {
           if (where?.department?.code?.in) {

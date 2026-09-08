@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, ForbiddenException, Get, Headers, Logger, NotFoundException, Param, Patch, Post, Query, Req, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Body, Controller, ForbiddenException, Get, Headers, InternalServerErrorException, Logger, NotFoundException, Param, Patch, Post, Query, Req, UnauthorizedException } from '@nestjs/common';
 import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsInt, IsNumber, IsOptional, IsString, Min, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { Prisma, PosProvider, PosCheckStatus } from '@prisma/client';
@@ -1003,13 +1003,9 @@ export class PosController {
           parLevel: i.parLevel,
         })),
       };
-    } catch {
-      return {
-        total86Count: 0,
-        broadcastActive: false,
-        lastBroadcastAt: null,
-        items: [],
-      };
+    } catch (err) {
+      this.logger.error(`Failed to fetch 86 items for venue ${scope.venueId}`, err);
+      throw new InternalServerErrorException('Failed to retrieve 86-items list');
     }
   }
 
@@ -1072,15 +1068,9 @@ export class PosController {
         providerBreakdown: [],
         note: 'Tender and provider reconciliation breakdowns are unavailable.',
       };
-    } catch {
-      return {
-        settlementDate: new Date().toISOString().split('T')[0],
-        totalGrossCents: 0,
-        reportingPeriod: 'all_recorded_paid_checks',
-        tenderSplits: [],
-        providerBreakdown: [],
-        note: 'Settlement telemetry currently unavailable.',
-      };
+    } catch (err) {
+      this.logger.error(`Failed to calculate settlement for venue ${scope.venueId}`, err);
+      throw new InternalServerErrorException('Failed to calculate settlement data');
     }
   }
 }

@@ -159,6 +159,42 @@ describe('FloorService regressions', () => {
     });
   });
 
+  it('throws ConflictException when restoring an archived floor plan while active assignments exist', async () => {
+    const transaction = {
+      $executeRaw: vi.fn().mockResolvedValue(undefined),
+      floorPlan: {
+        findFirst: vi
+          .fn()
+          .mockResolvedValueOnce({
+            id: 'archived-1',
+            name: 'Old Layout',
+            isActive: false,
+            tables: [{ id: 'table-arch-1' }],
+            chairs: [],
+          })
+          .mockResolvedValueOnce({
+            id: 'current-active',
+            isActive: true,
+          }),
+        update: vi.fn(),
+      },
+      floorTable: {
+        findMany: vi.fn().mockResolvedValue([{ id: 'table-act-1' }]),
+      },
+      tableAssignment: {
+        count: vi.fn().mockResolvedValue(1),
+      },
+    };
+    const prisma = {
+      $transaction: vi.fn((cb: any) => cb(transaction)),
+    };
+    const service = new FloorService(prisma as any, {} as any);
+
+    await expect(service.restoreArchivedFloorPlan('venue-1', 'archived-1')).rejects.toThrow(
+      'Release active table assignments before restoring an archived floor plan',
+    );
+  });
+
   it('does NOT create backup when backupPriorPlan is false, even if name mentions overwrite', async () => {
     const transaction = {
       $executeRaw: vi.fn().mockResolvedValue(undefined),

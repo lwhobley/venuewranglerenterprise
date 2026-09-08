@@ -53,12 +53,8 @@ export class AuthService {
   async issueSession(userId: string, email: string, fullName?: string, inviteToken?: string, rawPhone?: string) {
     // Enterprise licensing has no self-serve trial: issuing a session never
     // stamps a trial deadline. Profiles that already carry one keep it.
-    // All enterprise users are added directly by management; email verification is not required.
-    const emailVerified = true;
-    
     const inviteValue = inviteToken?.trim();
     const invite = inviteValue
-      ? emailVerified
       ? await this.prisma.invite.findFirst({
           where: {
             OR: [{ tokenHash: hashInviteToken(inviteValue) }, { code: { equals: inviteValue, mode: 'insensitive' } }],
@@ -66,7 +62,6 @@ export class AuthService {
             expiresAt: { gt: new Date() },
           },
         })
-      : null
       : null;
 
     if (invite?.email && invite.email.toLowerCase() !== email) {
@@ -108,13 +103,11 @@ export class AuthService {
 
       let result;
       if (existingByUser && (!grant?.venueId || existingByUser.venueId === grant.venueId)) {
-        const adoptableProfile = emailVerified
-          ? await tx.profile.findFirst({
-              where: { userId: null, email: { equals: email, mode: 'insensitive' }, venueId: { not: null } },
-              orderBy: { createdAt: 'asc' },
-              include: { venue: true },
-            })
-          : null;
+        const adoptableProfile = await tx.profile.findFirst({
+          where: { userId: null, email: { equals: email, mode: 'insensitive' }, venueId: { not: null } },
+          orderBy: { createdAt: 'asc' },
+          include: { venue: true },
+        });
 
         if (adoptableProfile && (!existingByUser.venueId || existingByUser.venueId === adoptableProfile.venueId)) {
           await tx.profile.delete({ where: { id: existingByUser.id } });
@@ -150,19 +143,17 @@ export class AuthService {
           include: { venue: true },
         });
       } else {
-        const adoptableProfile = emailVerified
-          ? (grant
-              ? await tx.profile.findFirst({
-                  where: { userId: null, venueId: grant.venueId, email: { equals: email, mode: 'insensitive' } },
-                  orderBy: { createdAt: 'asc' },
-                  include: { venue: true },
-                })
-              : await tx.profile.findFirst({
-                  where: { userId: null, email: { equals: email, mode: 'insensitive' }, venueId: { not: null } },
-                  orderBy: { createdAt: 'asc' },
-                  include: { venue: true },
-                }))
-          : null;
+        const adoptableProfile = grant
+          ? await tx.profile.findFirst({
+              where: { userId: null, venueId: grant.venueId, email: { equals: email, mode: 'insensitive' } },
+              orderBy: { createdAt: 'asc' },
+              include: { venue: true },
+            })
+          : await tx.profile.findFirst({
+              where: { userId: null, email: { equals: email, mode: 'insensitive' }, venueId: { not: null } },
+              orderBy: { createdAt: 'asc' },
+              include: { venue: true },
+            });
         if (adoptableProfile) {
           result = await tx.profile.update({
             where: { id: adoptableProfile.id },

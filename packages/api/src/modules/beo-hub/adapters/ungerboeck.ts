@@ -130,7 +130,11 @@ export function parseUngerboeckPayload(raw: unknown): CanonicalBeoInput {
     loadOutAt,
     guestCount: Number.isFinite(guestCount) ? guestCount : null,
     departmentSlices: Object.keys(departmentSlices).length ? departmentSlices : null,
-    sourcePayload: data,
+    sourcePayload: (() => {
+      const sanitized = typeof data === 'object' && data !== null ? { ...data } : {};
+      delete (sanitized as any).secret;
+      return sanitized;
+    })(),
     sourceUpdatedAt: data.LastChangedDateTime ? new Date(data.LastChangedDateTime) : new Date(),
     specialRequirements: data.SpecialInstructions ? String(data.SpecialInstructions) : null,
     internalNotes: data.InternalNotes ? String(data.InternalNotes) : null,

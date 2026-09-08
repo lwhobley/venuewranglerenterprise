@@ -2,6 +2,10 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { UnauthorizedException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { BeoHubController } from './beo-hub.controller';
 
+vi.mock('../../common/rate-limit', () => ({
+  assertWithinSharedRateLimit: vi.fn().mockResolvedValue(undefined),
+}));
+
 describe('BeoHubController', () => {
   let controller: BeoHubController;
   let mockPrisma: any;

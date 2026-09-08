@@ -160,12 +160,19 @@ export default function BanquetFloorPlanScreen() {
   const [isRestoring, setIsRestoring] = useState<boolean>(false);
   const [isSyncingRoster, setIsSyncingRoster] = useState<boolean>(false);
   const [rosterSyncResult, setRosterSyncResult] = useState<{ rosterName: string; count: number } | null>(null);
+  const lastHydratedBeoIdRef = useRef<string | null>(null);
 
   // Sync with selected BEO (either saved JSON layout or fresh auto-build from specs)
   useEffect(() => {
-    if (!selectedBeoId || !beosList.length) return;
+    if (!selectedBeoId) {
+      lastHydratedBeoIdRef.current = null;
+      return;
+    }
+    if (!beosList.length) return;
+    if (lastHydratedBeoIdRef.current === selectedBeoId) return;
     const found = beosList.find((b) => (b._id || b.id) === selectedBeoId);
     if (!found) return;
+    lastHydratedBeoIdRef.current = selectedBeoId;
 
     setEventName(found.eventName ?? 'Banquet Event');
 
