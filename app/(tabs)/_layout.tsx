@@ -61,7 +61,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="guests"
         options={{
-          title: "CRM",
+          title: "BEOs",
           tabBarIcon: icon("account-heart-outline"),
         }}
       />

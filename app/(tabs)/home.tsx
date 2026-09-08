@@ -56,7 +56,7 @@ const MORE_OPS = [
   { href: '/(tabs)/documents', label: 'Documents & Files', icon: 'file-document-multiple-outline' as const },
   { href: '/(tabs)/reports', label: 'Reports & Recon', icon: 'chart-box-outline' as const },
   { href: '/(tabs)/sales', label: 'Concessions POS', icon: 'cash-register' as const },
-  { href: '/(tabs)/guests', label: 'CRM', icon: 'account-heart-outline' as const },
+  { href: '/(tabs)/guests?crmView=events', label: 'BEOs', icon: 'account-heart-outline' as const },
   { href: '/(tabs)/integrations', label: 'POS & Hardware', icon: 'connection' as const },
 ];
 
@@ -74,7 +74,10 @@ export default function HomeScreen() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [goalTitle, setGoalTitle] = useState('');
 
-  const { data: workspace } = useWorkspaceResolution();
+  // Workspace metadata only labels and colours this screen. Older API
+  // revisions may not expose the resolver yet, so its failure must not turn
+  // otherwise healthy Command data into a global red error banner.
+  const { data: workspace } = useWorkspaceResolution({ silent: true });
   const activeDept = workspace?.primaryDepartment ?? workspace?.departments?.[0];
   const activeDeptCode = activeDept?.code;
   const isCross = dashboard?.profile?.role ? isCrossDepartmentRole(dashboard.profile.role) : false;

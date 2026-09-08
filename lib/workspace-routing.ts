@@ -5,7 +5,7 @@ import type { WorkspaceResolution } from './types';
 
 export const WORKSPACE_QUERY_KEY = ['departments', 'workspace'];
 
-export function useWorkspaceResolution() {
+export function useWorkspaceResolution(options?: { silent?: boolean }) {
   const venueId = useAuthStore((s) => s.venue?.id);
   const token = useAuthStore((s) => s.token);
 
@@ -16,6 +16,7 @@ export function useWorkspaceResolution() {
     },
     enabled: Boolean(venueId && token),
     staleTime: 60_000,
+    meta: { silent: options?.silent },
   });
 }
 

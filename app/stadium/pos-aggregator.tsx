@@ -9,6 +9,7 @@ import { useVenueAuth } from '../../lib/useVenueAuth';
 import { useMutation, useQuery } from '../../lib/railway-hooks';
 import { asArray, errorMessage } from '../../lib/format';
 import { api } from '../../lib/railway-api';
+import { useResponsive } from '../../lib/responsive';
 
 interface PosProviderCard {
   provider: string;
@@ -33,6 +34,7 @@ const PROVIDER_METRICS: PosProviderCard[] = [
 
 export default function PosAggregatorScreen() {
   const palette = useDesignTheme();
+  const { isPhone } = useResponsive();
   const { venue, isReady, canManage } = useVenueAuth();
 
   const aggregatorStatus = useQuery(api.pos.getAggregatorStatus, isReady && canManage && venue?.id ? { venueId: venue.id } : 'skip') as any;
@@ -159,7 +161,7 @@ export default function PosAggregatorScreen() {
       {/* KPI Header Bar */}
       <View style={{ paddingHorizontal: spacing.md, paddingTop: spacing.md }}>
         <View style={styles.kpiGrid}>
-          <View style={[styles.kpiCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+          <View style={[styles.kpiCard, isPhone && styles.phoneCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
             <CommandText palette={palette} variant="caption">Aggregated Feeds</CommandText>
             <CommandText palette={palette} variant="title" style={{ color: '#17643B', fontWeight: '800' }}>
               {aggregatorStatus ? `${aggregatorStatus.activeFeedsCount} Active POS Feeds` : 'Unavailable'}
@@ -167,7 +169,7 @@ export default function PosAggregatorScreen() {
             <CommandText palette={palette} variant="caption" style={{ color: '#68706A' }}>Terminal telemetry unavailable</CommandText>
           </View>
 
-          <View style={[styles.kpiCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+          <View style={[styles.kpiCard, isPhone && styles.phoneCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
             <CommandText palette={palette} variant="caption">Pipeline Velocity</CommandText>
             <CommandText palette={palette} variant="title" style={{ color: '#17643B', fontWeight: '800' }}>
               {aggregatorStatus?.metrics?.recentChecksPerMinute != null ? `${aggregatorStatus.metrics.recentChecksPerMinute} Checks / Min` : 'Unavailable'}
@@ -175,7 +177,7 @@ export default function PosAggregatorScreen() {
             <CommandText palette={palette} variant="caption" style={{ color: '#68706A' }}>Latency telemetry unavailable</CommandText>
           </View>
 
-          <View style={[styles.kpiCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+          <View style={[styles.kpiCard, isPhone && styles.phoneCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
             <CommandText palette={palette} variant="caption">Aggregated Gross Sales</CommandText>
             <CommandText palette={palette} variant="title" style={{ color: '#17643B', fontWeight: '800' }}>
               {aggregatorStatus?.metrics?.grossSalesCents != null ? `$${(aggregatorStatus.metrics.grossSalesCents / 100).toFixed(2)}` : 'Unavailable'}
@@ -245,8 +247,8 @@ export default function PosAggregatorScreen() {
         {/* TAB 1: LIVE MULTI-POS STREAM */}
         {activeTab === 'feed' ? (
           <View style={{ gap: spacing.sm }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-              <CommandText palette={palette} variant="label" style={{ color: '#17643B', fontWeight: '800' }}>
+            <View style={styles.splitHeader}>
+              <CommandText palette={palette} variant="label" style={[styles.shrinkText, { color: '#17643B', fontWeight: '800' }]}>
                 AGGREGATED LIVE TRANSACTION STREAM
               </CommandText>
               <StatusPill palette={palette} tone="good">STREAM CONNECTED</StatusPill>
@@ -261,14 +263,14 @@ export default function PosAggregatorScreen() {
             ) : (
               liveFeeds.map((tx: any) => (
                 <View key={tx.id} style={[styles.transactionCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <View style={styles.splitHeader}>
+                  <View style={styles.titleCluster}>
                     <View style={styles.providerTag}>
                       <CommandText palette={palette} variant="caption" style={{ color: '#17643B', fontWeight: '800' }}>
                         {tx.provider.toUpperCase()}
                       </CommandText>
                     </View>
-                    <CommandText palette={palette} variant="body" style={{ fontWeight: '700' }}>
+                    <CommandText palette={palette} variant="body" style={[styles.shrinkText, { fontWeight: '700' }]}>
                       {tx.externalCheckId}
                     </CommandText>
                   </View>
@@ -301,10 +303,10 @@ export default function PosAggregatorScreen() {
             <View style={styles.providersGrid}>
               {PROVIDER_METRICS.map((prov) => (
                 <View key={prov.provider} style={[styles.providerCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <View style={styles.splitHeader}>
+                    <View style={styles.titleCluster}>
                       <MaterialCommunityIcons name={prov.icon as any} size={20} color="#17643B" />
-                      <CommandText palette={palette} variant="body" style={{ fontWeight: '700' }}>
+                      <CommandText palette={palette} variant="body" style={[styles.shrinkText, { fontWeight: '700' }]}>
                         {prov.name}
                       </CommandText>
                     </View>
@@ -340,8 +342,8 @@ export default function PosAggregatorScreen() {
         {/* TAB 3: CHANNEL ROUTING MATRIX */}
         {activeTab === 'channels' ? (
           <View style={{ gap: spacing.sm }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-              <CommandText palette={palette} variant="label" style={{ color: '#17643B', fontWeight: '800' }}>
+            <View style={styles.splitHeader}>
+              <CommandText palette={palette} variant="label" style={[styles.shrinkText, { color: '#17643B', fontWeight: '800' }]}>
                 VENUE MULTI-CHANNEL ROUTING MATRIX
               </CommandText>
               <Button compact mode="text" textColor="#17643B" onPress={() => setShowChannelForm((value) => !value)}>
@@ -384,8 +386,8 @@ export default function PosAggregatorScreen() {
 
             {channels.map((ch) => (
               <View key={ch.id} style={[styles.channelCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <CommandText palette={palette} variant="body" style={{ fontWeight: '700' }}>
+                <View style={styles.splitHeader}>
+                  <CommandText palette={palette} variant="body" style={[styles.shrinkText, { fontWeight: '700' }]}>
                     {ch.name}
                   </CommandText>
                   <Pressable onPress={() => void toggleChannelStatus(ch)} disabled={channelBusy === ch.id}>
@@ -455,9 +457,9 @@ export default function PosAggregatorScreen() {
                 {!master86?.items?.length ? <CommandText palette={palette}>{master86 ? 'No out-of-stock items reported.' : 'Inventory data unavailable.'}</CommandText> : null}
                 {(master86?.items ?? []).map((item: { id: string; name: string }, idx: number) => (
                   <View key={idx} style={[styles.item86Row, { borderColor: palette.divider }]}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <View style={styles.titleCluster}>
                       <MaterialCommunityIcons name="cancel" size={16} color="#D32F2F" />
-                      <CommandText palette={palette} variant="body" style={{ fontWeight: '700' }}>{item.name}</CommandText>
+                      <CommandText palette={palette} variant="body" style={[styles.shrinkText, { fontWeight: '700' }]}>{item.name}</CommandText>
                     </View>
                     <StatusPill palette={palette} tone="danger">OUT OF STOCK</StatusPill>
                   </View>
@@ -538,6 +540,27 @@ const styles = StyleSheet.create({
     padding: spacing.sm,
     gap: 2,
   },
+  phoneCard: {
+    flexBasis: '100%',
+  },
+  splitHeader: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.xs,
+  },
+  titleCluster: {
+    minWidth: 0,
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  shrinkText: {
+    minWidth: 0,
+    flexShrink: 1,
+  },
   tabBar: {
     flexDirection: 'row',
     borderBottomWidth: 1,
@@ -613,6 +636,8 @@ const styles = StyleSheet.create({
   },
   item86Row: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.xs,
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingVertical: 6,

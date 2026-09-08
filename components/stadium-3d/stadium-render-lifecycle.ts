@@ -1,9 +1,17 @@
-export function getRenderableViewport(width: number, height: number) {
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+export function getRenderableViewport(
+  width: number,
+  height: number,
+  fallbackWidth?: number,
+  fallbackHeight?: number,
+) {
+  const resolvedWidth = Number.isFinite(width) && width > 0 ? width : fallbackWidth;
+  const resolvedHeight = Number.isFinite(height) && height > 0 ? height : fallbackHeight;
+
+  if (!Number.isFinite(resolvedWidth) || !Number.isFinite(resolvedHeight) || resolvedWidth! <= 0 || resolvedHeight! <= 0) {
     return null;
   }
 
-  return { width, height };
+  return { width: resolvedWidth!, height: resolvedHeight! };
 }
 
 export function createLoadCompletionGate(onLoadComplete?: (fallback?: boolean) => void) {

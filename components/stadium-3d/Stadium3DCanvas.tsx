@@ -379,7 +379,15 @@ function StadiumScene({
     // 8. Resize Observer
     const handleResize = () => {
       if (!hostRef.current || !rendererRef.current || !cameraRef.current) return;
-      const viewport = getRenderableViewport(hostRef.current.clientWidth, hostRef.current.clientHeight);
+      // WKWebView can mount the DOM root one layout pass before its percentage
+      // height resolves. Falling back to the WebView viewport prevents that
+      // transient 0x0 measurement from permanently suppressing every frame.
+      const viewport = getRenderableViewport(
+        hostRef.current.clientWidth,
+        hostRef.current.clientHeight,
+        window.innerWidth,
+        window.innerHeight,
+      );
       hasRenderableSize = viewport !== null;
       if (!viewport) return;
       rendererRef.current.setSize(viewport.width, viewport.height, false);
@@ -468,8 +476,8 @@ function StadiumScene({
       ref={hostRef}
       style={{
         position: 'relative',
-        width: '100%',
-        height: '100%',
+        width: '100vw',
+        height: '100vh',
         minHeight: 0,
         backgroundColor: '#060D15',
         overflow: 'hidden',

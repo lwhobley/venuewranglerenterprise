@@ -52,23 +52,23 @@ export class DepartmentsService {
     });
     const existingCodes = new Set(existing.map((d) => d.code.toLowerCase()));
 
-    const missing = STANDARD_VENUE_DEPARTMENTS.filter((d) => !existingCodes.has(d.code));
+    const missing = STANDARD_VENUE_DEPARTMENTS.filter((d) => !existingCodes.has(d.code.toLowerCase()));
     if (missing.length > 0) {
-      await Promise.all(
-        missing.map((dept) =>
-          this.prisma.department.create({
-            data: {
-              organizationId,
-              facilityId,
-              code: dept.code,
-              name: dept.name,
-              defaultRoute: dept.defaultRoute,
-              visibilityScope: dept.visibilityScope,
-              active: true,
-            },
-          }),
-        ),
-      );
+      // This resolver is mounted in several app surfaces and those reads can
+      // arrive together on cold start. Let the database absorb a competing
+      // seeder instead of turning a harmless race into a 500 response.
+      await this.prisma.department.createMany({
+        data: missing.map((dept) => ({
+          organizationId,
+          facilityId,
+          code: dept.code,
+          name: dept.name,
+          defaultRoute: dept.defaultRoute,
+          visibilityScope: dept.visibilityScope,
+          active: true,
+        })),
+        skipDuplicates: true,
+      });
     }
 
     await this.ensureDepartmentAreaRules(organizationId, facilityId);

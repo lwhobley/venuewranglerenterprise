@@ -7,9 +7,11 @@ import { spacing, useDesignTheme } from '../../lib/theme';
 import { useVenueAuth } from '../../lib/useVenueAuth';
 import { useQuery } from '../../lib/railway-hooks';
 import { api } from '../../lib/railway-api';
+import { useResponsive } from '../../lib/responsive';
 
 export default function MultiVenueComplianceScreen() {
   const palette = useDesignTheme();
+  const { isPhone } = useResponsive();
   const { venue, isReady, canManage } = useVenueAuth();
 
   const overview = useQuery(api.unionCompliance.getMultiVenueOverview, isReady && canManage && venue?.id ? { venueId: venue.id } : 'skip') as any;
@@ -59,7 +61,7 @@ export default function MultiVenueComplianceScreen() {
       {/* KPI Overview Grid */}
       <View style={{ paddingHorizontal: spacing.md, paddingTop: spacing.md }}>
         <View style={styles.kpiGrid}>
-          <View style={[styles.kpiCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+          <View style={[styles.kpiCard, isPhone && styles.phoneCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
             <CommandText palette={palette} variant="caption">Organization Health Score</CommandText>
             <CommandText palette={palette} variant="title" style={{ color: '#17643B', fontWeight: '800' }}>
               {overview?.overallHealthScore != null ? `${overview.overallHealthScore}%` : 'Unavailable'}
@@ -67,7 +69,7 @@ export default function MultiVenueComplianceScreen() {
             <CommandText palette={palette} variant="caption" style={{ color: '#68706A' }}>{overview ? `${venuesList.length} Venues Reported` : 'Awaiting compliance data'}</CommandText>
           </View>
 
-          <View style={[styles.kpiCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+          <View style={[styles.kpiCard, isPhone && styles.phoneCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
             <CommandText palette={palette} variant="caption">Active Union CBAs</CommandText>
             <CommandText palette={palette} variant="title" style={{ color: '#17643B', fontWeight: '800' }}>
               Unavailable
@@ -75,7 +77,7 @@ export default function MultiVenueComplianceScreen() {
             <CommandText palette={palette} variant="caption" style={{ color: '#68706A' }}>Agreement totals not reported</CommandText>
           </View>
 
-          <View style={[styles.kpiCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+          <View style={[styles.kpiCard, isPhone && styles.phoneCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
             <CommandText palette={palette} variant="caption">Cross-Venue Conflicts</CommandText>
             <CommandText palette={palette} variant="title" style={{ color: conflictsList.length > 0 ? '#A86514' : '#17643B', fontWeight: '800' }}>
               {crossConflicts?.note || !crossConflicts ? 'Unavailable' : `${conflictsList.length} Flagged`}
@@ -151,14 +153,14 @@ export default function MultiVenueComplianceScreen() {
             {!venuesList.length ? <CommandText palette={palette}>No facility compliance data available.</CommandText> : null}
             {venuesList.map((fac: any) => (
               <View key={fac.facilityId} style={[styles.facilityCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <View style={styles.splitHeader}>
+                  <View style={styles.titleCluster}>
                     <View style={styles.codeTag}>
                       <CommandText palette={palette} variant="caption" style={{ color: '#17643B', fontWeight: '800' }}>
                         {fac.facilityCode}
                       </CommandText>
                     </View>
-                    <CommandText palette={palette} variant="title" style={{ fontSize: 16 }}>
+                    <CommandText palette={palette} variant="title" style={[styles.shrinkText, { fontSize: 16 }]}>
                       {fac.facilityName}
                     </CommandText>
                   </View>
@@ -222,14 +224,14 @@ export default function MultiVenueComplianceScreen() {
             {!conflictsList.length ? <CommandText palette={palette}>{crossConflicts?.note ?? (crossConflicts ? 'No conflicts reported.' : 'Conflict data unavailable.')}</CommandText> : null}
             {conflictsList.map((c: any) => (
               <View key={c.id} style={[styles.conflictCard, { backgroundColor: palette.surface, borderColor: c.severity === 'critical' ? '#D32F2F' : '#A86514' }]}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <View style={styles.splitHeader}>
+                  <View style={styles.titleCluster}>
                     <MaterialCommunityIcons
                       name={c.conflictType === 'cross_venue_clopening' ? 'weather-night' : 'calendar-sync'}
                       size={18}
                       color={c.severity === 'critical' ? '#D32F2F' : '#A86514'}
                     />
-                    <CommandText palette={palette} variant="body" style={{ fontWeight: '800' }}>
+                    <CommandText palette={palette} variant="body" style={[styles.shrinkText, { fontWeight: '800' }]}>
                       {c.workerName}
                     </CommandText>
                   </View>
@@ -258,8 +260,8 @@ export default function MultiVenueComplianceScreen() {
         {/* TAB 3: LICENSES & CERTIFICATIONS */}
         {activeTab === 'certifications' ? (
           <View style={{ gap: spacing.md }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-              <CommandText palette={palette} variant="label" style={{ color: '#17643B', fontWeight: '800' }}>
+            <View style={styles.splitHeader}>
+              <CommandText palette={palette} variant="label" style={[styles.shrinkText, { color: '#17643B', fontWeight: '800' }]}>
                 ORGANIZATION-WIDE CERTIFICATION COMPLIANCE
               </CommandText>
             </View>
@@ -268,7 +270,7 @@ export default function MultiVenueComplianceScreen() {
             {!certCategories.length ? <CommandText palette={palette}>No certification data available.</CommandText> : null}
             {certCategories.map((cat: any, idx: number) => (
               <View key={idx} style={[styles.certCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                <View style={styles.splitHeader}>
                   <CommandText palette={palette} variant="body" style={{ fontWeight: '700', flex: 1 }}>
                     {cat.name}
                   </CommandText>
@@ -326,13 +328,13 @@ export default function MultiVenueComplianceScreen() {
                   { rule: 'Daily Double-Time Threshold', standard: 'After 12.0 daily hours', penalty: '2.0x straight hourly rate' },
                   { rule: 'Cross-Venue Rest Period (Clopening)', standard: 'Minimum 10.0 continuous hours between shifts', penalty: 'Clopening premium pay (1.5x rate for next shift)' },
                 ].map((item, idx) => (
-                  <View key={idx} style={[styles.ruleRow, { borderColor: palette.divider }]}>
+                  <View key={idx} style={[styles.ruleRow, isPhone && styles.phoneRuleRow, { borderColor: palette.divider }]}>
                     <View style={{ flex: 1, gap: 2 }}>
                       <CommandText palette={palette} variant="body" style={{ fontWeight: '700' }}>{item.rule}</CommandText>
                       <CommandText palette={palette} variant="caption" style={{ color: '#68706A' }}>Standard: {item.standard}</CommandText>
                     </View>
-                    <View style={{ maxWidth: 180, alignItems: 'flex-end' }}>
-                      <CommandText palette={palette} variant="caption" style={{ color: '#A86514', fontWeight: '700', textAlign: 'right' }}>
+                    <View style={[styles.penaltyCol, isPhone && styles.phonePenaltyCol]}>
+                      <CommandText palette={palette} variant="caption" style={[styles.penaltyText, isPhone && styles.phonePenaltyText, { color: '#A86514', fontWeight: '700' }]}>
                         Penalty: {item.penalty}
                       </CommandText>
                     </View>
@@ -386,6 +388,27 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     padding: spacing.sm,
     gap: 2,
+  },
+  phoneCard: {
+    flexBasis: '100%',
+  },
+  splitHeader: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.xs,
+  },
+  titleCluster: {
+    minWidth: 0,
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  shrinkText: {
+    minWidth: 0,
+    flexShrink: 1,
   },
   tabBar: {
     flexDirection: 'row',
@@ -452,6 +475,25 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
     gap: spacing.sm,
+  },
+  phoneRuleRow: {
+    flexWrap: 'wrap',
+    alignItems: 'flex-start',
+  },
+  penaltyCol: {
+    maxWidth: 180,
+    alignItems: 'flex-end',
+  },
+  phonePenaltyCol: {
+    width: '100%',
+    maxWidth: '100%',
+    alignItems: 'flex-start',
+  },
+  penaltyText: {
+    textAlign: 'right',
+  },
+  phonePenaltyText: {
+    textAlign: 'left',
   },
 });
 

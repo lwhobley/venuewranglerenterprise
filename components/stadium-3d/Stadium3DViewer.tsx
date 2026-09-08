@@ -216,7 +216,9 @@ export function Stadium3DViewer({
               dom={{
                 scrollEnabled: false,
                 contentInsetAdjustmentBehavior: 'never',
-                style: { width: '100%', height: '100%' },
+                // A numeric height is required for reliable WKWebView layout
+                // inside a vertically scrolling React Native screen.
+                style: { width: '100%', height: viewerHeight },
                 onError: () => handleLocalError(new Error('The stadium WebView could not load.')),
                 onContentProcessDidTerminate: () => handleLocalError(new Error('The stadium renderer stopped. Retry or open the Operations Map.')),
                 onRenderProcessGone: () => handleLocalError(new Error('The stadium renderer stopped. Retry or open the Operations Map.')),

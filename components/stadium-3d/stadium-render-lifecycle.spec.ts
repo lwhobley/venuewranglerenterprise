@@ -33,4 +33,8 @@ describe('stadium render lifecycle', () => {
     expect(getRenderableViewport(Number.NaN, 480)).toBeNull();
     expect(getRenderableViewport(390, Number.POSITIVE_INFINITY)).toBeNull();
   });
+
+  it('uses the WebView viewport when an iOS DOM root initially measures zero', () => {
+    expect(getRenderableViewport(0, 0, 390, 480)).toEqual({ width: 390, height: 480 });
+  });
 });
