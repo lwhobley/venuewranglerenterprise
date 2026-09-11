@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_CORS_ORIGINS, isAllowedOrigin } from './cors-origin';
+import { DEFAULT_CORS_ORIGINS, extraCorsOrigins, isAllowedOrigin } from './cors-origin';
 
 describe('CORS origin allowlist', () => {
   it.each([
@@ -44,5 +44,18 @@ describe('CORS origin allowlist', () => {
   it('permits loopback origins in development for local tooling', () => {
     expect(isAllowedOrigin('http://localhost:8081', false)).toBe(true);
     expect(isAllowedOrigin('https://localhost:8443', false)).toBe(true);
+  });
+
+  it('honours extra origins from CORS_ORIGINS', () => {
+    const previous = process.env.CORS_ORIGINS;
+    process.env.CORS_ORIGINS = 'https://preview.example.com, https://other.example.org';
+    try {
+      expect(extraCorsOrigins()).toEqual(['https://preview.example.com', 'https://other.example.org']);
+      expect(isAllowedOrigin('https://preview.example.com', true)).toBe(true);
+      expect(isAllowedOrigin('https://other.example.org', false)).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.CORS_ORIGINS;
+      else process.env.CORS_ORIGINS = previous;
+    }
   });
 });

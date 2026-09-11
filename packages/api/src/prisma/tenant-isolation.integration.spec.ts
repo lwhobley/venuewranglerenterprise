@@ -3,6 +3,7 @@ import type { PrismaClient } from '@prisma/client';
 import { setupTestDb } from '../test/setup-test-db';
 import { tenantIsolationExtension } from './tenant-isolation.extension';
 import { runWithTenant } from './tenant-context';
+import { runWithTenantTx } from './tenant-request-transaction';
 
 /**
  * End-to-end proof that the tenant-isolation extension actually isolates tenants
@@ -81,5 +82,27 @@ describe('tenant isolation extension (integration)', () => {
     );
     expect(created.venueId).toBe(venueA);
     await base.barInventoryItem.delete({ where: { id: created.id } });
+  });
+
+  it('scopes findMany, findUnique, and hostile create through a bound raw transaction', async () => {
+    const otherTenantItem = await base.barInventoryItem.findFirstOrThrow({ where: { venueId: venueB } });
+    await asTenant(venueA, () =>
+      base.$transaction(async (tx) =>
+        runWithTenantTx(tx, async () => {
+          const rows = await db.barInventoryItem.findMany();
+          expect(rows.map((r) => r.name)).toContain('A-Gin');
+          expect(rows.map((r) => r.name)).not.toContain('B-Rum');
+
+          const byId = await db.barInventoryItem.findUnique({ where: { id: otherTenantItem.id } });
+          expect(byId).toBeNull();
+
+          const created = await db.barInventoryItem.create({
+            data: { venueId: venueB, name: 'A-Bound', normalizedName: 'a-bound', category: 'spirit', unit: 'bottle', parLevel: 1, onHand: 1 },
+          });
+          expect(created.venueId).toBe(venueA);
+          await tx.barInventoryItem.delete({ where: { id: created.id } });
+        }),
+      ),
+    );
   });
 });

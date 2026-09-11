@@ -10,6 +10,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Matches,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -179,6 +180,7 @@ export class CreateVmsStaffMemberDto {
 
   @IsString()
   @IsOptional()
+  @Matches(/^\d{4,8}$/)
   pin?: string;
 }
 
@@ -269,6 +271,7 @@ export class AuthorizePunchDto {
 
   @IsString()
   @IsOptional()
+  @Matches(/^\d{4,8}$/)
   pin?: string;
 
   @IsString()
@@ -282,6 +285,7 @@ export class ClockInDto {
 
   @IsString()
   @IsOptional()
+  @Matches(/^\d{4,8}$/)
   pin?: string;
 
   @IsString()
@@ -319,6 +323,7 @@ export class ClockOutDto {
 
   @IsString()
   @IsOptional()
+  @Matches(/^\d{4,8}$/)
   pin?: string;
 
   @IsString()

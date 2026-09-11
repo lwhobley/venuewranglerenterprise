@@ -173,6 +173,27 @@ export class AuthController {
     });
     if (body.flow === "signIn") {
       const credential = user?.password;
+      const locked =
+        !!user?.lockedUntil && user.lockedUntil.getTime() > Date.now();
+      // Always run a verification (dummy hash when unknown) so lock vs miss
+      // vs wrong PIN stay timing-indistinguishable. Lockout is enforced
+      // before the result is used: a correct PIN cannot clear an active
+      // lock. Unlock is out-of-band (forgot-password / admin reset).
+      if (locked) {
+        await this.authService.verifyPassword(
+          body.pin,
+          DUMMY_PASSWORD_SALT,
+          PASSWORD_ITERATIONS,
+          DUMMY_PASSWORD_HASH,
+        );
+        throw new UnauthorizedException("Invalid email or password.");
+      }
+      await assertWithinSharedRateLimit(
+        this.prisma,
+        `auth:email:${email}`,
+        AUTH_RATE_LIMIT_MAX,
+        AUTH_RATE_LIMIT_WINDOW_MS,
+      );
       const passwordMatches = credential
         ? await this.authService.verifyPassword(
             body.pin,
@@ -187,24 +208,6 @@ export class AuthController {
             DUMMY_PASSWORD_HASH,
           );
       if (!credential || !passwordMatches) {
-        // Enforce the lockout recordFailedSignIn writes. It is consulted only
-        // on the failure path, so a correct credential still signs in and
-        // clears the lock above — an attacker cannot lock a victim out of their
-        // own account — but once MAX_FAILED_SIGN_INS wrong PINs have been
-        // submitted, further wrong ones are refused for the rest of the window
-        // without extending it or consuming limiter budget. The message stays
-        // generic so lock state does not reveal whether the account exists.
-        if (user?.lockedUntil && user.lockedUntil.getTime() > Date.now()) {
-          throw new UnauthorizedException("Invalid email or password.");
-        }
-        // Apply the account-level limiter only after password verification so
-        // a valid credential can always clear an attacker-induced lockout.
-        await assertWithinSharedRateLimit(
-          this.prisma,
-          `auth:email:${email}`,
-          AUTH_RATE_LIMIT_MAX,
-          AUTH_RATE_LIMIT_WINDOW_MS,
-        );
         if (user) {
           await this.recordFailedSignIn(user.id);
         }

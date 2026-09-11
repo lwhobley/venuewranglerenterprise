@@ -220,16 +220,7 @@ export function useApiMutation<TArgs, TResult>(
   });
 }
 
-export type InviteCheckResult =
-  | {
-      status: "found";
-      emailSent?: boolean;
-      venueName?: string;
-      jobTitle?: string;
-      role?: string;
-      expiresAt?: number;
-    }
-  | { status: "not_found" | "expired" | "used" };
+export type InviteCheckResult = { status: "ok" };
 
 export type JoinRequestResult = {
   requestId: string;

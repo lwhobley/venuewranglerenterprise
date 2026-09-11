@@ -6,9 +6,8 @@ vi.mock('../../common/rate-limit', () => ({
 }));
 
 describe('WorkforceController invite check email', () => {
-  // Outer-level mocks (calls made outside the $transaction): the top-level
-  // invite/profile lookups used only by the phone-only path and by
-  // reportStaleInviteStatus's used/expired/not_found fallback.
+  // Outer-level mocks: leftover invite/profile lookups (phone-only no longer
+  // hits the database). Email minting happens inside the transaction.
   const outerFindInvite = vi.fn();
   const outerFindProfile = vi.fn();
   // Inner (tx-scoped) mocks: everything the email path does happens inside
@@ -51,7 +50,7 @@ describe('WorkforceController invite check email', () => {
     const controller = new WorkforceController(prisma as any, email as any, config as any);
 
     await expect((controller as any).inviteCheck(request, { email: ' Staff@Example.com ' }))
-      .resolves.toEqual({ status: 'found', emailSent: false });
+      .resolves.toEqual({ status: 'ok' });
     expect(txCreateInvite).not.toHaveBeenCalled();
     expect(sendOrThrow).not.toHaveBeenCalled();
   });
@@ -74,7 +73,7 @@ describe('WorkforceController invite check email', () => {
     const controller = new WorkforceController(prisma as any, email as any, config as any);
 
     await expect((controller as any).inviteCheck(request, { email: 'legacy@example.com' }))
-      .resolves.toEqual({ status: 'found', emailSent: true });
+      .resolves.toEqual({ status: 'ok' });
     expect(txCreateInvite).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
         venueId: 'venue-1',
@@ -101,7 +100,7 @@ describe('WorkforceController invite check email', () => {
     const controller = new WorkforceController(prisma as any, email as any, config as any);
 
     await expect((controller as any).inviteCheck(request, { email: 'legacy@example.com' }))
-      .resolves.toEqual({ status: 'found', emailSent: false });
+      .resolves.toEqual({ status: 'ok' });
     expect(txCreateInvite).not.toHaveBeenCalled();
     expect(sendOrThrow).not.toHaveBeenCalled();
   });
@@ -127,66 +126,30 @@ describe('WorkforceController invite check email', () => {
     const controller = new WorkforceController(prisma as any, email as any, config as any);
 
     await expect((controller as any).inviteCheck(request, { email: 'legacy@example.com' }))
-      .resolves.toEqual({ status: 'found', emailSent: true });
+      .resolves.toEqual({ status: 'ok' });
     expect(txCreateInvite).toHaveBeenCalledOnce();
   });
 
-  it('reports "used" when a used invite exists and there is no roster fallback', async () => {
-    txFindInvite.mockResolvedValue(null); // redeemable-only tx lookup: none
-    txFindProfile.mockResolvedValue(null); // no unclaimed roster row to fall back to
-    outerFindInvite.mockResolvedValue({ usedBy: 'user-1', expiresAt: new Date(Date.now() + 60_000) }); // stale-status lookup
+  it('returns the same opaque status when there is no roster fallback', async () => {
+    txFindInvite.mockResolvedValue(null);
+    txFindProfile.mockResolvedValue(null);
     const controller = new WorkforceController(prisma as any, email as any, config as any);
 
     await expect((controller as any).inviteCheck(request, { email: 'gone@example.com' }))
-      .resolves.toEqual({ status: 'used' });
+      .resolves.toEqual({ status: 'ok' });
     expect(txCreateInvite).not.toHaveBeenCalled();
     expect(sendOrThrow).not.toHaveBeenCalled();
   });
 
-  it('reports "expired" when only an expired invite exists and there is no roster fallback', async () => {
-    txFindInvite.mockResolvedValue(null);
-    txFindProfile.mockResolvedValue(null);
-    outerFindInvite.mockResolvedValue({ usedBy: null, expiresAt: new Date(Date.now() - 60_000) });
-    const controller = new WorkforceController(prisma as any, email as any, config as any);
-
-    await expect((controller as any).inviteCheck(request, { email: 'stale@example.com' }))
-      .resolves.toEqual({ status: 'expired' });
-  });
-
-  it('reports "not_found" when there is no invite history and no roster fallback', async () => {
-    txFindInvite.mockResolvedValue(null);
-    txFindProfile.mockResolvedValue(null);
-    outerFindInvite.mockResolvedValue(null);
-    const controller = new WorkforceController(prisma as any, email as any, config as any);
-
-    await expect((controller as any).inviteCheck(request, { email: 'nobody@example.com' }))
-      .resolves.toEqual({ status: 'not_found' });
-  });
-
-  it('does not claim that an email was sent for phone-only roster matches', async () => {
-    outerFindInvite.mockResolvedValue(null);
-    outerFindProfile.mockResolvedValue({
-      id: 'profile-1',
-      venueId: 'venue-1',
-      role: 'staff',
-      jobTitle: 'Bartender',
-      venue: { name: 'Test Venue' },
-    });
+  it('returns the same opaque status for phone-only checks without looking up the roster', async () => {
     const controller = new WorkforceController(prisma as any, email as any, config as any);
 
     await expect((controller as any).inviteCheck(request, { phone: '555-0100' }))
-      .resolves.toEqual({ status: 'found', emailSent: false });
+      .resolves.toEqual({ status: 'ok' });
+    expect(outerFindInvite).not.toHaveBeenCalled();
+    expect(outerFindProfile).not.toHaveBeenCalled();
     expect(txCreateInvite).not.toHaveBeenCalled();
     expect(sendOrThrow).not.toHaveBeenCalled();
-  });
-
-  it('reports phone-only "not_found" when there is no invite or roster match', async () => {
-    outerFindInvite.mockResolvedValue(null);
-    outerFindProfile.mockResolvedValue(null);
-    const controller = new WorkforceController(prisma as any, email as any, config as any);
-
-    await expect((controller as any).inviteCheck(request, { phone: '555-0199' }))
-      .resolves.toEqual({ status: 'not_found' });
   });
 });
 

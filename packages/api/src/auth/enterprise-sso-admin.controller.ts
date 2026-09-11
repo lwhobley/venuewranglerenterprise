@@ -9,6 +9,7 @@ import { EnterpriseSsoService } from './enterprise-sso.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { canAssignEnterpriseRole } from './roles';
 import { isAllowedOrigin } from '../common/cors-origin';
+import { isBlockedSsoHost } from '../common/public-https-url';
 
 const PROVIDER_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SECRET_ENV_KEY = /^SSO_[A-Z0-9_]+$/;
@@ -253,6 +254,9 @@ export class EnterpriseSsoAdminController {
     }
     if (url.protocol !== 'https:' || url.username || url.password) {
       throw new BadRequestException(`SSO ${field} must use HTTPS with no embedded credentials.`);
+    }
+    if (isBlockedSsoHost(url.hostname)) {
+      throw new BadRequestException(`SSO ${field} must not target a private or local host.`);
     }
   }
 

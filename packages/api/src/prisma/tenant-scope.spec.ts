@@ -184,21 +184,35 @@ describe('scopeArgs — security invariants', () => {
 });
 
 describe('scopeArgs — unique-keyed operations', () => {
-  it.each(['findUnique', 'findUniqueOrThrow', 'update', 'delete', 'upsert'])('adds venueId to %s where clauses', (op) => {
+  it.each(['findUnique', 'findUniqueOrThrow', 'delete'])('adds venueId to %s where clauses', (op) => {
     const args = { where: { id: 'abc' }, data: { x: 1 } };
     expect(scopeArgs(op, args, VENUE)).toEqual({ ...args, where: { id: 'abc', venueId: VENUE } });
+  });
+
+  it('forces update data into the bound venue so a row cannot be moved', () => {
+    const out = scopeArgs('update', { where: { id: 'abc' }, data: { name: 'x', venueId: 'other-venue' } }, VENUE);
+    expect(out).toEqual({
+      where: { id: 'abc', venueId: VENUE },
+      data: { name: 'x', venueId: VENUE },
+    });
+  });
+
+  it('forces updateMany data into the bound venue', () => {
+    const out = scopeArgs('updateMany', { where: { name: 'x' }, data: { venueId: 'other-venue' } }, VENUE);
+    expect(out.data).toEqual({ venueId: VENUE });
+    expect(out.where).toEqual({ AND: [{ venueId: VENUE }, { name: 'x' }] });
   });
 
   it('forces the create branch of an upsert into the bound venue', () => {
     const out = scopeArgs('upsert', {
       where: { id: 'abc' },
       create: { name: 'x', venueId: 'other-venue' },
-      update: { name: 'x' },
+      update: { name: 'x', venueId: 'other-venue' },
     }, VENUE);
     expect(out).toEqual({
       where: { id: 'abc', venueId: VENUE },
       create: { name: 'x', venueId: VENUE },
-      update: { name: 'x' },
+      update: { name: 'x', venueId: VENUE },
     });
   });
 });

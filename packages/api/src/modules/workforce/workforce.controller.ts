@@ -97,20 +97,10 @@ export class WorkforceController {
       INVITE_EMAIL_LIMIT_WINDOW_MS,
     );
 
-    // Phone-only contacts never get emailed, so there's no token to mint or
-    // rotate — just report presence, matching the email path's fallback and
-    // stale-status logic below without ever touching the token machinery.
+    // Phone-only contacts never get emailed. Do not look up the roster —
+    // presence would otherwise leak through distinct statuses or timing.
     if (!email) {
-      const invite = await this.prisma.invite.findFirst({
-        where: { phone, usedBy: null, expiresAt: { gt: new Date() } },
-      });
-      if (invite) return { status: 'found', emailSent: false };
-      const unclaimedProfile = await this.prisma.profile.findFirst({
-        where: { userId: null, venueId: { not: null }, phone: phone ? { equals: phone } : undefined },
-        include: { venue: { select: { name: true } } },
-      });
-      if (unclaimedProfile?.venue) return { status: 'found', emailSent: false };
-      return this.reportStaleInviteStatus(undefined, phone);
+      return this.opaqueInviteCheckResult();
     }
 
     // The plaintext token is only needed when minting a new invite. Existing
@@ -158,7 +148,7 @@ export class WorkforceController {
     });
 
     if (!outcome) {
-      return this.reportStaleInviteStatus(email, undefined);
+      return this.opaqueInviteCheckResult();
     }
 
     const appUrl = (this.config.get<string>('APP_WEB_URL') ?? 'https://venuewrangler.com').replace(/\/+$/, '');
@@ -190,22 +180,11 @@ export class WorkforceController {
           this.logger.error(`Invite-check email failed for a venue invite: ${err instanceof Error ? err.message : String(err)}`);
         });
     }
-    return { status: 'found', emailSent: outcome.emailSent };
+    return this.opaqueInviteCheckResult();
   }
 
-  // No redeemable invite and no roster row to fall back to — report the most
-  // specific status we can from invite history (used/expired), so e.g.
-  // someone reusing an old link still gets a helpful message instead of a
-  // generic "not found".
-  private async reportStaleInviteStatus(email: string | undefined, phone: string | undefined) {
-    const staleInvite = await this.prisma.invite.findFirst({
-      where: email ? { email: { equals: email, mode: 'insensitive' } } : { phone },
-      orderBy: { createdAt: 'desc' },
-      select: { usedBy: true, expiresAt: true },
-    });
-    if (staleInvite?.usedBy) return { status: 'used' };
-    if (staleInvite && staleInvite.expiresAt.getTime() < Date.now()) return { status: 'expired' };
-    return { status: 'not_found' };
+  private opaqueInviteCheckResult() {
+    return { status: 'ok' as const };
   }
 
   // ─── Public: venue search (Retired: join requests decommissioned) ──────────

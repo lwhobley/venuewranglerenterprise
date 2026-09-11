@@ -1,7 +1,7 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { Prisma, Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { createHash, pbkdf2, randomBytes, randomInt, timingSafeEqual } from 'crypto';
+import { createHash, createHmac, pbkdf2, randomBytes, randomInt, timingSafeEqual } from 'crypto';
 import { promisify } from 'util';
 import { hashInviteToken } from '../common/invite-token';
 
@@ -40,6 +40,10 @@ export class AuthService {
   }
 
   hashOneTimeCode(code: string) {
+    const pepper = (process.env.OTP_PEPPER || process.env.JWT_SECRET || '').trim();
+    if (pepper) {
+      return createHmac('sha256', pepper).update(code.trim()).digest('hex');
+    }
     return createHash('sha256').update(code.trim()).digest('hex');
   }
 

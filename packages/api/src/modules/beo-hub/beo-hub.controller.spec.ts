@@ -86,6 +86,16 @@ describe('BeoHubController', () => {
       }
     });
 
+    it('returns 401 for an unknown venue instead of revealing that it is missing', async () => {
+      mockPrisma.venue.findUnique.mockResolvedValue(null);
+
+      await expect(
+        controller.handleWebhookIngest('generic-json', 'missing-venue', 'any-secret', undefined, {
+          id: 'webhook-1',
+        }),
+      ).rejects.toThrow(UnauthorizedException);
+    });
+
     it('rejects with 401 when provided secret does not match expected secret', async () => {
       mockPrisma.venue.findUnique.mockResolvedValue({
         id: 'venue-1',

@@ -24,10 +24,18 @@ const PRODUCTION_HOSTS = ['venuewrangler.com', 'venuewrangler.org', 'stadiumwran
 
 const TRUSTED_LOOPBACK_PORTS = ['8081', '3000', '19006'];
 
+export function extraCorsOrigins(raw = process.env.CORS_ORIGINS): string[] {
+  return (raw ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
 export function isAllowedOrigin(origin: string, isProduction: boolean): boolean {
   if (!/^https?:\/\//i.test(origin)) return false;
   try {
     const url = new URL(origin);
+    if (extraCorsOrigins().includes(origin)) return true;
     const host = url.hostname.toLowerCase();
     const isPinnedPagesDev = PAGES_DEV_ORIGINS.includes(host);
     const isProductHost = PRODUCTION_HOSTS.some((root) => host === root || host.endsWith(`.${root}`));

@@ -25,4 +25,7 @@ The app also has a separate `supabase/migrations` history and is not the deploym
 - Partial unique index `TimeEntry_profileId_open_key` (one open entry per profile).
 - Partial unique index `Profile_unclaimed_venue_email_key` (one unclaimed roster row per venue + email) from migration `20260810153000_profile_accrual_defaults_and_unclaimed_unique`.
 - New profiles default `sickHoursAccrued` / `ptoHoursAccrued` to `0` (same migration).
-- Optional `MEDIA_TOKEN_SECRET` signs media access tokens; falls back to `JWT_SECRET`.
+- Auth is administrator PIN sign-in (invite-provisioned). There is no public register or in-app checkout.
+- Optional `MEDIA_TOKEN_SECRET` signs media access tokens; falls back to `JWT_SECRET`. Prefer setting it in production.
+- `CORS_ORIGINS` adds extra exact browser origins on top of the hardcoded product allowlist.
+- See `.env.example` for JWT, SSO, Redis, RabbitMQ, S3, Gemini, Resend, and worker-credential variables.

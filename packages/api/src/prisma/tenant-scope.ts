@@ -138,6 +138,9 @@ export function scopeArgs<T extends Record<string, any> | undefined>(
 
   if (FILTERABLE_OPERATIONS.has(operation)) {
     next.where = mergeScopeWhere(next.where, scopeId, scopeField);
+    if (operation === 'updateMany' && next.data) {
+      next.data = forceScope(next.data, scopeId, scopeField);
+    }
     return next as T;
   }
 
@@ -145,6 +148,12 @@ export function scopeArgs<T extends Record<string, any> | undefined>(
     next.where = mergeUniqueScopeWhere(next.where, scopeId, scopeField);
     if (operation === 'upsert' && next.create) {
       next.create = forceScope(next.create, scopeId, scopeField);
+    }
+    if (operation === 'update' && next.data) {
+      next.data = forceScope(next.data, scopeId, scopeField);
+    }
+    if (operation === 'upsert' && next.update) {
+      next.update = forceScope(next.update, scopeId, scopeField);
     }
     return next as T;
   }

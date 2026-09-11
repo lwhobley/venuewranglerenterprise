@@ -41,13 +41,13 @@ const DEFAULT_TOKEN_TTL_SECONDS = 900;
  * predictable key.
  */
 export function getPunchSecret(env: NodeJS.ProcessEnv = process.env): string {
-  const secret = (env.JWT_SECRET || env.WORKER_CREDENTIAL_PEPPER || env.SESSION_SECRET || '').trim();
-  if (secret.length < MIN_PUNCH_SECRET_LENGTH) {
-    throw new Error(
-      `Punch authorization is not configured. Set JWT_SECRET or WORKER_CREDENTIAL_PEPPER to at least ${MIN_PUNCH_SECRET_LENGTH} characters.`,
-    );
-  }
-  return secret;
+  const pepper = (env.WORKER_CREDENTIAL_PEPPER || '').trim();
+  if (pepper.length >= MIN_PUNCH_SECRET_LENGTH) return pepper;
+  const jwt = (env.JWT_SECRET || '').trim();
+  if (jwt.length >= MIN_PUNCH_SECRET_LENGTH) return jwt;
+  throw new Error(
+    `Punch authorization is not configured. Set WORKER_CREDENTIAL_PEPPER (preferred) or JWT_SECRET to at least ${MIN_PUNCH_SECRET_LENGTH} characters.`,
+  );
 }
 
 function sign(body: string, secret: string): string {

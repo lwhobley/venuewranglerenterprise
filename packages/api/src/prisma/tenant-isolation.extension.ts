@@ -8,21 +8,19 @@ import { getBoundTenantTx, modelDelegateName } from './tenant-request-transactio
  * backstop to the existing manual `where: { venueId }` filters.
  *
  * Behaviour, checked in this order:
- *   1. A request-scoped raw tenant transaction is bound (see
+ *   1. Scope args against the bound tenant (AND venueId/facilityId into where,
+ *      force it onto creates/updates) whenever a tenant context is present.
+ *   2. A request-scoped raw tenant transaction is bound (see
  *      tenant-request-transaction.ts, set by TenantRequestTransactionInterceptor)
- *      → redirect the operation to that SAME transaction instead of running it
- *      on a fresh connection. That transaction already has PostgreSQL's
- *      `app.*` GUCs bound via SET LOCAL, so a future NOBYPASSRLS `stadium_api`
- *      role enforces isolation at the database itself for this call — with no
- *      change required at the call site. This is the "universal GUC binding"
- *      path; see the interceptor's doc for why it is opt-in per controller
- *      rather than global.
- *   2. No tenant context bound          → no-op (auth, webhooks, system, tests).
- *   3. Model has no venueId column      → no-op.
- *   4. Non-scopable operation           → no-op (see tenant-scope: unique-keyed ops).
- *   5. Otherwise                        → AND the venueId into `where` / force it
- *                                        onto created rows (the pre-existing
- *                                        app-layer backstop, unchanged).
+ *      → redirect the already-scoped operation to that SAME transaction instead
+ *      of running it on a fresh connection. The raw tx is unextended, so this
+ *      cannot recurse. PostgreSQL `app.*` GUCs are SET LOCAL on that tx for a
+ *      future NOBYPASSRLS `stadium_api` role; they are defence in depth, not a
+ *      substitute for scoping args here. Production has not cut over to that
+ *      role, so skipping scopeArgs on this path was a live isolation hole.
+ *   3. No tenant context bound          → no-op (auth, webhooks, system, tests).
+ *   4. Model has no venueId column      → no-op.
+ *   5. Non-scopable operation           → no-op (see tenant-scope: unique-keyed ops).
  *
  * Apply with `prisma.$extends(tenantIsolationExtension())`. Because it is inert
  * without a tenant context, wiring it in is safe; it only takes effect once a
@@ -34,32 +32,29 @@ export function tenantIsolationExtension() {
     query: {
       $allModels: {
         async $allOperations({ model, operation, args, query }) {
+          const scopeField = scopeFieldForModel(model);
+          const scopeId =
+            scopeField && shouldScopeOperation(operation)
+              ? scopeIdForField(getTenantContext(), scopeField)
+              : undefined;
+          const effectiveArgs: Record<string, any> = scopeId
+            ? scopeArgs(operation, args as Record<string, any>, scopeId, scopeField!)
+            : (args as Record<string, any>);
+
           const tx = getBoundTenantTx();
           if (tx) {
             const delegate = (tx as unknown as Record<string, Record<string, Function>>)[modelDelegateName(model)];
             const op = delegate?.[operation];
             if (typeof op === 'function') {
-              return op(args);
+              return op(effectiveArgs);
             }
             // No matching delegate/operation on the raw tx (shouldn't happen
             // for a real model+operation pair, but never throw over a naming
-            // mismatch) — fall through to the normal app-layer path below,
-            // which still runs correctly, just outside the bound transaction.
+            // mismatch) — fall through to the extended client below, which
+            // still runs the already-scoped args, just outside the bound tx.
           }
 
-          const scopeField = scopeFieldForModel(model);
-          if (!scopeField || !shouldScopeOperation(operation)) {
-            return query(args);
-          }
-          // Read the field the model actually uses. enterTenant() currently
-          // mirrors venueId into facilityId, but scoping must not assume that
-          // — a facilityId-scoped model must be filtered by the tenant's
-          // facilityId, not silently reuse whatever venueId happens to hold.
-          const scopeId = scopeIdForField(getTenantContext(), scopeField);
-          if (!scopeId) {
-            return query(args);
-          }
-          return query(scopeArgs(operation, args as Record<string, any>, scopeId, scopeField));
+          return query(effectiveArgs as typeof args);
         },
       },
     },

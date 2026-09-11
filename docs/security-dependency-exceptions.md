@@ -11,3 +11,7 @@ Exposure is limited to developer/build-time processing of repository assets. Pro
 As of 2026-08-18, `npm audit --omit=dev --audit-level=high` also reports GHSA-ggr8-5vv4-36mx (stack exhaustion when merging recursive object graphs) through `prisma@6.19.x`'s transitive `@prisma/config` -> `deepmerge-ts@7.1.5` dependency. The suggested fix (`prisma@6.12.0`) is a downgrade from the version this repo currently depends on, not a forward patch, and is not something we want to take.
 
 Exposure is limited to `prisma generate`/`prisma migrate`/config-loading at build and migration time — `deepmerge-ts` merges the Prisma config object graph, not any request-time or user-controlled data, and the API server does not import `@prisma/config` at runtime. Re-run the audit on every Prisma upgrade and remove this exception once a `prisma` release depends on a patched `deepmerge-ts` (>=8.0.0).
+
+## Nest `multer` (no patched release)
+
+`@nestjs/platform-express` pulls `multer`. No route in this API uses `FileInterceptor` or multipart upload; document and image bodies are JSON base64. Until Nest ships a patched `multer`, the API production audit may still report it. Re-evaluate on every Nest upgrade.

@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback } from 'react';
 import { useMutation as useReactMutation, useQuery as useReactQuery, useQueryClient } from '@tanstack/react-query';
-import { apiRequest, getApiBaseUrl } from './api-client';
+import { apiRequest } from './api-client';
 import { useAuthStore } from './auth-store';
 import { enqueueOfflineMutation } from './offline-queue';
 import { createOperationId } from './idempotency';
@@ -1044,109 +1044,5 @@ function mapFloorPlanBody(args: any) {
       ...(chair.label ? { label: chair.label } : {}),
     })),
   };
-}
-
-export function useStadiumLiveStream(facilityId: string | null | undefined, zoneId?: string) {
-  const queryClient = useQueryClient();
-  const token = useAuthStore((s) => s.token);
-  const [connected, setConnected] = useState(false);
-  const [lastSeq, setLastSeq] = useState<number | null>(null);
-  const lastEventIdRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    if (!facilityId || !token) return;
-
-    // EventSource is not polyfilled in React Native — only native web has it.
-    if (typeof EventSource === 'undefined') {
-      return;
-    }
-
-    let active = true;
-    let eventSource: EventSource | null = null;
-    let retryDelay = 1000;
-
-    async function connect() {
-      if (!active || !facilityId || !token) return;
-      const fId = String(facilityId);
-
-      // Always require a short-lived single-use stream ticket; never put the
-      // session JWT in the URL where access logs would capture it.
-      let ticket: string | undefined;
-      try {
-        const ticketRes = await apiRequest<{ ticket: string }>(
-          `/v1/stadium/facilities/${encodeURIComponent(fId)}/ticket${zoneId ? `?zoneId=${encodeURIComponent(zoneId)}` : ''}`,
-          { method: 'POST' }
-        );
-        ticket = ticketRes?.ticket;
-      } catch {
-        // Surfaced via the disconnected state; the stream will not connect
-        // without a valid ticket.
-      }
-      if (!active) return;
-      if (!ticket) {
-        setConnected(false);
-        return;
-      }
-
-      const queryParams: string[] = [`ticket=${encodeURIComponent(ticket)}`];
-      if (zoneId) queryParams.push(`zoneId=${encodeURIComponent(zoneId)}`);
-      const lastId = lastEventIdRef.current;
-      if (lastId) queryParams.push(`lastEventId=${encodeURIComponent(lastId)}`);
-
-      const url = `${getApiBaseUrl()}/v1/stadium/facilities/${encodeURIComponent(fId)}/live-stream?${queryParams.join('&')}`;
-
-      eventSource = new EventSource(url);
-
-      eventSource.onopen = () => {
-        if (!active) return;
-        setConnected(true);
-        retryDelay = 1000;
-      };
-
-      eventSource.onmessage = (event) => {
-        if (!active) return;
-        if (event.lastEventId) {
-          lastEventIdRef.current = event.lastEventId;
-        }
-        try {
-          const payload = JSON.parse(event.data);
-          if (typeof payload?.seq === 'number') {
-            setLastSeq(payload.seq);
-          }
-          queryClient.invalidateQueries({ queryKey: ['stadium', 'getOverview'] });
-          queryClient.invalidateQueries({ queryKey: ['stadium', 'listEventIssues'] });
-          queryClient.invalidateQueries({ queryKey: ['stadium', 'getPilotHealth'] });
-        } catch {
-          // ignore malformed frame
-        }
-      };
-
-      eventSource.onerror = () => {
-        if (!active) return;
-        setConnected(false);
-        if (eventSource) {
-          eventSource.close();
-          eventSource = null;
-        }
-        if (active) {
-          setTimeout(() => void connect(), retryDelay);
-          retryDelay = Math.min(retryDelay * 2, 30000);
-        }
-      };
-    }
-
-    void connect();
-
-    return () => {
-      active = false;
-      setConnected(false);
-      if (eventSource) {
-        eventSource.close();
-        eventSource = null;
-      }
-    };
-  }, [facilityId, zoneId, token, queryClient]);
-
-  return { connected, lastSeq };
 }
 

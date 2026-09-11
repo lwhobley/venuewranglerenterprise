@@ -1,5 +1,4 @@
-import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
-import { AuthGuard } from '../../auth/auth.guard';
+import { Body, Controller, Get, Post } from '@nestjs/common';
 import { CurrentUser } from '../../auth/current-user.decorator';
 import type { AuthUser } from '../../auth/auth.guard';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -17,7 +16,6 @@ export class AppBillingController {
     private readonly profiles: ProfileService,
   ) {}
 
-  @UseGuards(AuthGuard)
   @Get('billing')
   async getMyVenueBilling(@CurrentUser() user: AuthUser) {
     const profile = await this.profiles.getProfile(user);
@@ -39,7 +37,6 @@ export class AppBillingController {
     };
   }
 
-  @UseGuards(AuthGuard)
   @Post('billing/stripe/checkout')
   async createStripeCheckout(@CurrentUser() _user: AuthUser, @Body() _body?: any) {
     return {
@@ -48,7 +45,6 @@ export class AppBillingController {
     };
   }
 
-  @UseGuards(AuthGuard)
   @Post('billing/stripe/portal')
   async createStripePortal(@CurrentUser() _user: AuthUser) {
     return {
@@ -57,7 +53,6 @@ export class AppBillingController {
     };
   }
 
-  @UseGuards(AuthGuard)
   @Post('billing/apple/sync')
   async syncAppleSubscription(@CurrentUser() _user: AuthUser, @Body() _body?: any) {
     return {

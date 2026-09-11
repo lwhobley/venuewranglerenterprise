@@ -29,9 +29,10 @@ describe("AuthController administrator PIN sign-in", () => {
     );
   });
 
-  it("allows a correct password to clear an active lockout", async () => {
+  it("rejects a correct PIN while the account is locked", async () => {
     const update = vi.fn().mockResolvedValue({});
     const verifyPassword = vi.fn().mockResolvedValue(true);
+    const issueSession = vi.fn();
     const controller = new AuthController(
       {
         user: {
@@ -53,18 +54,16 @@ describe("AuthController administrator PIN sign-in", () => {
       {} as any,
       { verifyPassword } as any,
     );
-    (controller as any).issueSession = vi.fn().mockResolvedValue({ ok: true });
+    (controller as any).issueSession = issueSession;
 
     await expect(
       (controller as any).password(
         { ip: "127.0.0.1" },
         { email: "staff@example.com", pin: "123456", flow: "signIn" },
       ),
-    ).resolves.toEqual({ ok: true });
-    expect(update).toHaveBeenCalledWith({
-      where: { id: "user-1" },
-      data: { failedSignInCount: 0, lockedUntil: null },
-    });
+    ).rejects.toThrow("Invalid email or password.");
+    expect(issueSession).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
   });
 
   it("serializes failed sign-ins and locks the account at the threshold", async () => {

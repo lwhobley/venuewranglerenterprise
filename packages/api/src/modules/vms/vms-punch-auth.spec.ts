@@ -3,7 +3,7 @@ import { generatePunchAuthToken, getPunchSecret, verifyPunchAuthToken } from './
 
 const VALID_SECRET = 'punch-secret-that-is-long-enough-32';
 
-const SECRET_KEYS = ['JWT_SECRET', 'WORKER_CREDENTIAL_PEPPER', 'SESSION_SECRET'] as const;
+const SECRET_KEYS = ['JWT_SECRET', 'WORKER_CREDENTIAL_PEPPER'] as const;
 const saved: Partial<Record<(typeof SECRET_KEYS)[number], string | undefined>> = {};
 
 beforeEach(() => {
@@ -50,6 +50,13 @@ describe('getPunchSecret', () => {
     process.env.WORKER_CREDENTIAL_PEPPER = VALID_SECRET;
 
     expect(getPunchSecret()).toBe(VALID_SECRET);
+  });
+
+  it('prefers WORKER_CREDENTIAL_PEPPER over JWT_SECRET when both are set', () => {
+    process.env.JWT_SECRET = VALID_SECRET;
+    process.env.WORKER_CREDENTIAL_PEPPER = `${VALID_SECRET}-pepper`;
+
+    expect(getPunchSecret()).toBe(`${VALID_SECRET}-pepper`);
   });
 });
 

@@ -54,11 +54,11 @@ import { BeoHubModule } from './modules/beo-hub/beo-hub.module';
       isGlobal: true,
       envFilePath: ['packages/api/.env.local', 'packages/api/.env', '.env.local', '.env'],
     }),
-    // default: higher ceiling for authenticated dashboard polling
-    // auth: tighter named bucket applied via @Throttle({ auth: ... }) on auth routes
+    // A single named throttler. @nestjs/throttler 6 applies every named
+    // bucket to every route unless skipped per name, so a second "auth"
+    // bucket of 20/min would cap the whole API at 20/min per IP.
     ThrottlerModule.forRoot([
       { name: 'default', ttl: 60_000, limit: 300 },
-      { name: 'auth', ttl: 60_000, limit: 20 },
     ]),
     ScheduleModule.forRoot(),
     PrismaModule,

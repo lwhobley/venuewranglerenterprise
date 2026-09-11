@@ -43,6 +43,5 @@ Managers can rotate a compromised or stale POS secret with `POST /api/v1/pos/con
 
 1. Confirm GitHub Mobile CI and API CI are green.
 2. Confirm the Cloud Run revision has the production secret set and 100% traffic.
-3. Confirm Stripe live checkout creates a subscription for an authenticated venue.
-4. Confirm the alert notification channel is verified.
-5. Record the current revision ID before every deploy for rollback.
+3. Confirm the alert notification channel is verified.
+4. Record the current revision ID before every deploy for rollback.

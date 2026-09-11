@@ -27,11 +27,14 @@ export class MediaAccessService {
   private readonly secret: string;
 
   constructor(config: ConfigService) {
-    const secret =
-      config.get<string>('MEDIA_TOKEN_SECRET')?.trim() ||
-      config.get<string>('JWT_SECRET')?.trim();
+    const dedicated = config.get<string>('MEDIA_TOKEN_SECRET')?.trim();
+    const fallback = config.get<string>('JWT_SECRET')?.trim();
+    const secret = dedicated || fallback;
     if (!secret) {
       throw new Error('MEDIA_TOKEN_SECRET or JWT_SECRET is required for media access tokens');
+    }
+    if (!dedicated && process.env.NODE_ENV === 'production') {
+      console.warn('[MediaAccess] MEDIA_TOKEN_SECRET is unset; falling back to JWT_SECRET. Set MEDIA_TOKEN_SECRET so media tokens can rotate independently.');
     }
     this.secret = secret;
   }

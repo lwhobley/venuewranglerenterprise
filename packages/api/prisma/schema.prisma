@@ -1249,6 +1249,8 @@ model TimeEntry {
   venueId           String
   // Nullable + SetNull so wage records survive account deletion (FLSA
   // retention). profileFullName is snapshotted before the profile is removed.
+  // Venue FK is Restrict for the same reason — deleting a venue must not
+  // wipe punches.
   profileId         String?
   profileFullName   String?
   clockInAt         DateTime
@@ -1265,7 +1267,7 @@ model TimeEntry {
   breaks            Json?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
-  venue             Venue     @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  venue             Venue     @relation(fields: [venueId], references: [id], onDelete: Restrict)
   profile           Profile?  @relation(fields: [profileId], references: [id], onDelete: SetNull)
 
   @@index([venueId])

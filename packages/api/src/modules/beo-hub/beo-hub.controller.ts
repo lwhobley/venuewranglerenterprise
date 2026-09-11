@@ -148,24 +148,22 @@ export class BeoHubController {
       throw new BadRequestException('venueId is required either as a query parameter or in the payload');
     }
 
-    const venue = await this.prisma.venue.findUnique({
-      where: { id: venueId },
-      select: { id: true, leadsWebhookSecret: true },
-    });
-    if (!venue) throw new NotFoundException(`Venue ${venueId} not found`);
-
-    const providedSecret = secretHeader ?? hubSecretHeader;
-    if (!venue.leadsWebhookSecret || !secretsMatch(providedSecret, venue.leadsWebhookSecret)) {
-      throw new UnauthorizedException('Invalid or missing webhook authorization secret.');
-    }
-
     await assertWithinSharedRateLimit(
       this.prisma,
-      `beo-hub-webhook:${venueId}:${getClientIp(req ?? ({} as Request))}`,
+      `beo-hub-webhook:${getClientIp(req ?? ({} as Request))}`,
       60,
       60_000,
       'Too many webhook requests.',
     );
+
+    const venue = await this.prisma.venue.findUnique({
+      where: { id: venueId },
+      select: { id: true, leadsWebhookSecret: true },
+    });
+    const providedSecret = secretHeader ?? hubSecretHeader;
+    if (!venue?.leadsWebhookSecret || !secretsMatch(providedSecret, venue.leadsWebhookSecret)) {
+      throw new UnauthorizedException('Invalid webhook secret');
+    }
 
     if (body && typeof body === 'object' && 'secret' in body) {
       delete body.secret;

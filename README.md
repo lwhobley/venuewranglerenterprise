@@ -45,8 +45,8 @@ Venue Wrangler is a native iOS/Android venue ops app built with Expo Router, Nes
 
 1. **Deploy the NestJS Backend** (for example, to Google Cloud Run):
    - Set `DATABASE_URL` to the Supabase pooler connection, `DATABASE_DIRECT_URL` when available, and `JWT_SECRET` in the service configuration.
-   - Set `CORS_ORIGINS` to explicit web origins such as `https://venuewrangler.com,https://www.venuewrangler.com`; do not use `*` with credentialed CORS.
-2. **Point the build at prod**: set `EXPO_PUBLIC_API_URL` in `eas.json` to the deployed server URL. Also set `EXPO_PUBLIC_REVENUECAT_IOS_KEY` (iOS in-app purchases).
+    - Optional: set `CORS_ORIGINS` to extra exact origins (comma-separated). The API already allowlists product hosts; do not use `*` with credentialed CORS.
+  2. **Point the build at prod**: set `EXPO_PUBLIC_API_URL` in `eas.json` to the deployed server URL. Enterprise licensing has no in-app purchase keys.
 3. **Build & submit**:
    - `eas build -p ios --profile production`
    - `eas build -p android --profile production`
