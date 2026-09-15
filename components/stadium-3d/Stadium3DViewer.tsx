@@ -8,6 +8,11 @@ import { Stadium3DErrorState } from './Stadium3DErrorState';
 import { Stadium3DLoadingState } from './Stadium3DLoadingState';
 import { StadiumZoneOverlay } from './StadiumZoneOverlay';
 import {
+  loadStadiumModelAsset,
+  readStadiumModelChunk,
+  type StadiumModelAssetReference,
+} from './stadium-model-asset';
+import {
   buildZoneHighlightStates,
   findZoneBinding,
   getHighlightColor,
@@ -78,6 +83,26 @@ export function Stadium3DViewer({
   const [loadProgress, setLoadProgress] = useState<number>(0);
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [retryCount, setRetryCount] = useState<number>(0);
+  const [modelAsset, setModelAsset] = useState<StadiumModelAssetReference | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setModelAsset(null);
+    void loadStadiumModelAsset()
+      .then((asset) => {
+        if (!cancelled) setModelAsset(asset);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        const detail = error instanceof Error ? `: ${error.message}` : '';
+        setErrorMessage(`The uploaded stadium model could not be prepared${detail}`);
+        setRenderStatus('error');
+      });
+    return () => { cancelled = true; };
+  }, [retryCount]);
+  const handleReadModelChunk = useCallback(async (position: number) => {
+    if (!modelAsset) throw new Error('The stadium model is not ready.');
+    return readStadiumModelChunk(modelAsset, position);
+  }, [modelAsset]);
   useEffect(() => {
     if (renderStatus !== 'loading' || !foreground || !focused) return;
     const timeout = setTimeout(() => {
@@ -195,10 +220,12 @@ export function Stadium3DViewer({
         ) : null}
 
         {/* Three.js 3D WebGL Canvas */}
-        {renderStatus !== 'error' ? (
+        {renderStatus !== 'error' && modelAsset ? (
           <Local3DErrorBoundary onError={handleLocalError}>
             <Stadium3DCanvas
               key={`canvas-${retryCount}`}
+              modelByteLength={modelAsset.byteLength}
+              readModelChunk={handleReadModelChunk}
               selectedZoneId={selectedZoneId}
               highlightedZones={highlightedZonesSimple}
               cameraPreset={cameraPreset}

@@ -8,13 +8,12 @@ import { findZoneByMeshName } from './stadium-model-bindings';
 import { applyHighlights, disposeScene, isolateMaterials } from './scene-resources';
 import { computeCameraFraming, type ModelBounds } from './camera-framing';
 import { createLoadCompletionGate, getRenderableViewport } from './stadium-render-lifecycle';
+import { readModelBytes } from './stadium-model-transfer';
 import type { CameraPresetId, OperationalHighlightStatus, Stadium3DCanvasProps } from './stadium-3d.types';
 
-// Asset reference bundled by Metro
-// @ts-ignore
-import nrgStadiumGlbAsset from '../../assets/nrg-stadium.glb';
-
 function StadiumScene({
+  modelByteLength,
+  readModelChunk,
   selectedZoneId,
   highlightedZones,
   cameraPreset = 'overview',
@@ -194,17 +193,17 @@ function StadiumScene({
     scene.add(modelGroup);
     modelRootRef.current = modelGroup;
 
-    const assetUri =
-      typeof nrgStadiumGlbAsset === 'string'
-        ? nrgStadiumGlbAsset
-        : (nrgStadiumGlbAsset?.uri || nrgStadiumGlbAsset?.default || '');
-
     const loader = new GLTFLoader();
     let hasModelLoaded = false;
 
-    if (assetUri) {
-      loader.load(
-        assetUri,
+    if (modelByteLength > 0) {
+      void readModelBytes(
+        modelByteLength,
+        readModelChunk,
+        (progress) => onLoadProgress?.(Math.round(progress * 0.9)),
+      )
+        .then((bytes) => loader.parseAsync(bytes.buffer as ArrayBuffer, ''))
+        .then(
         (gltf) => {
           if (disposed || failed || hasModelLoaded) { disposeScene(gltf.scene); return; }
           hasModelLoaded = true;
@@ -231,12 +230,6 @@ function StadiumScene({
           onLoadProgress?.(100);
           loadCompletionGate.markModelReady();
           } catch { disposeScene(gltf.scene); fail(); }
-        },
-        (xhr) => {
-          if (!disposed && !failed && !hasModelLoaded && xhr.lengthComputable && xhr.total > 0) {
-            const percent = Math.round((xhr.loaded / xhr.total) * 100);
-            onLoadProgress?.(percent);
-          }
         },
         (error) => {
           const detail = error instanceof Error ? `: ${error.message}` : '';

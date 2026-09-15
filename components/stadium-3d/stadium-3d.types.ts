@@ -1,5 +1,6 @@
 import type { StadiumZoneItem } from '../StadiumUnitDetailModal';
 import type { StadiumZoneData } from '../stadium-map/zone-data';
+import type { ReadStadiumModelChunk } from './stadium-model-transfer';
 
 export type Stadium3DRenderStatus = 'idle' | 'loading' | 'ready' | 'error' | 'fallback';
 
@@ -62,6 +63,8 @@ export interface ProjectedZoneMarker {
 }
 
 export interface Stadium3DCanvasProps {
+  modelByteLength: number;
+  readModelChunk: ReadStadiumModelChunk;
   selectedZoneId: string | null;
   highlightedZones: Record<string, OperationalHighlightStatus>;
   cameraPreset: CameraPresetId;
