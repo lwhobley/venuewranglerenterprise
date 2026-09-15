@@ -128,24 +128,10 @@ export function StadiumUnitDetailModal({ visible, unit, onClose, onStatusChange 
   const suiteDetails = unit.suiteDetails;
   const standDetails = unit.standDetails;
 
-  const preOrders = suiteDetails?.beoPreOrders ?? [
-    { id: 'po-1', name: 'Prime Rib Carving Station w/ Au Jus & Horseradish', quantity: 24, category: 'entree', status: 'delivered', scheduledTime: 'Kickoff - 30m', dietaryNotes: 'Accommodates 24 guests' },
-    { id: 'po-2', name: 'Jumbo Gulf Shrimp Cocktail Platter', quantity: 2, category: 'appetizer', status: 'delivered', scheduledTime: 'Pre-Game', dietaryNotes: 'Contains Shellfish' },
-    { id: 'po-3', name: 'Artisanal Truffle Mac & Vermont White Cheddar', quantity: 2, category: 'entree', status: 'active', scheduledTime: 'Kickoff' },
-    { id: 'po-4', name: 'Dom Pérignon Vintage Champagne (3 btls)', quantity: 3, category: 'bar', status: 'delivered', scheduledTime: 'Pre-Game' },
-    { id: 'po-5', name: 'Warm Soft Pretzels with Craft Beer Cheese', quantity: 24, category: 'appetizer', status: 'delivered', scheduledTime: 'Halftime' },
-    { id: 'po-6', name: 'Executive Pastry Chef Grand Dessert Cart', quantity: 24, category: 'dessert', status: 'prepped', scheduledTime: 'Q3 Break', dietaryNotes: 'Includes Nut-Free assortment' },
-  ];
-
-  const inSuiteOrders = suiteDetails?.inSuiteOrders ?? [
-    { id: 'iso-1', orderedAt: '1:15 PM (Q1 08:42)', orderedBy: 'Suite Host Tablet', items: '2x Casamigos Reposado Carafe, 1x Extra Ice Bucket', totalCents: 24000, status: 'fulfilled' },
-    { id: 'iso-2', orderedAt: '1:48 PM (Q2 03:10)', orderedBy: 'Attendant Alice T.', items: '1x Crispy Hot Wings Platter (30ct), 4x Diet Coke', totalCents: 9500, status: 'delivering' },
-  ];
-
-  const inSeatOrders = suiteDetails?.inSeatOrders ?? standDetails?.inSeatOrders ?? [
-    { id: 'seat-1', seatLocation: `${unit.name} · Seat 4A`, customerName: 'Marcus Sterling', orderedAt: '1:24 PM', items: '1x Double Smashburger, 1x Local Draft IPA', totalCents: 3200, status: 'delivered', runnerName: 'Runner Marcus C.' },
-    { id: 'seat-2', seatLocation: `${unit.name} · Seat 4B`, customerName: 'David K.', orderedAt: '1:52 PM', items: '1x Loaded Helmet Nachos, 2x Sparkling Water', totalCents: 2800, status: 'fulfilling', runnerName: 'Runner Elena R.' },
-  ];
+  const preOrders = suiteDetails?.beoPreOrders ?? [];
+  const inSuiteOrders = suiteDetails?.inSuiteOrders ?? [];
+  const inSeatOrders = suiteDetails?.inSeatOrders ?? standDetails?.inSeatOrders ?? [];
+  const hasBeo = Boolean(suiteDetails?.beoNumber);
 
   const hierarchy: StaffHierarchy = suiteDetails?.hierarchy ?? standDetails?.hierarchy ?? {
     director: { name: 'Eleanor Vance', title: 'VP of Premium Hospitality', radioChannel: 'Ch 1 - Exec' },
@@ -182,6 +168,15 @@ export function StadiumUnitDetailModal({ visible, unit, onClose, onStatusChange 
     router.push({
       pathname: '/stadium/suite-attendant',
       params: { suiteId: unit.id, suiteCode: unit.code },
+    });
+  };
+
+  const handleOpenBeo = () => {
+    if (!suiteDetails?.beoNumber) return;
+    onClose();
+    router.push({
+      pathname: '/(tabs)/guests',
+      params: { crmView: 'hub', crmBeoId: `demo-suite-beo:${suiteDetails.beoNumber}` },
     });
   };
 
@@ -266,7 +261,7 @@ export function StadiumUnitDetailModal({ visible, unit, onClose, onStatusChange 
               </CommandText>
             </Pressable>
 
-            {isSuite ? (
+            {isSuite && hasBeo ? (
               <Pressable
                 onPress={() => setActiveTab('beo')}
                 style={[styles.tabItem, activeTab === 'beo' && { borderBottomColor: '#17643B', borderBottomWidth: 2 }]}
@@ -339,27 +334,27 @@ export function StadiumUnitDetailModal({ visible, unit, onClose, onStatusChange 
                         SUITEHOLDER & RESERVATION DETAILS
                       </CommandText>
                       <CommandText palette={palette} variant="caption" style={{ color: '#17643B', fontWeight: '700' }}>
-                        {suiteDetails?.beoNumber ?? 'BEO-2026-904'}
+                        {suiteDetails?.beoNumber ?? 'No BEO linked'}
                       </CommandText>
                     </View>
                     <View style={[styles.gridTwoCol, isPhone && { flexDirection: 'column' }]}>
                       <View style={styles.infoCol}>
                         <CommandText palette={palette} variant="caption">Suiteholder / Company</CommandText>
                         <CommandText palette={palette} variant="body" style={{ fontWeight: '700', color: '#1D2420' }}>
-                          {suiteDetails?.suiteholder ?? 'Apex Global Holdings'}
+                          {suiteDetails?.suiteholder ?? unit.name}
                         </CommandText>
                       </View>
                       <View style={styles.infoCol}>
                         <CommandText palette={palette} variant="caption">Tier & Capacity</CommandText>
                         <CommandText palette={palette} variant="body" style={{ fontWeight: '700', color: '#1D2420' }}>
-                          {suiteDetails?.tier ?? 'Presidential Luxury Suite'} ({suiteDetails?.guestCount ?? 24} guests)
+                          {suiteDetails?.tier ?? 'Suite'} ({suiteDetails?.guestCount ?? unit.capacity ?? 0} guests)
                         </CommandText>
                       </View>
                     </View>
                     <View style={{ borderTopWidth: StyleSheet.hairlineWidth, borderColor: palette.divider, paddingTop: spacing.xs }}>
                       <CommandText palette={palette} variant="caption">Assigned VIP Host / Lead</CommandText>
                       <CommandText palette={palette} variant="body" style={{ fontWeight: '600' }}>
-                        {suiteDetails?.hostName ?? 'Marcus Sterling (VP VIP Experience)'}
+                        {suiteDetails?.hostName ?? 'Unassigned'}
                       </CommandText>
                     </View>
                   </View>
@@ -450,7 +445,7 @@ export function StadiumUnitDetailModal({ visible, unit, onClose, onStatusChange 
                     <StatusPill palette={palette} tone="good">BEO CONFIRMED</StatusPill>
                   </View>
                   <CommandText palette={palette} variant="title" style={{ fontSize: 16, marginTop: 2 }}>
-                    {suiteDetails?.beoPackageName ?? 'Touchdown Luxury Banquet & Chilled Raw Bar'}
+                    {suiteDetails?.beoPackageName ?? 'Package not specified'}
                   </CommandText>
                   <CommandText palette={palette} variant="caption" style={{ color: '#68706A' }}>
                     Pre-ordered menu items prepped and dispatched by the Commissary Chef team.
@@ -639,6 +634,11 @@ export function StadiumUnitDetailModal({ visible, unit, onClose, onStatusChange 
             {isSuite ? (
               <CommandButton palette={palette} icon="room-service-outline" selected onPress={handleOpenSuiteAttendant} style={{ flex: 1, minWidth: isPhone ? 140 : undefined }}>
                 Suite Attendant
+              </CommandButton>
+            ) : null}
+            {hasBeo ? (
+              <CommandButton palette={palette} icon="file-document-check-outline" onPress={handleOpenBeo} style={{ flex: 1, minWidth: isPhone ? 140 : undefined }}>
+                Linked BEO
               </CommandButton>
             ) : null}
             <CommandButton palette={palette} icon="alert-outline" onPress={handleReportIssue} style={{ flex: 1, minWidth: isPhone ? 140 : undefined }}>

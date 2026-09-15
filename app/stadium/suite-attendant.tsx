@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, TextInput, Alert } from 'react-native';
+import { router } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { apiRequest, useApiQuery } from '../../lib/api-client';
 import { useStadiumLiveStream } from '../../lib/stadium-live-stream';
@@ -7,6 +8,8 @@ import { asArray } from '../../lib/format';
 import { OpsQueryState, OpsStaleNotice } from '../../components/stadium/OpsQueryState';
 import { DistroPickupNotificationBanner } from '../../components/stadium/DistroPickupNotificationBanner';
 import { opsConsole } from '../../lib/theme';
+import { COMPREHENSIVE_STADIUM_ZONES } from '../../components/stadium-map/zone-data';
+import { buildDemoSuiteRunnerOrders } from '../../components/stadium-map/demo-suite-beos';
 
 export interface BEOItem {
   code: string;
@@ -28,6 +31,8 @@ export interface SuiteBEO {
   status: 'draft' | 'confirmed_beo' | 'prep_initiated' | 'en_route' | 'delivered' | 'closed_invoiced';
   deliveredAt?: string;
   deliveredBy?: string;
+  isDemo?: boolean;
+  demoLink?: { zoneId: string; unitId: string };
 }
 
 // Shared with the kitchen bump screen, so both boards read one cache entry.
@@ -48,7 +53,15 @@ export default function SuiteAttendantRunnerScreen() {
     events: ['suite_beo_updated', 'replenishment_requested'],
     invalidate: [SUITE_BEOS_KEY],
   });
-  const beos = asArray<SuiteBEO>(query.data);
+  const liveBeos = asArray<SuiteBEO>(query.data);
+  const demoBeos = useMemo(
+    () => buildDemoSuiteRunnerOrders(COMPREHENSIVE_STADIUM_ZONES),
+    [],
+  );
+  const beos = useMemo(() => {
+    const liveNumbers = new Set(liveBeos.map((beo) => beo.beoNumber));
+    return [...liveBeos, ...demoBeos.filter((beo) => !liveNumbers.has(beo.beoNumber))];
+  }, [demoBeos, liveBeos]);
   const fetchRunnerOrders = () => void queryClient.invalidateQueries({ queryKey: SUITE_BEOS_KEY });
 
   // The level chips were rendered but never applied, so every runner saw every
@@ -132,7 +145,7 @@ export default function SuiteAttendantRunnerScreen() {
       {beos.length > 0 ? <OpsStaleNotice error={query.error} onRetry={fetchRunnerOrders} /> : null}
 
       <OpsQueryState
-        isLoading={query.isLoading}
+        isLoading={query.isLoading && beos.length === 0}
         error={beos.length > 0 ? null : query.error}
         isEmpty={visibleBeos.length === 0}
         loadingMessage="Loading suite delivery queue…"
@@ -153,6 +166,7 @@ export default function SuiteAttendantRunnerScreen() {
             <View style={styles.cardContent}>
               <Text style={styles.suiteTitle}>{beo.subVenue?.name || 'VIP Suite'}</Text>
               <Text style={styles.hostSubtitle}>Host: {beo.hostName} ({beo.guestCount} Guests)</Text>
+              {beo.isDemo ? <Text style={styles.demoLinkText}>DEMO · LINKED TO STADIUM SUITE AND BEO HUB</Text> : null}
               
               {beo.specialInstructions ? (
                 <Text style={styles.instructionsText}>⚠️ {beo.specialInstructions}</Text>
@@ -168,14 +182,26 @@ export default function SuiteAttendantRunnerScreen() {
 
               {/* Action Buttons */}
               <View style={styles.actionRow}>
-                {beo.status !== 'delivered' && (
+                {beo.isDemo && beo.demoLink ? (
+                  <TouchableOpacity
+                    style={styles.deliverBtn}
+                    onPress={() => router.push({
+                      pathname: '/stadium-map',
+                      params: { zoneId: beo.demoLink!.zoneId, unitId: beo.demoLink!.unitId },
+                    })}
+                  >
+                    <Text style={styles.deliverBtnText}>VIEW LINKED SUITE</Text>
+                  </TouchableOpacity>
+                ) : beo.status !== 'delivered' ? (
                   <TouchableOpacity style={styles.deliverBtn} onPress={() => setDeliveryModalBeo(beo)}>
                     <Text style={styles.deliverBtnText}>MARK DELIVERED ✍️</Text>
                   </TouchableOpacity>
-                )}
-                <TouchableOpacity style={styles.replenishBtn} onPress={() => setReplenishModalBeo(beo)}>
-                  <Text style={styles.replenishBtnText}>REQUEST REPLENISHMENT 🍾</Text>
-                </TouchableOpacity>
+                ) : null}
+                {!beo.isDemo ? (
+                  <TouchableOpacity style={styles.replenishBtn} onPress={() => setReplenishModalBeo(beo)}>
+                    <Text style={styles.replenishBtnText}>REQUEST REPLENISHMENT 🍾</Text>
+                  </TouchableOpacity>
+                ) : null}
               </View>
             </View>
           </View>
@@ -287,6 +313,7 @@ const styles = StyleSheet.create({
   cardContent: { padding: 12 },
   suiteTitle: { color: opsConsole.textStrong, fontSize: 18, fontWeight: '800' },
   hostSubtitle: { color: opsConsole.muted, fontSize: 12, marginTop: 2 },
+  demoLinkText: { color: opsConsole.accentSoft, fontSize: 10, fontWeight: '800', marginTop: 5 },
   instructionsText: { color: opsConsole.warn, fontSize: 12, fontWeight: '600', marginTop: 6, backgroundColor: '#451a03', padding: 6, borderRadius: 4 },
   itemsHeader: { color: opsConsole.mutedDim, fontSize: 11, fontWeight: '800', marginTop: 10, marginBottom: 4 },
   itemRow: { flexDirection: 'row', alignItems: 'center', marginVertical: 2 },

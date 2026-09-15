@@ -9,7 +9,7 @@ import { EVENT_BEO_ROUTE } from '../lib/beo-report';
 
 export default function StadiumMapScreen() {
   const palette = useDesignTheme();
-  const params = useLocalSearchParams<{ zoneId?: string; mode?: 'operations' | '3d' }>();
+  const params = useLocalSearchParams<{ zoneId?: string; unitId?: string; mode?: 'operations' | '3d' }>();
   const initialZoneId = typeof params.zoneId === 'string' ? params.zoneId : undefined;
   const initialViewMode = params.mode === '3d' ? '3d' : 'operations';
   // The 3D canvas is a WebView that needs the vertical drag to orbit. While it
@@ -58,6 +58,7 @@ export default function StadiumMapScreen() {
       <View style={{ padding: spacing.md, gap: spacing.md }}>
         <StadiumVenueMap
           initialZoneId={initialZoneId}
+          initialSelectedUnitId={typeof params.unitId === 'string' ? params.unitId : undefined}
           initialViewMode={initialViewMode}
           onViewPerspectiveChange={(perspective) => setScrollEnabled(perspective !== '3d_isometric')}
         />

@@ -40,6 +40,8 @@ import { CrmSalesWorkspace } from './CrmSalesWorkspace';
 import { useAuthStore } from '../lib/auth-store';
 import { useWorkspaceResolution } from '../lib/workspace-routing';
 import { isCrossDepartmentRole } from '../lib/permissions';
+import { COMPREHENSIVE_STADIUM_ZONES } from './stadium-map/zone-data';
+import { buildDemoSuiteBeos } from './stadium-map/demo-suite-beos';
 
 type HubViewMode = 'today' | 'by_event' | 'by_space' | 'needs_review';
 type DepartmentFilter = 'all' | 'kitchen' | 'banquet_floor' | 'bars' | 'suites' | 'warehouse' | 'staffing';
@@ -64,6 +66,7 @@ export interface BeoHubItem {
   departmentSlices: any;
   hasLayout: boolean;
   updatedAt: string;
+  demoLink?: { zoneId: string; unitId: string };
 }
 
 interface ListBeosResponse {
@@ -184,7 +187,26 @@ export function BeoHubWorkspace({
       : 'skip',
   ) as ListBeosResponse | undefined;
 
-  const beos = useMemo(() => beoResponse?.beos ?? [], [beoResponse?.beos]);
+  const demoSuiteBeos = useMemo(
+    () => buildDemoSuiteBeos(COMPREHENSIVE_STADIUM_ZONES),
+    [],
+  );
+  const beos = useMemo(() => {
+    const liveBeos = beoResponse?.beos ?? [];
+    const canSeeSuites = isCross || availableChips.some((chip) => chip.id === 'suites');
+    const includeDemoSuites = canSeeSuites && (department === 'all' || department === 'suites');
+    if (!includeDemoSuites) return liveBeos;
+
+    const liveReferences = new Set(
+      liveBeos.flatMap((beo) => [beo.id, beo.externalId].filter((value): value is string => Boolean(value))),
+    );
+    return [
+      ...liveBeos,
+      ...demoSuiteBeos.filter(
+        (beo) => !liveReferences.has(beo.id) && !liveReferences.has(beo.externalId),
+      ),
+    ];
+  }, [availableChips, beoResponse?.beos, demoSuiteBeos, department, isCross]);
 
   // Mutations
   const uploadBeoMutation = useMutation(api.beoHub.uploadBeo);
@@ -597,6 +619,13 @@ export function BeoHubWorkspace({
                 onOpenFloorPlan={() => router.push(`/banquet-floor-plan?beoId=${selectedBeo.id}`)}
                 onCreateSuiteOrder={() => handleCreateSuiteOrder(selectedBeo.id)}
                 onSyncStaffing={() => handleSyncStaffing(selectedBeo.id)}
+                onOpenLinkedSuite={selectedBeo.demoLink ? () => router.push({
+                  pathname: '/stadium-map',
+                  params: {
+                    zoneId: selectedBeo.demoLink!.zoneId,
+                    unitId: selectedBeo.demoLink!.unitId,
+                  },
+                }) : undefined}
                 onOpenReport={() => {
                   if (selectedBeo.eventId) {
                     router.push(`/stadium/beo-report?eventId=${selectedBeo.eventId}`);
@@ -847,15 +876,18 @@ function BeoDetailCard({
   onCreateSuiteOrder,
   onSyncStaffing,
   onOpenReport,
+  onOpenLinkedSuite,
 }: {
   beo: BeoHubItem;
   onOpenFloorPlan: () => void;
   onCreateSuiteOrder: () => void;
   onSyncStaffing: () => void;
   onOpenReport: () => void;
+  onOpenLinkedSuite?: () => void;
 }) {
   const slices = beo.departmentSlices;
   const isSuite = Boolean(slices?.suites || (beo.venueSpace && /suite/i.test(beo.venueSpace)));
+  const isDemo = beo.externalSource === 'stadium-demo';
 
   return (
     <Card style={{ backgroundColor: colors.surface, borderRadius: radius.sharp, borderWidth: 1, borderColor: colors.border }}>
@@ -870,6 +902,11 @@ function BeoDetailCard({
           <Text style={{ color: colors.muted }}>
             Space: <Text style={{ fontWeight: '700', color: colors.charcoal }}>{beo.venueSpace || 'Unassigned Space'}</Text>
           </Text>
+          {isDemo ? (
+            <Text style={{ color: colors.muted, fontSize: 12 }}>
+              Demo record linked directly to the matching stadium suite fixture.
+            </Text>
+          ) : null}
         </View>
 
         {/* Operational Timeline Grid */}
@@ -889,19 +926,27 @@ function BeoDetailCard({
 
         {/* Action Buttons */}
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs }}>
-          <Button compact mode="contained" buttonColor={colors.primary} icon="floor-plan" onPress={onOpenFloorPlan}>
-            Banquet Floor Plan
-          </Button>
+          {isDemo && onOpenLinkedSuite ? (
+            <Button compact mode="contained" buttonColor={colors.primary} icon="map-marker" onPress={onOpenLinkedSuite}>
+              Open Linked Suite
+            </Button>
+          ) : (
+            <Button compact mode="contained" buttonColor={colors.primary} icon="floor-plan" onPress={onOpenFloorPlan}>
+              Banquet Floor Plan
+            </Button>
+          )}
 
-          {isSuite ? (
+          {isSuite && !isDemo ? (
             <Button compact mode="outlined" textColor={colors.primary} icon="room-service" onPress={onCreateSuiteOrder}>
               {beo.suiteOrderCount > 0 ? 'Suite Order Linked' : 'Create Suite Order'}
             </Button>
           ) : null}
 
-          <Button compact mode="outlined" textColor={colors.primary} icon="account-group" onPress={onSyncStaffing}>
-            Sync Staff Roster
-          </Button>
+          {!isDemo ? (
+            <Button compact mode="outlined" textColor={colors.primary} icon="account-group" onPress={onSyncStaffing}>
+              Sync Staff Roster
+            </Button>
+          ) : null}
 
           {beo.eventId ? (
             <Button compact mode="text" textColor={colors.primary} icon="file-document" onPress={onOpenReport}>
