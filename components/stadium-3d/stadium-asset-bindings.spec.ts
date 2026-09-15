@@ -1,11 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import {
-  PROCEDURAL_MESH_NAMES,
-  STADIUM_ZONE_MODEL_BINDINGS,
-  findZoneByMeshName,
-} from './stadium-model-bindings';
+import { STADIUM_ZONE_MODEL_BINDINGS, findZoneByMeshName } from './stadium-model-bindings';
 
 /**
  * The zone bindings are only useful if they name meshes that actually exist in
@@ -22,8 +18,6 @@ function readGlbNodeNames(): string[] {
 }
 
 const NODE_NAMES = readGlbNodeNames();
-const PROCEDURAL_NAMES = Object.values(PROCEDURAL_MESH_NAMES);
-
 /**
  * Structure with no operational meaning: the roof and the plaza rings are
  * scenery, and tapping them is expected to select nothing.
@@ -43,10 +37,8 @@ describe('stadium 3D asset bindings', () => {
     ]));
   });
 
-  it('names only meshes that exist in the asset or in the procedural fallback', () => {
-    const known = new Set(
-      [...NODE_NAMES, ...PROCEDURAL_NAMES].map((name) => name.toLowerCase().replace(/^node_/, ''))
-    );
+  it('names only meshes that exist in the uploaded asset', () => {
+    const known = new Set(NODE_NAMES.map((name) => name.toLowerCase().replace(/^node_/, '')));
 
     const unresolved = STADIUM_ZONE_MODEL_BINDINGS.flatMap((binding) =>
       binding.meshNames
@@ -65,12 +57,6 @@ describe('stadium 3D asset bindings', () => {
     );
 
     expect(unmatched).toEqual([]);
-  });
-
-  it('routes every procedural fallback mesh to a zone, so the fallback stays tappable', () => {
-    for (const name of PROCEDURAL_NAMES) {
-      expect(findZoneByMeshName(name), name).toBeDefined();
-    }
   });
 
   it('leaves no asset node unselectable except the scenery that has no zone', () => {

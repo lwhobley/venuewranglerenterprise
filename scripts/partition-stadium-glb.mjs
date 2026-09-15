@@ -25,12 +25,12 @@ if (!input || !output) {
 const SECTIONS = [
   // The scan is open over the field and its top rim belongs to the upper deck,
   // so there is no roof band. The field is flat at ~5% height inside r 0.4.
-  { name: 'Node_Field_GrassTurf', color: [0.11, 0.42, 0.22], test: (r, h) => r < 0.4 && h < 0.12 },
-  { name: 'Node_Bowl_100_Lower', color: [0.05, 0.13, 0.22], test: (r) => r < 0.53 },
-  { name: 'Node_Bowl_200_Club', color: [0.07, 0.17, 0.29], test: (r) => r < 0.66 },
-  { name: 'Node_Suites_300_Balcony', color: [0.83, 0.69, 0.22], test: (r) => r < 0.76 },
-  { name: 'Node_Bowl_500_UpperRed', color: [0.54, 0.08, 0.13], test: (r) => r < 0.93 },
-  { name: 'Node_Gate_Exterior', color: [0.8, 0.83, 0.86], test: () => true },
+  { name: 'Node_Field_GrassTurf', test: (r, h) => r < 0.4 && h < 0.12 },
+  { name: 'Node_Bowl_100_Lower', test: (r) => r < 0.53 },
+  { name: 'Node_Bowl_200_Club', test: (r) => r < 0.66 },
+  { name: 'Node_Suites_300_Balcony', test: (r) => r < 0.76 },
+  { name: 'Node_Bowl_500_UpperRed', test: (r) => r < 0.93 },
+  { name: 'Node_Gate_Exterior', test: () => true },
 ];
 
 const io = new NodeIO().registerExtensions([KHRMeshQuantization]);
@@ -89,6 +89,13 @@ if (flag === '--stats') {
 const doc = new Document();
 const buffer = doc.createBuffer();
 const scene = doc.createScene('Stadium');
+// The Meshy upload contains one neutral PBR material. Keep that authored look
+// across every zone; runtime emissive highlighting is applied only on selection.
+const sourceMaterial = prim.getMaterial();
+const stadiumMaterial = doc.createMaterial(sourceMaterial?.getName() || 'material')
+  .setBaseColorFactor(sourceMaterial?.getBaseColorFactor() ?? [1, 1, 1, 1])
+  .setRoughnessFactor(sourceMaterial?.getRoughnessFactor() ?? 1)
+  .setMetallicFactor(sourceMaterial?.getMetallicFactor() ?? 0);
 const assignment = new Uint8Array(triCount);
 for (let t = 0; t < triCount; t++) {
   assignment[t] = SECTIONS.findIndex((s) => s.test(radial[t], height[t]));
@@ -118,8 +125,7 @@ SECTIONS.forEach((section, s) => {
     .setAttribute('POSITION', doc.createAccessor().setType('VEC3').setArray(new Float32Array(outPos)).setBuffer(buffer))
     .setIndices(doc.createAccessor().setType('SCALAR')
       .setArray(remap.size > 65535 ? new Uint32Array(outIdx) : new Uint16Array(outIdx)).setBuffer(buffer))
-    .setMaterial(doc.createMaterial(section.name.replace(/^Node_/, 'Mat_'))
-      .setBaseColorFactor([...section.color, 1]).setRoughnessFactor(0.7).setMetallicFactor(0.1));
+    .setMaterial(stadiumMaterial);
   if (nrm) p.setAttribute('NORMAL', doc.createAccessor().setType('VEC3').setArray(new Float32Array(outNrm)).setBuffer(buffer));
   const mesh = doc.createMesh(section.name).addPrimitive(p);
   scene.addChild(doc.createNode(section.name).setMesh(mesh));

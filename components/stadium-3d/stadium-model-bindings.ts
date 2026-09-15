@@ -50,23 +50,6 @@ export const CAMERA_PRESETS: Record<CameraPresetId, CameraPreset> = {
   },
 };
 
-/**
- * Names given to the procedural bowl the canvas builds when the GLB cannot
- * load. They are bound to zones exactly like the asset's own meshes so the
- * fallback stays tappable, and living here keeps the two sides in step.
- */
-export const PROCEDURAL_MESH_NAMES = {
-  turf: 'Field_GrassTurf',
-  endzoneNorth: 'Endzone_North_Texans',
-  endzoneSouth: 'Endzone_South_Texans',
-  bowl100: 'Bowl_100_LowerNavy',
-  bowl200: 'Bowl_200_ClubNavy',
-  suites300: 'Suites_300_Balcony',
-  upperBowl: 'Bowl_500_UpperRed',
-  gateFord: 'Gate_Ford_Tower',
-  gateKroger: 'Gate_Kroger_Tower',
-} as const;
-
 export const STADIUM_ZONE_MODEL_BINDINGS: StadiumZoneModelBinding[] = [
   {
     zoneId: 'zone-field-sidelines',
@@ -75,13 +58,7 @@ export const STADIUM_ZONE_MODEL_BINDINGS: StadiumZoneModelBinding[] = [
     category: 'field_sidelines',
     // The asset is a single scanned mesh split into zone sections by
     // scripts/partition-stadium-glb.mjs; each section is one named node.
-    meshNames: [
-      'Node_Field_GrassTurf',
-      // Procedural fallback geometry, which uses its own names.
-      PROCEDURAL_MESH_NAMES.turf,
-      PROCEDURAL_MESH_NAMES.endzoneNorth,
-      PROCEDURAL_MESH_NAMES.endzoneSouth,
-    ],
+    meshNames: ['Node_Field_GrassTurf'],
     anchor: [0, 0.4, 0],
     cameraPreset: 'field',
     colorHex: '#00E5FF',
@@ -91,10 +68,7 @@ export const STADIUM_ZONE_MODEL_BINDINGS: StadiumZoneModelBinding[] = [
     name: 'Concourse 100 Service Areas',
     level: '1',
     category: 'concourse_service_areas',
-    meshNames: [
-      'Node_Bowl_100_Lower',
-      PROCEDURAL_MESH_NAMES.bowl100,
-    ],
+    meshNames: ['Node_Bowl_100_Lower'],
     anchor: [0, 2.5, -6],
     cameraPreset: 'concourse',
     colorHex: '#FFA000',
@@ -115,10 +89,7 @@ export const STADIUM_ZONE_MODEL_BINDINGS: StadiumZoneModelBinding[] = [
     name: 'Club Level 200',
     level: '2',
     category: 'club_level',
-    meshNames: [
-      'Node_Bowl_200_Club',
-      PROCEDURAL_MESH_NAMES.bowl200,
-    ],
+    meshNames: ['Node_Bowl_200_Club'],
     anchor: [10, 3.4, 0],
     cameraPreset: 'premium',
     colorHex: '#00E5FF',
@@ -128,10 +99,7 @@ export const STADIUM_ZONE_MODEL_BINDINGS: StadiumZoneModelBinding[] = [
     name: 'Luxury Executive Suites 300',
     level: '3',
     category: 'luxury_suites',
-    meshNames: [
-      'Node_Suites_300_Balcony',
-      PROCEDURAL_MESH_NAMES.suites300,
-    ],
+    meshNames: ['Node_Suites_300_Balcony'],
     anchor: [-10.8, 4.4, 0],
     cameraPreset: 'premium',
     colorHex: '#FFD700',
@@ -142,10 +110,7 @@ export const STADIUM_ZONE_MODEL_BINDINGS: StadiumZoneModelBinding[] = [
     level: '4',
     category: 'upper_deck',
     // Upper tiers and the top rim of the bowl, 400 suites included.
-    meshNames: [
-      'Node_Bowl_500_UpperRed',
-      PROCEDURAL_MESH_NAMES.upperBowl,
-    ],
+    meshNames: ['Node_Bowl_500_UpperRed'],
     anchor: [0, 6.4, 13.5],
     cameraPreset: 'overview',
     colorHex: '#B71C1C',
@@ -156,11 +121,7 @@ export const STADIUM_ZONE_MODEL_BINDINGS: StadiumZoneModelBinding[] = [
     level: '1',
     category: 'stadium_gates',
     // The outer facade, where the entry gates sit.
-    meshNames: [
-      'Node_Gate_Exterior',
-      PROCEDURAL_MESH_NAMES.gateFord,
-      PROCEDURAL_MESH_NAMES.gateKroger,
-    ],
+    meshNames: ['Node_Gate_Exterior'],
     anchor: [0, 3.0, -14],
     cameraPreset: 'exterior',
     colorHex: '#004B87',
@@ -184,9 +145,8 @@ export function findZoneBinding(zoneId: string): StadiumZoneModelBinding | undef
 }
 
 /**
- * GLTF nodes in this asset are exported as `Node_<name>`, while the procedural
- * fallback names its meshes bare. Comparing on the un-prefixed, lower-cased
- * name means a binding entry written either way resolves against either source.
+ * GLTF nodes in this asset are exported as `Node_<name>`. Comparing on the
+ * un-prefixed, lower-cased name keeps bindings robust to exporter casing.
  */
 function normalizeMeshName(meshName: string): string {
   return meshName.toLowerCase().replace(/^node_/, '');

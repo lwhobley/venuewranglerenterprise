@@ -4,14 +4,11 @@ import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { PROCEDURAL_MESH_NAMES, findZoneByMeshName } from './stadium-model-bindings';
+import { findZoneByMeshName } from './stadium-model-bindings';
 import { applyHighlights, disposeScene, isolateMaterials } from './scene-resources';
 import { computeCameraFraming, type ModelBounds } from './camera-framing';
 import { createLoadCompletionGate, getRenderableViewport } from './stadium-render-lifecycle';
 import type { CameraPresetId, OperationalHighlightStatus, Stadium3DCanvasProps } from './stadium-3d.types';
-
-/** Structural volumes whose shadows read at stadium scale. */
-const SHADOW_CASTING_MESH = /^(Node_)?(Bowl_|Suites_|Upper_|Gate_|Roof_|Exterior_|Jumbotron_|Ext_)/;
 
 // Asset reference bundled by Metro
 // @ts-ignore
@@ -89,10 +86,10 @@ function StadiumScene({
     let failed = false;
     let hasRenderableSize = false;
     const loadCompletionGate = createLoadCompletionGate(onLoadComplete);
-    const fail = () => {
+    const fail = (message = 'The 3D renderer stopped. Retry or open the Operations Map.') => {
       if (disposed || failed) return;
       failed = true;
-      onLoadError?.('The 3D renderer stopped. Retry or open the Operations Map.');
+      onLoadError?.(message);
     };
 
     const width = Math.max(host.clientWidth, 1);
@@ -101,7 +98,6 @@ function StadiumScene({
     // 1. Scene & Environment
     const scene = new THREE.Scene();
     scene.background = new THREE.Color('#060D15');
-    scene.fog = new THREE.FogExp2('#060D15', 0.008);
     sceneRef.current = scene;
 
     // 2. Camera
@@ -127,10 +123,11 @@ function StadiumScene({
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     renderer.setSize(width, height, false);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.35;
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    // The uploaded GLB is the visual source of truth. Avoid cinematic color
+    // grading and shadows that would repaint or reshape its authored look.
+    renderer.toneMapping = THREE.NoToneMapping;
+    renderer.toneMappingExposure = 1;
+    renderer.shadowMap.enabled = false;
     renderer.domElement.style.display = 'block';
     renderer.domElement.style.touchAction = 'none';
     renderer.domElement.style.width = '100%';
@@ -181,62 +178,18 @@ function StadiumScene({
         minY: box.min.y,
         height: box.max.y - box.min.y,
       };
-      // A fixed 48-unit plaza dwarfed the auto-fitted model and filled the
-      // frame with empty ground; keep it just wider than the model footprint.
-      const plazaRadius = Math.max(sphere.radius * 1.25, 1);
-      groundRing.scale.set(plazaRadius, 1, plazaRadius);
-      groundRing.position.set(sphere.center.x, box.min.y, sphere.center.z);
       frameToPreset();
     };
 
-    // 5. Lighting Setup (Cinematic Nighttime Operations Rig)
-    const hemiLight = new THREE.HemisphereLight('#E3F2FD', '#0A1A10', 2.5);
-    scene.add(hemiLight);
-
-    const keyLight = new THREE.DirectionalLight('#FFFFFF', 4.2);
+    // The source file has no embedded lights, so use a neutral studio rig.
+    // White-only illumination reveals the source material without tinting it.
+    scene.add(new THREE.HemisphereLight('#FFFFFF', '#555555', 2));
+    const keyLight = new THREE.DirectionalLight('#FFFFFF', 2.5);
     keyLight.position.set(24, 42, 28);
-    keyLight.castShadow = true;
-    keyLight.shadow.mapSize.width = 1024;
-    keyLight.shadow.mapSize.height = 1024;
-    keyLight.shadow.bias = -0.0005;
     scene.add(keyLight);
 
-    const rimLight = new THREE.DirectionalLight('#00E5FF', 2.8);
-    rimLight.position.set(-30, 20, -25);
-    scene.add(rimLight);
-
-    const goldAccent = new THREE.DirectionalLight('#FFD700', 1.8);
-    goldAccent.position.set(0, 32, 0);
-    scene.add(goldAccent);
-
-    // Ground Plaza Base Slab
-    const groundRing = new THREE.Group();
-    scene.add(groundRing);
-    const ground = new THREE.Mesh(
-      new THREE.CircleGeometry(1, 96),
-      new THREE.MeshStandardMaterial({
-        color: '#08121E',
-        roughness: 0.95,
-        metalness: 0.1,
-      })
-    );
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.y = -0.05;
-    ground.receiveShadow = true;
-    groundRing.add(ground);
-
-    // Concentric Plaza Rings, sized as fractions of the plaza radius.
-    [0.5, 0.71, 0.92].forEach((r) => {
-      const ring = new THREE.Mesh(
-        new THREE.RingGeometry(r, r + 0.0032, 64),
-        new THREE.MeshBasicMaterial({ color: '#10253A', side: THREE.DoubleSide })
-      );
-      ring.rotation.x = -Math.PI / 2;
-      ring.position.y = 0.01;
-      groundRing.add(ring);
-    });
-
-    // 6. GLB Model Loading with Fallback Procedural Bowl
+    // 6. Load the uploaded GLB. Never replace a slow or failed download with a
+    // synthetic stadium: users must see this asset or an honest load error.
     const modelGroup = new THREE.Group();
     scene.add(modelGroup);
     modelRootRef.current = modelGroup;
@@ -248,29 +201,11 @@ function StadiumScene({
 
     const loader = new GLTFLoader();
     let hasModelLoaded = false;
-    const useFallback = () => {
-      if (disposed || failed || hasModelLoaded) return;
-      try {
-        buildProceduralStadium(modelGroup);
-        isolateMaterials(modelGroup);
-        captureModelBounds(modelGroup);
-        applyHighlights(modelGroup, selectedZoneIdRef.current, highlightedZonesRef.current);
-        needsRender.current = true;
-        hasModelLoaded = true;
-        loadCompletionGate.markModelReady(true);
-      } catch { fail(); }
-    };
-
-    // Timeout guard: if GLB takes > 7s, generate procedural stadium bowl so screen is never blank
-    const loadTimeout = setTimeout(() => {
-      useFallback();
-    }, 7000);
 
     if (assetUri) {
       loader.load(
         assetUri,
         (gltf) => {
-          clearTimeout(loadTimeout);
           if (disposed || failed || hasModelLoaded) { disposeScene(gltf.scene); return; }
           hasModelLoaded = true;
           try {
@@ -286,18 +221,8 @@ function StadiumScene({
           const center = bbox.getCenter(new THREE.Vector3());
           gltf.scene.position.set(-center.x * targetScale, -bbox.min.y * targetScale, -center.z * targetScale);
 
-          // Traverse meshes, enable shadows, store original materials
-          // Shadow-casting every mesh doubles the draw calls for yard lines and
-          // endzone lettering that cast nothing legible. Restrict casting to the
-          // large structural volumes; everything still receives.
-          gltf.scene.traverse((obj) => {
-            if ((obj as THREE.Mesh).isMesh) {
-              const mesh = obj as THREE.Mesh;
-              mesh.castShadow = SHADOW_CASTING_MESH.test(mesh.name);
-              mesh.receiveShadow = true;
-            }
-          });
-
+          // Clone only selectable materials so glow remains a reversible
+          // overlay; base geometry and material values remain asset-authored.
           isolateMaterials(gltf.scene);
           modelGroup.add(gltf.scene);
           captureModelBounds(modelGroup);
@@ -314,14 +239,12 @@ function StadiumScene({
           }
         },
         (error) => {
-          clearTimeout(loadTimeout);
-          // Fall back gracefully to built-in procedural stadium bowl
-          useFallback();
+          const detail = error instanceof Error ? `: ${error.message}` : '';
+          fail(`The uploaded stadium model could not be loaded${detail}`);
         }
       );
     } else {
-      clearTimeout(loadTimeout);
-      useFallback();
+      fail('The uploaded stadium model is missing from this build.');
     }
 
     // 7. Tap / Raycasting Detection
@@ -462,7 +385,6 @@ function StadiumScene({
     // 10. Resource Cleanup on Unmount
     return () => {
       disposed = true;
-      clearTimeout(loadTimeout);
       cancelAnimationFrame(animationFrame);
       resizeObserver.disconnect();
       renderer.domElement.removeEventListener('pointerdown', handlePointerDown);
@@ -515,83 +437,4 @@ class CanvasBoundary extends React.Component<React.PropsWithChildren<{ onError?:
 
 export default function Stadium3DCanvas(props: Stadium3DCanvasProps) {
   return <CanvasBoundary onError={props.onLoadError}><StadiumScene {...props} /></CanvasBoundary>;
-}
-
-// Simplified geometry when the bundled asset cannot load.
-function buildProceduralStadium(group: THREE.Group) {
-  // Turf
-  const turf = new THREE.Mesh(
-    new THREE.BoxGeometry(14, 0.4, 24),
-    new THREE.MeshStandardMaterial({ color: '#1B6B38', roughness: 0.8, metalness: 0.1 })
-  );
-  turf.name = PROCEDURAL_MESH_NAMES.turf;
-  turf.position.y = 0.2;
-  turf.receiveShadow = true;
-  group.add(turf);
-
-  // Endzones
-  const ezN = new THREE.Mesh(
-    new THREE.BoxGeometry(13.6, 0.42, 2.8),
-    new THREE.MeshStandardMaterial({ color: '#00143F', roughness: 0.6 })
-  );
-  ezN.name = PROCEDURAL_MESH_NAMES.endzoneNorth;
-  ezN.position.set(0, 0.21, -10.2);
-  group.add(ezN);
-
-  const ezS = new THREE.Mesh(
-    new THREE.BoxGeometry(13.6, 0.42, 2.8),
-    new THREE.MeshStandardMaterial({ color: '#B71C1C', roughness: 0.6 })
-  );
-  ezS.name = PROCEDURAL_MESH_NAMES.endzoneSouth;
-  ezS.position.set(0, 0.21, 10.2);
-  group.add(ezS);
-
-  // Lower Bowl (100 Level)
-  const bowl100 = new THREE.Mesh(
-    new THREE.CylinderGeometry(13.2, 10.5, 1.6, 48, 1, true),
-    new THREE.MeshStandardMaterial({ color: '#0D2137', roughness: 0.6, metalness: 0.3, side: THREE.DoubleSide })
-  );
-  bowl100.name = PROCEDURAL_MESH_NAMES.bowl100;
-  bowl100.position.y = 1.3;
-  bowl100.scale.set(1.1, 1, 1.35);
-  group.add(bowl100);
-
-  // Club Level (200 Level) & LED Ribbon
-  const bowl200 = new THREE.Mesh(
-    new THREE.CylinderGeometry(14.8, 13.0, 1.8, 48, 1, true),
-    new THREE.MeshStandardMaterial({ color: '#132B4A', roughness: 0.5, metalness: 0.4, side: THREE.DoubleSide })
-  );
-  bowl200.name = PROCEDURAL_MESH_NAMES.bowl200;
-  bowl200.position.y = 2.8;
-  bowl200.scale.set(1.11, 1, 1.36);
-  group.add(bowl200);
-
-  // Suites Level (300 Level)
-  const suites300 = new THREE.Mesh(
-    new THREE.CylinderGeometry(15.6, 14.8, 1.2, 48, 1, true),
-    new THREE.MeshStandardMaterial({ color: '#D4AF37', roughness: 0.25, metalness: 0.8, side: THREE.DoubleSide })
-  );
-  suites300.name = PROCEDURAL_MESH_NAMES.suites300;
-  suites300.position.y = 4.3;
-  suites300.scale.set(1.125, 1, 1.375);
-  group.add(suites300);
-
-  // Upper Deck (500 Level)
-  const upperBowl = new THREE.Mesh(
-    new THREE.CylinderGeometry(18.2, 15.4, 3.2, 48, 1, true),
-    new THREE.MeshStandardMaterial({ color: '#8A1522', roughness: 0.6, metalness: 0.2, side: THREE.DoubleSide })
-  );
-  upperBowl.name = PROCEDURAL_MESH_NAMES.upperBowl;
-  upperBowl.position.y = 6.2;
-  upperBowl.scale.set(1.14, 1, 1.39);
-  group.add(upperBowl);
-
-  // Gate Towers
-  const gateMat = new THREE.MeshStandardMaterial({ color: '#ECEFF1', roughness: 0.3, metalness: 0.6 });
-  [-14.5, 14.5].forEach((z, idx) => {
-    const gate = new THREE.Mesh(new THREE.BoxGeometry(8, 3.2, 1.8), gateMat);
-    gate.name = idx === 0 ? PROCEDURAL_MESH_NAMES.gateFord : PROCEDURAL_MESH_NAMES.gateKroger;
-    gate.position.set(0, 2.2, z);
-    group.add(gate);
-  });
 }

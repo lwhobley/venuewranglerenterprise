@@ -46,6 +46,26 @@ describe('bundled stadium asset contract', () => {
     disposeScene(scene);
   });
 
+  it('preserves the uploaded scan neutral material until a zone is highlighted', async () => {
+    const { scene } = await loadModel();
+    const materials: THREE.MeshStandardMaterial[] = [];
+    scene.traverse((object) => {
+      const mesh = object as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      const meshMaterials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      materials.push(...meshMaterials as THREE.MeshStandardMaterial[]);
+    });
+    expect(materials).toHaveLength(6);
+    for (const material of materials) {
+      expect(material.color.getHex()).toBe(0xffffff);
+      expect(material.metalness).toBe(0);
+      expect(material.roughness).toBe(1);
+      expect(material.emissiveIntensity).toBe(1);
+      expect(material.emissive.getHex()).toBe(0x000000);
+    }
+    disposeScene(scene);
+  });
+
   it('selects the 400 level zone from upper deck geometry', async () => {
     const { scene } = await loadModel();
     // Regression: upper geometry was once bound to zone-300-suites, so tapping
