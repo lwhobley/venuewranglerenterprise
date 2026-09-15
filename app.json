@@ -2,7 +2,7 @@
   "expo": {
     "name": "Venue Wrangler Enterprise",
     "slug": "venue-wrangler",
-    "owner": "loungeabilityllc",
+    "owner": "venuewrangler",
     "version": "1.10.11",
     "orientation": "portrait",
     "icon": "./assets/stadium-wrangler-logo-icon.png",
@@ -45,7 +45,7 @@
       "EXPO_PUBLIC_API_URL": "https://stadium-wrangler-api-c57mm72zpa-ue.a.run.app/api",
       "router": {},
       "eas": {
-        "projectId": "eb8d41ff-6e88-48cf-a75a-d4399e442c28"
+        "projectId": "0b62c191-66ca-4b15-8af0-96494331bf3a"
       }
     },
     "plugins": [
@@ -87,14 +87,9 @@
     },
     "updates": {
       "enabled": true,
-      "url": "https://u.expo.dev/eb8d41ff-6e88-48cf-a75a-d4399e442c28",
+      "url": "https://u.expo.dev/0b62c191-66ca-4b15-8af0-96494331bf3a",
       "checkAutomatically": "ON_LOAD",
-      "fallbackToCacheTimeout": 0,
-      "codeSigningCertificate": "./certs/certificate.pem",
-      "codeSigningMetadata": {
-        "keyid": "main",
-        "alg": "rsa-v1_5-sha256"
-      }
+      "fallbackToCacheTimeout": 0
     }
   }
 }
