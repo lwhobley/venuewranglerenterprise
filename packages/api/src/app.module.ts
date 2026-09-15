@@ -26,6 +26,7 @@ import { TimeClockController } from './modules/time-clock/time-clock.controller'
 import { SchedulingController } from './modules/scheduling/scheduling.controller';
 import { PosModule } from './modules/pos/pos.module';
 import { BarInventoryModule } from './modules/bar-inventory/bar-inventory.module';
+import { InventoryModule } from './modules/inventory/inventory.module';
 import { OperationsModule } from './modules/operations/operations.module';
 import { InsightsModule } from './modules/insights/insights.module';
 import { GuestsModule } from './modules/guests/guests.module';
@@ -70,6 +71,7 @@ import { BeoHubModule } from './modules/beo-hub/beo-hub.module';
     NotificationsModule,
     PosModule,
     BarInventoryModule,
+    InventoryModule,
     OperationsModule,
     InsightsModule,
     GuestsModule,

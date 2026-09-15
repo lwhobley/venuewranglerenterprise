@@ -507,6 +507,11 @@ model Organization {
   vmsNotificationPreferences    VmsNotificationPreference[]
   vmsNotificationLogs           VmsNotificationLog[]
   vmsPunchLockouts              VmsPunchLockout[]
+  inventoryLocations            InventoryLocation[]
+  inventoryCategories           InventoryCategory[]
+  inventoryItems                InventoryItem[]
+  inventoryBalances             InventoryBalance[]
+  inventoryTransactions         InventoryTransaction[]
 }
 
 model Facility {
@@ -563,10 +568,229 @@ model Facility {
   vmsNotificationPreferences    VmsNotificationPreference[]
   vmsNotificationLogs           VmsNotificationLog[]
   vmsPunchLockouts              VmsPunchLockout[]
+  inventoryLocations            InventoryLocation[]
+  inventoryCategories           InventoryCategory[]
+  inventoryItems                InventoryItem[]
+  inventoryBalances             InventoryBalance[]
+  inventoryTransactions         InventoryTransaction[]
 
   @@unique([organizationId, id])
   @@unique([organizationId, code])
   @@index([organizationId, active])
+}
+
+// ── Inventory ledger (inventory overhaul, Phase 1) ───────────────────────────
+// Balances are per item + location and change only through
+// InventoryLedgerService, which writes an append-only InventoryTransaction in
+// the same Serializable transaction. See docs/inventory/phase-0-audit-and-plan.md.
+
+enum InventoryDomain {
+  food
+  beverage
+  equipment
+  packaging
+  supply
+}
+
+enum InventoryLocationKind {
+  department
+  kitchen
+  bar
+  concession_stand
+  suite
+  club
+  catering
+  warehouse
+  storage
+  cooler
+  freezer
+  mobile_cart
+  event_storage
+  bin
+  other
+}
+
+enum InventoryTransactionType {
+  opening_balance
+  receive
+  transfer_out
+  transfer_in
+  count_adjustment
+  waste
+  spoilage
+  breakage
+  spill
+  return_to_vendor
+  vendor_credit
+  event_issue
+  event_return
+  recipe_theoretical_usage
+  pos_estimated_depletion
+  manual_adjustment
+  equipment_checkout
+  equipment_checkin
+  equipment_loss
+  equipment_retirement
+}
+
+model InventoryLocation {
+  id             String                 @id @default(cuid())
+  organizationId String
+  facilityId     String
+  departmentId   String?
+  parentId       String?
+  name           String
+  code           String
+  kind           InventoryLocationKind  @default(storage)
+  sortOrder      Int                    @default(0)
+  active         Boolean                @default(true)
+  createdBy      String?
+  updatedBy      String?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  facility     Facility               @relation(fields: [organizationId, facilityId], references: [organizationId, id], onDelete: Cascade)
+  parent       InventoryLocation?     @relation("InventoryLocationTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children     InventoryLocation[]    @relation("InventoryLocationTree")
+  balances     InventoryBalance[]
+  transactions InventoryTransaction[]
+
+  @@unique([facilityId, code])
+  @@index([organizationId, facilityId, active])
+  @@index([facilityId, departmentId])
+  @@index([parentId])
+}
+
+model InventoryCategory {
+  id             String          @id @default(cuid())
+  organizationId String
+  facilityId     String
+  domain         InventoryDomain
+  parentId       String?
+  name           String
+  slug           String
+  isSystem       Boolean         @default(false)
+  sortOrder      Int             @default(0)
+  active         Boolean         @default(true)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  facility     Facility            @relation(fields: [organizationId, facilityId], references: [organizationId, id], onDelete: Cascade)
+  parent       InventoryCategory?  @relation("InventoryCategoryTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children     InventoryCategory[] @relation("InventoryCategoryTree")
+  items        InventoryItem[]
+
+  @@unique([facilityId, domain, slug])
+  @@index([facilityId, domain, active])
+}
+
+model InventoryItem {
+  id                     String          @id @default(cuid())
+  organizationId         String
+  facilityId             String
+  domain                 InventoryDomain
+  categoryId             String?
+  name                   String
+  normalizedName         String
+  description            String?
+  internalSku            String?
+  barcode                String?
+  vendorSku              String?
+  brand                  String?
+  baseUnit               String          @default("ea")
+  purchaseUnit           String?
+  purchaseToBase         Decimal         @default(1) @db.Decimal(14, 4)
+  packSize               String?
+  storageCondition       String?
+  unitCostCents          Decimal?        @db.Decimal(14, 4)
+  lastCostCents          Decimal?        @db.Decimal(14, 4)
+  supplier               String?
+  trackExpiration        Boolean         @default(false)
+  trackLot               Boolean         @default(false)
+  trackSerialNumber      Boolean         @default(false)
+  attributes             Json?
+  imageUrl               String?
+  notes                  String?
+  active                 Boolean         @default(true)
+  legacyBarItemId        String?         @unique
+  legacyDepartmentItemId String?         @unique
+  createdBy              String?
+  updatedBy              String?
+  createdAt              DateTime        @default(now())
+  updatedAt              DateTime        @updatedAt
+
+  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  facility     Facility               @relation(fields: [organizationId, facilityId], references: [organizationId, id], onDelete: Cascade)
+  category     InventoryCategory?     @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  balances     InventoryBalance[]
+  transactions InventoryTransaction[]
+
+  @@unique([facilityId, internalSku])
+  @@index([facilityId, domain, active])
+  @@index([facilityId, categoryId])
+  @@index([facilityId, normalizedName])
+  @@index([facilityId, barcode])
+  @@index([facilityId, vendorSku])
+}
+
+model InventoryBalance {
+  id             String            @id @default(cuid())
+  organizationId String
+  facilityId     String
+  itemId         String
+  locationId     String
+  onHand         Decimal           @default(0) @db.Decimal(14, 4)
+  committed      Decimal           @default(0) @db.Decimal(14, 4)
+  par            Decimal?          @db.Decimal(14, 4)
+  reorderPoint   Decimal?          @db.Decimal(14, 4)
+  reorderQty     Decimal?          @db.Decimal(14, 4)
+  lastCountedAt  DateTime?
+  lastMovementAt DateTime?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  facility     Facility          @relation(fields: [organizationId, facilityId], references: [organizationId, id], onDelete: Cascade)
+  item         InventoryItem     @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  location     InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
+
+  @@unique([itemId, locationId])
+  @@index([facilityId, locationId])
+}
+
+/// Append-only: a trigger rejects UPDATE and DELETE (see the migration).
+model InventoryTransaction {
+  id              String                   @id @default(cuid())
+  organizationId  String
+  facilityId      String
+  itemId          String
+  locationId      String
+  userId          String?
+  type            InventoryTransactionType
+  quantityBefore  Decimal                  @db.Decimal(14, 4)
+  quantityAfter   Decimal                  @db.Decimal(14, 4)
+  quantityDelta   Decimal                  @db.Decimal(14, 4)
+  unitCostCents   Decimal?                 @db.Decimal(14, 4)
+  valueDeltaCents Decimal?                 @db.Decimal(14, 4)
+  reasonCode      String?
+  referenceType   String?
+  referenceId     String?
+  idempotencyKey  String?
+  note            String?
+  createdAt       DateTime                 @default(now())
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  facility     Facility          @relation(fields: [organizationId, facilityId], references: [organizationId, id], onDelete: Cascade)
+  item         InventoryItem     @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  location     InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
+
+  @@unique([facilityId, idempotencyKey])
+  @@index([facilityId, createdAt])
+  @@index([itemId, createdAt])
+  @@index([locationId, createdAt])
+  @@index([facilityId, referenceType, referenceId])
 }
 
 model FacilityZone {

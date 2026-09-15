@@ -84,11 +84,19 @@ export default function TabsLayout() {
         options={{ title: "Event Radio", tabBarIcon: icon("chat-outline") }}
       />
       <Tabs.Screen
-        name="bar-stock"
+        name="inventory"
         options={{
           title: "Inventory",
-          href: "/bar-stock",
           tabBarIcon: icon("clipboard-text-outline"),
+        }}
+      />
+      {/* Legacy bar stock screen: reachable from Inventory → Overview until
+          Phase 2 moves its writes onto the new ledger. */}
+      <Tabs.Screen
+        name="bar-stock"
+        options={{
+          title: "Legacy bar stock",
+          href: null,
         }}
       />
       <Tabs.Screen

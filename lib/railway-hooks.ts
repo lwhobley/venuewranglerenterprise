@@ -108,6 +108,20 @@ const queryRoutes: Record<string, Route> = {
   'barInventory.getCostHistory': { path: (args) => `/v1/bar-inventory/cost-history/${args.itemId}` },
   'barInventory.getAgingReport': { path: '/v1/bar-inventory/aging' },
   'barInventory.listPrepBoard': { path: '/v1/bar-inventory/prep-board' },
+  'inventory.getDashboard': { path: '/v1/inventory/dashboard' },
+  'inventory.listItems': {
+    path: (args) => {
+      const params = new URLSearchParams();
+      for (const key of ['domain', 'categoryId', 'locationId', 'status', 'search', 'offset', 'limit'] as const) {
+        if (args?.[key] != null && args[key] !== '') params.set(key, String(args[key]));
+      }
+      const q = params.toString();
+      return `/v1/inventory/items${q ? `?${q}` : ''}`;
+    },
+  },
+  'inventory.getItem': { path: (args) => `/v1/inventory/items/${encodeURIComponent(args.itemId)}` },
+  'inventory.listCategories': { path: (args) => `/v1/inventory/categories${args?.domain ? `?domain=${args.domain}` : ''}` },
+  'inventory.listLocations': { path: '/v1/inventory/locations' },
   'cosmicInsights.getLatestInsights': { path: '/v1/insights' },
   'floor.getActiveFloorPlan': { path: '/v1/floor/active' },
   'floor.listArchivedFloorPlans': { path: '/v1/floor/archives' },
@@ -639,6 +653,55 @@ const mutationRoutes: Record<string, Route> = {
   'guests.rotateLeadsWebhookSecret': { path: '/v1/guests/rotate-webhook-secret', method: 'POST', body: () => ({}), invalidate: [['guests', 'listGuests']] },
   'operations.upsertManagerGoal': { path: '/v1/operations/manager-goal', method: 'PATCH', body: stripVenue, invalidate: [['operations', 'getManagerDashboard']] },
   'barInventory.upsertBarItem': { path: '/v1/bar-inventory', method: 'POST', body: stripVenue, invalidate: [['barInventory', 'getBarStock']] },
+  'inventory.createItem': {
+    path: '/v1/inventory/items',
+    method: 'POST',
+    body: stripVenue,
+    invalidate: [['inventory', 'listItems'], ['inventory', 'getDashboard']],
+    idempotent: true,
+  },
+  'inventory.updateItem': {
+    path: (args) => `/v1/inventory/items/${encodeURIComponent(args.itemId)}`,
+    method: 'PATCH',
+    body: ({ itemId: _itemId, venueId: _venueId, ...rest }) => rest,
+    invalidate: [['inventory', 'listItems'], ['inventory', 'getItem']],
+  },
+  'inventory.setItemActive': {
+    path: (args) => `/v1/inventory/items/${encodeURIComponent(args.itemId)}/active`,
+    method: 'POST',
+    body: ({ active }) => ({ active }),
+    invalidate: [['inventory', 'listItems'], ['inventory', 'getItem'], ['inventory', 'getDashboard']],
+  },
+  'inventory.setLocationSettings': {
+    path: (args) => `/v1/inventory/items/${encodeURIComponent(args.itemId)}/locations/${encodeURIComponent(args.locationId)}`,
+    method: 'POST',
+    body: ({ par, reorderPoint, reorderQty }) => ({ par, reorderPoint, reorderQty }),
+    invalidate: [['inventory', 'listItems'], ['inventory', 'getItem'], ['inventory', 'getDashboard']],
+  },
+  // Stock movements carry an Idempotency-Key so a double tap or a retry on a
+  // flaky stadium network lands exactly once in the ledger.
+  'inventory.recordMovement': {
+    path: '/v1/inventory/transactions',
+    method: 'POST',
+    body: ({ itemId, locationId, type, quantity, reasonCode, note, unitCostCents }) => ({ itemId, locationId, type, quantity, reasonCode, note, unitCostCents }),
+    invalidate: [['inventory', 'listItems'], ['inventory', 'getItem'], ['inventory', 'getDashboard']],
+    idempotent: true,
+  },
+  'inventory.transfer': {
+    path: '/v1/inventory/transfers',
+    method: 'POST',
+    body: ({ fromLocationId, toLocationId, lines, note }) => ({ fromLocationId, toLocationId, lines, note }),
+    invalidate: [['inventory', 'listItems'], ['inventory', 'getItem'], ['inventory', 'getDashboard']],
+    idempotent: true,
+  },
+  'inventory.createLocation': { path: '/v1/inventory/locations', method: 'POST', body: stripVenue, invalidate: [['inventory', 'listLocations']] },
+  'inventory.migrateLegacy': {
+    path: '/v1/inventory/migrate-legacy',
+    method: 'POST',
+    body: () => ({}),
+    invalidate: [['inventory', 'listItems'], ['inventory', 'getDashboard'], ['inventory', 'listLocations'], ['inventory', 'listCategories']],
+    timeoutMs: 120_000,
+  },
   'barInventory.recordBarStockMovement': {
     path: (args) => `/v1/bar-inventory/${args.itemId}/movement`,
     method: 'POST',
