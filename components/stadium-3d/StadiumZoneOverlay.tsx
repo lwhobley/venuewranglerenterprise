@@ -1,4 +1,4 @@
-import { Pressable, Text, View } from 'react-native';
+import { Pressable, ScrollView, Text, View } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import type { StadiumZoneData } from '../stadium-map/zone-data';
 import { HIGHLIGHT_STATUS_LABELS, getHighlightColor } from './stadium-model-bindings';
@@ -27,6 +27,11 @@ export function StadiumZoneOverlay({
   // The two zones with no geometry in the asset still appear here from the
   // zone list; without units there is nothing for the details modal to open.
   const hasUnits = zone.units.length > 0;
+  // Suites, bunkers and clubs carry the BEO and the group (suiteholder) it is
+  // booked for; stands and gates have neither.
+  const bookings = zone.units.flatMap((unit) =>
+    unit.suiteDetails && (unit.suiteDetails.beoNumber || unit.suiteDetails.suiteholder)
+      ? [{ unit, suite: unit.suiteDetails }] : []);
 
   return (
     <View
@@ -111,6 +116,41 @@ export function StadiumZoneOverlay({
             {zone.department.split('_')[0].toUpperCase()}
           </Text>
         </View>
+      </View>
+
+      {/* BEOs and the groups they are booked for in this area */}
+      <View style={styles.overlayBeoSection}>
+        <Text style={styles.overlaySectionLabel}>
+          BEOS & GROUPS{bookings.length ? ` · ${bookings.length}` : ''}
+        </Text>
+        {bookings.length ? (
+          <ScrollView style={styles.overlayBeoList} nestedScrollEnabled showsVerticalScrollIndicator>
+            {bookings.map(({ unit, suite }) => (
+              <View key={unit.id} style={styles.overlayBeoRow}>
+                <View style={styles.overlayBeoRowHeader}>
+                  <Text style={styles.overlayBeoNumber} numberOfLines={1}>
+                    {suite.beoNumber ?? 'No BEO'}
+                  </Text>
+                  <Text style={styles.overlayBeoSuite} numberOfLines={1}>
+                    {suite.suiteNumber}
+                  </Text>
+                </View>
+                <Text style={styles.overlayBeoGroup} numberOfLines={1}>
+                  {suite.suiteholder ?? unit.name}
+                </Text>
+                <Text style={styles.overlayBeoMeta} numberOfLines={1}>
+                  {[
+                    suite.beoPackageName,
+                    suite.hostName ? `Host ${suite.hostName}` : null,
+                    suite.guestCount != null ? `${suite.guestCount} guests` : null,
+                  ].filter(Boolean).join(' · ')}
+                </Text>
+              </View>
+            ))}
+          </ScrollView>
+        ) : (
+          <Text style={styles.overlayBeoEmpty}>No BEOs or groups booked in this area.</Text>
+        )}
       </View>
 
       {/* Action button */}

@@ -73,31 +73,15 @@ export const STADIUM_ZONE_MODEL_BINDINGS: StadiumZoneModelBinding[] = [
     name: 'Field Level & Sidelines',
     level: '0',
     category: 'field_sidelines',
+    // The asset is a single scanned mesh split into zone sections by
+    // scripts/partition-stadium-glb.mjs; each section is one named node.
     meshNames: [
       'Node_Field_GrassTurf',
-      'Node_Endzone_North',
-      'Node_Endzone_South',
-      'Node_Sideline_W',
-      'Node_Sideline_E',
-      'Node_Endline_N',
-      'Node_Endline_S',
-      'Node_Wall_W',
-      'Node_Wall_E',
-      'Node_Wall_N',
-      'Node_Wall_S',
-      'Node_Bench_Home',
-      'Node_Bench_Away',
-      'Node_Logo_Base',
-      'Node_Logo_RedHorn',
-      'Node_Logo_WhiteStar',
       // Procedural fallback geometry, which uses its own names.
       PROCEDURAL_MESH_NAMES.turf,
       PROCEDURAL_MESH_NAMES.endzoneNorth,
       PROCEDURAL_MESH_NAMES.endzoneSouth,
     ],
-    // Field markings and goal posts sit on top of the turf; without these a tap
-    // on a yard line or an endzone letter selected nothing at all.
-    meshPrefixes: ['Node_TurfBand_', 'Node_YardLine_', 'Node_EZ_Letter_', 'Node_GP_'],
     anchor: [0, 0.4, 0],
     cameraPreset: 'field',
     colorHex: '#00E5FF',
@@ -109,7 +93,6 @@ export const STADIUM_ZONE_MODEL_BINDINGS: StadiumZoneModelBinding[] = [
     category: 'concourse_service_areas',
     meshNames: [
       'Node_Bowl_100_Lower',
-      'Node_Concourse_100',
       PROCEDURAL_MESH_NAMES.bowl100,
     ],
     anchor: [0, 2.5, -6],
@@ -134,7 +117,6 @@ export const STADIUM_ZONE_MODEL_BINDINGS: StadiumZoneModelBinding[] = [
     category: 'club_level',
     meshNames: [
       'Node_Bowl_200_Club',
-      'Node_Ribbon_LED',
       PROCEDURAL_MESH_NAMES.bowl200,
     ],
     anchor: [10, 3.4, 0],
@@ -148,7 +130,6 @@ export const STADIUM_ZONE_MODEL_BINDINGS: StadiumZoneModelBinding[] = [
     category: 'luxury_suites',
     meshNames: [
       'Node_Suites_300_Balcony',
-      'Node_Suites_300_Glass',
       PROCEDURAL_MESH_NAMES.suites300,
     ],
     anchor: [-10.8, 4.4, 0],
@@ -160,16 +141,11 @@ export const STADIUM_ZONE_MODEL_BINDINGS: StadiumZoneModelBinding[] = [
     name: '400 Upper Deck Concourse & Skyline Bars',
     level: '4',
     category: 'upper_deck',
+    // Upper tiers and the top rim of the bowl, 400 suites included.
     meshNames: [
-      'Node_Suites_400_Balcony',
-      'Node_Suites_400_Glass',
       'Node_Bowl_500_UpperRed',
-      'Node_Upper_Rim',
       PROCEDURAL_MESH_NAMES.upperBowl,
     ],
-    // The video boards and their pillars rise out of this deck, so a tap on the
-    // most obvious landmark in the scene resolves to a zone rather than nothing.
-    meshPrefixes: ['Node_Jumbotron_', 'Node_Jumbo_Pillar_'],
     anchor: [0, 6.4, 13.5],
     cameraPreset: 'overview',
     colorHex: '#B71C1C',
@@ -179,17 +155,12 @@ export const STADIUM_ZONE_MODEL_BINDINGS: StadiumZoneModelBinding[] = [
     name: 'Main Entry Gates',
     level: '1',
     category: 'stadium_gates',
+    // The outer facade, where the entry gates sit.
     meshNames: [
-      'Node_Plaza_Ground',
-      'Node_Ext_Wall_W',
-      'Node_Ext_Glass_W',
-      'Node_Ext_Wall_E',
-      'Node_Ext_Glass_E',
+      'Node_Gate_Exterior',
       PROCEDURAL_MESH_NAMES.gateFord,
       PROCEDURAL_MESH_NAMES.gateKroger,
     ],
-    // Every gate tower and its sponsor sign, without naming all eight.
-    meshPrefixes: ['Node_Gate_'],
     anchor: [0, 3.0, -14],
     cameraPreset: 'exterior',
     colorHex: '#004B87',

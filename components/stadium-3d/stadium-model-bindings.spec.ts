@@ -59,7 +59,7 @@ describe('stadium-model-bindings', () => {
     const byLower = findZoneByMeshName('node_bowl_100_lower');
     expect(byLower?.zoneId).toBe('zone-concourse-service-areas');
 
-    const bySuites = findZoneByMeshName('Suites_300_Glass');
+    const bySuites = findZoneByMeshName('SUITES_300_BALCONY');
     expect(bySuites?.zoneId).toBe('zone-300-suites');
 
     expect(findZoneByMeshName('unrelated_mesh_999')).toBeUndefined();

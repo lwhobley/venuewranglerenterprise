@@ -46,14 +46,12 @@ describe('bundled stadium asset contract', () => {
     disposeScene(scene);
   });
 
-  it('selects the 400 level zone from 400 level suite geometry', async () => {
+  it('selects the 400 level zone from upper deck geometry', async () => {
     const { scene } = await loadModel();
-    // Regression: the 400 suite meshes were bound to zone-300-suites, so tapping
-    // them opened the 300 level's units, BEOs and staffing.
-    for (const meshName of ['Node_Suites_400_Balcony', 'Node_Suites_400_Glass']) {
-      expect(scene.getObjectByName(meshName)).toBeDefined();
-      expect(findZoneByMeshName(meshName)?.zoneId).toBe('zone-400-upper');
-    }
+    // Regression: upper geometry was once bound to zone-300-suites, so tapping
+    // it opened the 300 level's units, BEOs and staffing.
+    expect(scene.getObjectByName('Node_Bowl_500_UpperRed')).toBeDefined();
+    expect(findZoneByMeshName('Node_Bowl_500_UpperRed')?.zoneId).toBe('zone-400-upper');
     expect(findZoneByMeshName('Node_Suites_300_Balcony')?.zoneId).toBe('zone-300-suites');
     disposeScene(scene);
   });

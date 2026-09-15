@@ -281,6 +281,59 @@ export const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#FFFFFF',
   },
+  overlayBeoSection: {
+    gap: 6,
+  },
+  overlaySectionLabel: {
+    fontSize: 9,
+    fontWeight: '900',
+    color: '#90A4AE',
+    letterSpacing: 0.6,
+  },
+  // Capped so the card never covers the whole model on a phone; rows scroll.
+  overlayBeoList: {
+    maxHeight: 132,
+  },
+  overlayBeoRow: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderLeftWidth: 2,
+    borderLeftColor: '#FFD700',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    marginBottom: 6,
+    gap: 1,
+  },
+  overlayBeoRowHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  overlayBeoNumber: {
+    flexShrink: 1,
+    fontSize: 11,
+    fontWeight: '900',
+    color: '#FFD700',
+  },
+  overlayBeoSuite: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#00E5FF',
+  },
+  overlayBeoGroup: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#FFFFFF',
+  },
+  overlayBeoMeta: {
+    fontSize: 10,
+    color: '#90A4AE',
+  },
+  overlayBeoEmpty: {
+    fontSize: 11,
+    color: '#90A4AE',
+    fontStyle: 'italic',
+  },
   overlayActionsRow: {
     flexDirection: 'row',
     alignItems: 'center',

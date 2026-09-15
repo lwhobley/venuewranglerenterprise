@@ -32,8 +32,15 @@ const UNBOUND_BY_DESIGN = /^Node_Roof_/;
 
 describe('stadium 3D asset bindings', () => {
   it('reads the bundled stadium asset', () => {
-    expect(NODE_NAMES.length).toBeGreaterThan(50);
-    expect(NODE_NAMES).toContain('Node_Field_GrassTurf');
+    // One node per zone section cut from the scanned mesh.
+    expect(NODE_NAMES).toEqual(expect.arrayContaining([
+      'Node_Field_GrassTurf',
+      'Node_Bowl_100_Lower',
+      'Node_Bowl_200_Club',
+      'Node_Suites_300_Balcony',
+      'Node_Bowl_500_UpperRed',
+      'Node_Gate_Exterior',
+    ]));
   });
 
   it('names only meshes that exist in the asset or in the procedural fallback', () => {

@@ -142,7 +142,12 @@ function StadiumScene({
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.075;
-    controls.enablePan = true;
+    // One finger orbits, a pinch zooms. Panning is off so the stadium cannot be
+    // dragged out of a phone-sized viewport; presets and reset re-frame it.
+    controls.enableRotate = true;
+    controls.rotateSpeed = 0.8;
+    controls.enablePan = false;
+    controls.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_ROTATE };
     controls.minDistance = 10;
     controls.maxDistance = 120;
     controls.minPolarAngle = 0.1;
