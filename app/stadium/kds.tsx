@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
@@ -8,6 +8,8 @@ import { asArray } from '../../lib/format';
 import { OpsQueryState, OpsStaleNotice } from '../../components/stadium/OpsQueryState';
 import { opsConsole } from '../../lib/theme';
 import { useResponsive } from '../../lib/responsive';
+import { COMPREHENSIVE_STADIUM_ZONES } from '../../components/stadium-map/zone-data';
+import { buildDemoSuiteRunnerOrders, mergeSuiteOrdersByBeoNumber } from '../../components/stadium-map/demo-suite-beos';
 
 export interface BEOItem {
   code: string;
@@ -31,6 +33,8 @@ export interface SuiteBEO {
   status: 'draft' | 'confirmed_beo' | 'prep_initiated' | 'en_route' | 'delivered' | 'closed_invoiced';
   urgencyColor: string;
   minutesUntilDelivery: number;
+  isDemo?: boolean;
+  demoLink?: { zoneId: string; unitId: string };
 }
 
 const SUITE_BEOS_KEY = ['stadium', 'suite-beos'];
@@ -53,7 +57,12 @@ export default function KitchenBumpScreen() {
     events: ['suite_beo_updated'],
     invalidate: [SUITE_BEOS_KEY],
   });
-  const beos = asArray<SuiteBEO>(query.data);
+  const liveBeos = asArray<SuiteBEO>(query.data);
+  const demoBeos = useMemo(() => buildDemoSuiteRunnerOrders(COMPREHENSIVE_STADIUM_ZONES), []);
+  const beos = useMemo(
+    () => mergeSuiteOrdersByBeoNumber<SuiteBEO>(liveBeos, demoBeos),
+    [demoBeos, liveBeos],
+  );
   const loading = query.isLoading;
   const lastSynced = query.dataUpdatedAt ? new Date(query.dataUpdatedAt).toLocaleTimeString() : '';
   const refresh = () => void queryClient.invalidateQueries({ queryKey: SUITE_BEOS_KEY });
@@ -118,7 +127,7 @@ export default function KitchenBumpScreen() {
       {beos.length > 0 ? <OpsStaleNotice error={query.error} onRetry={refresh} /> : null}
 
       <OpsQueryState
-        isLoading={loading}
+        isLoading={loading && beos.length === 0}
         error={beos.length > 0 ? null : query.error}
         isEmpty={filteredBeos.length === 0}
         loadingMessage="Loading Kitchen Bump Screen Queue…"
@@ -149,6 +158,9 @@ export default function KitchenBumpScreen() {
                     <Text style={styles.metaLabel}>HOST:</Text>
                     <Text style={styles.metaValue}>{beo.hostName} ({beo.guestCount} Guests)</Text>
                   </View>
+                  {beo.isDemo ? (
+                    <Text style={styles.demoLinkText}>DEMO · SAME ORDER AS BEO HUB, RUNNER, REPORT & STADIUM MAP</Text>
+                  ) : null}
                   
                   {beo.specialInstructions ? (
                     <View style={styles.instructionsBox}>
@@ -169,7 +181,23 @@ export default function KitchenBumpScreen() {
 
                 {/* Card Action Footer */}
                 <View style={styles.cardFooter}>
-                  {beo.status === 'confirmed_beo' && (
+                  {beo.isDemo && beo.demoLink ? (
+                    <View style={{ gap: 8 }}>
+                      <TouchableOpacity
+                        style={[styles.actionBtn, styles.readyBtn]}
+                        onPress={() => router.push({ pathname: '/(tabs)/guests', params: { crmView: 'hub', crmBeoId: beo.id } })}
+                      >
+                        <Text style={styles.actionBtnText}>OPEN LINKED BEO</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.actionBtn, styles.prepBtn]}
+                        onPress={() => router.push({ pathname: '/stadium-map', params: beo.demoLink! })}
+                      >
+                        <Text style={styles.actionBtnText}>VIEW LINKED SUITE</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : null}
+                  {!beo.isDemo && beo.status === 'confirmed_beo' && (
                     <TouchableOpacity
                       style={[styles.actionBtn, styles.prepBtn]}
                       onPress={() => handleBumpStatus(beo.id, 'prep_initiated')}
@@ -177,7 +205,7 @@ export default function KitchenBumpScreen() {
                       <Text style={styles.actionBtnText}>BUMP TO PREP 👨‍🍳</Text>
                     </TouchableOpacity>
                   )}
-                  {beo.status === 'prep_initiated' && (
+                  {!beo.isDemo && beo.status === 'prep_initiated' && (
                     <TouchableOpacity
                       style={[styles.actionBtn, styles.readyBtn]}
                       onPress={() => handleBumpStatus(beo.id, 'en_route')}
@@ -185,12 +213,12 @@ export default function KitchenBumpScreen() {
                       <Text style={styles.actionBtnText}>READY FOR RUNNER 🏃‍♂️</Text>
                     </TouchableOpacity>
                   )}
-                  {beo.status === 'en_route' && (
+                  {!beo.isDemo && beo.status === 'en_route' && (
                     <View style={styles.statusBadgeEnRoute}>
                       <Text style={styles.statusTextEnRoute}>RUNNER EN ROUTE 🚚</Text>
                     </View>
                   )}
-                  {beo.status === 'delivered' && (
+                  {!beo.isDemo && beo.status === 'delivered' && (
                     <View style={styles.statusBadgeDelivered}>
                       <Text style={styles.statusTextDelivered}>DELIVERED TO SUITE ✅</Text>
                     </View>
@@ -245,6 +273,7 @@ const styles = StyleSheet.create({
   instructionsBox: { backgroundColor: '#451a03', padding: 8, borderRadius: 6, borderWidth: 1, borderColor: '#b45309', marginVertical: 8 },
   instructionsLabel: { color: opsConsole.warn, fontSize: 11, fontWeight: '800' },
   instructionsText: { color: '#fef3c7', fontSize: 12, marginTop: 2 },
+  demoLinkText: { color: opsConsole.accentSoft, fontSize: 10, fontWeight: '800', marginBottom: 8 },
   sectionHeader: { color: opsConsole.muted, fontSize: 11, fontWeight: '800', marginTop: 8, marginBottom: 4 },
   lineItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4, borderBottomWidth: 1, borderBottomColor: opsConsole.border },
   itemQty: { color: opsConsole.accentSoft, fontSize: 14, fontWeight: '900', width: 32 },

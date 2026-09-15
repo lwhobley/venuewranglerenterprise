@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -17,6 +17,8 @@ import { apiRequest, useApiQuery } from '../../lib/api-client';
 import { asArray } from '../../lib/format';
 import { useStadiumLiveStream } from '../../lib/stadium-live-stream';
 import { DistroStatusBadge, KitchenTicketStatusType } from '../../components/stadium/DistroStatusBadge';
+import { COMPREHENSIVE_STADIUM_ZONES } from '../../components/stadium-map/zone-data';
+import { buildDemoDistroTickets, mergeDistroTicketsById } from '../../components/stadium-map/demo-suite-beos';
 
 export interface DistroTicket {
   id: string;
@@ -59,6 +61,8 @@ export interface DistroTicket {
     notes?: string;
     timestamp: string;
   }>;
+  isDemo?: boolean;
+  demoLink?: { zoneId: string; unitId: string };
 }
 
 const DISTRO_TICKETS_KEY = ['stadium', 'distro-tickets'];
@@ -123,7 +127,12 @@ export default function DistroPickupConsoleScreen() {
     invalidate: [DISTRO_TICKETS_KEY],
   });
 
-  const tickets = asArray<DistroTicket>(query.data);
+  const liveTickets = asArray<DistroTicket>(query.data);
+  const demoTickets = useMemo(() => buildDemoDistroTickets(COMPREHENSIVE_STADIUM_ZONES), []);
+  const tickets = useMemo(
+    () => mergeDistroTicketsById<DistroTicket>(liveTickets, demoTickets),
+    [demoTickets, liveTickets],
+  );
   const loading = query.isLoading;
   const lastSynced = query.dataUpdatedAt ? new Date(query.dataUpdatedAt).toLocaleTimeString() : '';
   const refresh = () => void queryClient.invalidateQueries({ queryKey: DISTRO_TICKETS_KEY });
@@ -463,14 +472,14 @@ export default function DistroPickupConsoleScreen() {
 
       {/* Main Ticket Cards List */}
       <ScrollView contentContainerStyle={styles.listContainer}>
-        {loading && (
+        {loading && tickets.length === 0 && (
           <View style={styles.centerBox}>
             <ActivityIndicator size="large" color="#10B981" />
             <Text style={styles.loadingText}>Connecting to Stadium Live Distro Stream...</Text>
           </View>
         )}
 
-        {!loading && filteredTickets.length === 0 && (
+        {(!loading || tickets.length > 0) && filteredTickets.length === 0 && (
           <View style={styles.centerBox}>
             <MaterialCommunityIcons name="check-decagram-outline" size={48} color="#475569" />
             <Text style={styles.emptyTitle}>Queue Clear</Text>
@@ -541,16 +550,34 @@ export default function DistroPickupConsoleScreen() {
 
               {/* Action Bar */}
               <View style={styles.cardActions}>
-                <TouchableOpacity
-                  style={styles.historyBtn}
-                  onPress={() => handleOpenHistory(ticket)}
-                >
-                  <MaterialCommunityIcons name="history" size={14} color="#94A3B8" />
-                  <Text style={styles.historyBtnText}>Audit Trail</Text>
-                </TouchableOpacity>
+                {ticket.isDemo && ticket.demoLink ? (
+                  <TouchableOpacity
+                    style={styles.historyBtn}
+                    onPress={() => router.push({ pathname: '/(tabs)/guests', params: { crmView: 'hub', crmBeoId: ticket.beoId } })}
+                  >
+                    <MaterialCommunityIcons name="file-document-outline" size={14} color="#94A3B8" />
+                    <Text style={styles.historyBtnText}>Linked BEO</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity
+                    style={styles.historyBtn}
+                    onPress={() => handleOpenHistory(ticket)}
+                  >
+                    <MaterialCommunityIcons name="history" size={14} color="#94A3B8" />
+                    <Text style={styles.historyBtnText}>Audit Trail</Text>
+                  </TouchableOpacity>
+                )}
 
                 <View style={styles.actionGroup}>
-                  {activeTab === 'kitchen' ? (
+                  {ticket.isDemo && ticket.demoLink ? (
+                    <TouchableOpacity
+                      style={[styles.btnAction, { backgroundColor: '#475569' }]}
+                      onPress={() => router.push({ pathname: '/stadium-map', params: ticket.demoLink! })}
+                    >
+                      <MaterialCommunityIcons name="map-marker-outline" size={16} color="#FFFFFF" />
+                      <Text style={styles.btnActionText}>View Suite</Text>
+                    </TouchableOpacity>
+                  ) : activeTab === 'kitchen' ? (
                     <>
                       {ticket.status === 'waiting' && (
                         <TouchableOpacity

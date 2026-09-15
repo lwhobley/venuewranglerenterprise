@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { buildDemoSuiteBeos, buildDemoSuiteRunnerOrders } from './demo-suite-beos';
+import {
+  buildDemoSuiteBeos,
+  buildDemoDistroTickets,
+  buildDemoSuiteReport,
+  buildDemoSuiteRunnerOrders,
+  mergeDemoSuiteReport,
+  mergeDistroTicketsById,
+  mergeSuiteOrdersByBeoNumber,
+} from './demo-suite-beos';
 import { COMPREHENSIVE_STADIUM_ZONES } from './zone-data';
 
 describe('buildDemoSuiteBeos', () => {
@@ -49,10 +57,66 @@ describe('buildDemoSuiteBeos', () => {
           code: item.id,
           name: item.name,
           quantity: item.quantity,
+          unitPriceCents: 0,
+          category: item.category,
         })),
       );
       expect(order?.demoLink.unitId).toBe(unit.id);
     }
     expect(orders.every((order) => order.cateringLineItems.length > 0)).toBe(true);
+  });
+
+  it('projects the same BEO numbers and exact items into KDS, runner, and report views', () => {
+    const date = '2026-09-15';
+    const hub = buildDemoSuiteBeos(COMPREHENSIVE_STADIUM_ZONES, date);
+    const operational = buildDemoSuiteRunnerOrders(COMPREHENSIVE_STADIUM_ZONES, date);
+    const report = buildDemoSuiteReport(COMPREHENSIVE_STADIUM_ZONES, date);
+
+    expect(report.suites.rows.map((row) => row.beoNumber)).toEqual(hub.map((beo) => beo.externalId));
+    for (const order of operational) {
+      const reportRow = report.suites.rows.find((row) => row.beoNumber === order.beoNumber);
+      expect(reportRow?.lineItems).toEqual(order.cateringLineItems);
+      expect(reportRow?.demoLink).toEqual(order.demoLink);
+    }
+  });
+
+  it('lets a live API order override its fixture counterpart without duplicating it', () => {
+    const demo = buildDemoSuiteRunnerOrders(COMPREHENSIVE_STADIUM_ZONES, '2026-09-15');
+    const live = { ...demo[0], id: 'live-order', isDemo: false as const };
+    const merged = mergeSuiteOrdersByBeoNumber([live], demo);
+
+    expect(merged.filter((row) => row.beoNumber === live.beoNumber)).toEqual([live]);
+    expect(merged).toHaveLength(demo.length);
+  });
+
+  it('adds fixture-only BEOs to a live report but keeps the live copy authoritative', () => {
+    const demo = buildDemoSuiteReport(COMPREHENSIVE_STADIUM_ZONES, '2026-09-15');
+    const liveRow = { ...demo.suites.rows[0], id: 'live-report-row', status: 'confirmed_beo' };
+    const live = {
+      ...demo,
+      suites: { ...demo.suites, rows: [liveRow], beoCount: 1 },
+      departments: [],
+    };
+    const merged = mergeDemoSuiteReport(live, demo);
+
+    expect(merged.suites.rows.find((row) => row.beoNumber === liveRow.beoNumber)).toEqual(liveRow);
+    expect(merged.suites.rows).toHaveLength(demo.suites.rows.length);
+  });
+
+  it('projects every exact BEO line item into the downstream distro flow', () => {
+    const operational = buildDemoSuiteRunnerOrders(COMPREHENSIVE_STADIUM_ZONES, '2026-09-15');
+    const distro = buildDemoDistroTickets(COMPREHENSIVE_STADIUM_ZONES, '2026-09-15');
+    const expectedItems = operational.flatMap((order) => order.cateringLineItems.map((item) => ({ order, item })));
+
+    expect(distro).toHaveLength(expectedItems.length);
+    for (const { order, item } of expectedItems) {
+      expect(distro).toContainEqual(expect.objectContaining({
+        beoId: order.id,
+        serviceAreaId: order.demoLink.unitId,
+        itemName: item.name,
+        quantity: item.quantity,
+      }));
+    }
+    expect(mergeDistroTicketsById([distro[0]], distro)).toHaveLength(distro.length);
   });
 });

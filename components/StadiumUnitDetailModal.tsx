@@ -134,13 +134,9 @@ export function StadiumUnitDetailModal({ visible, unit, onClose, onStatusChange 
   const hasBeo = Boolean(suiteDetails?.beoNumber);
 
   const hierarchy: StaffHierarchy = suiteDetails?.hierarchy ?? standDetails?.hierarchy ?? {
-    director: { name: 'Eleanor Vance', title: 'VP of Premium Hospitality', radioChannel: 'Ch 1 - Exec' },
-    manager: { name: 'Sarah Jenkins', title: 'Suite Operations Floor Manager', status: 'on_duty', radioChannel: 'Ch 4 - Suites' },
-    assignedStaff: [
-      { name: 'Alice Taylor', role: 'Lead Suite Attendant', status: 'on_duty', shift: '10:00 - Close', geofenceVerified: true },
-      { name: 'Marcus Chen', role: 'Hospitality Runner', status: 'on_duty', shift: '11:00 - Close', geofenceVerified: true },
-      { name: 'Elena Rostova', role: 'Private Bartender', status: 'on_duty', shift: '11:00 - Close', geofenceVerified: true },
-    ],
+    director: { name: 'Unassigned', title: 'No director linked to this space', radioChannel: '—' },
+    manager: { name: 'Unassigned', title: 'No manager linked to this space', status: 'off_duty', radioChannel: '—' },
+    assignedStaff: [],
   };
 
   const statusColor =
@@ -395,7 +391,7 @@ export function StadiumUnitDetailModal({ visible, unit, onClose, onStatusChange 
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
                         <View style={[styles.liveDot, { backgroundColor: hierarchy.manager.status === 'on_duty' ? '#17643B' : '#A86514' }]} />
                         <CommandText palette={palette} variant="caption" style={{ color: '#1D2420', fontWeight: '600' }}>
-                          {hierarchy.manager.status === 'on_duty' ? 'ON DUTY' : 'ON BREAK'} · Radio: {hierarchy.manager.radioChannel}
+                          {hierarchy.manager.status === 'on_duty' ? 'ON DUTY' : hierarchy.manager.status === 'break' ? 'ON BREAK' : 'UNASSIGNED'} · Radio: {hierarchy.manager.radioChannel}
                         </CommandText>
                       </View>
                     </View>

@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, TextInput, Alert } from 'react-native';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { apiRequest, useApiQuery } from '../../lib/api-client';
 import { useStadiumLiveStream } from '../../lib/stadium-live-stream';
@@ -9,7 +9,7 @@ import { OpsQueryState, OpsStaleNotice } from '../../components/stadium/OpsQuery
 import { DistroPickupNotificationBanner } from '../../components/stadium/DistroPickupNotificationBanner';
 import { opsConsole } from '../../lib/theme';
 import { COMPREHENSIVE_STADIUM_ZONES } from '../../components/stadium-map/zone-data';
-import { buildDemoSuiteRunnerOrders } from '../../components/stadium-map/demo-suite-beos';
+import { buildDemoSuiteRunnerOrders, mergeSuiteOrdersByBeoNumber } from '../../components/stadium-map/demo-suite-beos';
 
 export interface BEOItem {
   code: string;
@@ -39,8 +39,14 @@ export interface SuiteBEO {
 const SUITE_BEOS_KEY = ['stadium', 'suite-beos'];
 
 export default function SuiteAttendantRunnerScreen() {
+  const params = useLocalSearchParams<{ suiteId?: string; suiteCode?: string }>();
+  const requestedSuiteId = typeof params.suiteId === 'string' ? params.suiteId : null;
+  const requestedSuiteCode = typeof params.suiteCode === 'string' ? params.suiteCode : null;
   const queryClient = useQueryClient();
   const [selectedZone, setSelectedZone] = useState<string>('all');
+  const [focusedSuite, setFocusedSuite] = useState<{ id: string | null; code: string | null } | null>(
+    requestedSuiteId || requestedSuiteCode ? { id: requestedSuiteId, code: requestedSuiteCode } : null,
+  );
   const [deliveryModalBeo, setDeliveryModalBeo] = useState<SuiteBEO | null>(null);
   const [replenishModalBeo, setReplenishModalBeo] = useState<SuiteBEO | null>(null);
   const [replenishSummary, setReplenishSummary] = useState<string>('');
@@ -58,17 +64,19 @@ export default function SuiteAttendantRunnerScreen() {
     () => buildDemoSuiteRunnerOrders(COMPREHENSIVE_STADIUM_ZONES),
     [],
   );
-  const beos = useMemo(() => {
-    const liveNumbers = new Set(liveBeos.map((beo) => beo.beoNumber));
-    return [...liveBeos, ...demoBeos.filter((beo) => !liveNumbers.has(beo.beoNumber))];
-  }, [demoBeos, liveBeos]);
+  const beos = useMemo(
+    () => mergeSuiteOrdersByBeoNumber<SuiteBEO>(liveBeos, demoBeos),
+    [demoBeos, liveBeos],
+  );
   const fetchRunnerOrders = () => void queryClient.invalidateQueries({ queryKey: SUITE_BEOS_KEY });
 
   // The level chips were rendered but never applied, so every runner saw every
   // suite on every level.
-  const visibleBeos = selectedZone === 'all'
-    ? beos
-    : beos.filter((beo) => beo.zone?.level === selectedZone);
+  const visibleBeos = focusedSuite
+    ? beos.filter((beo) => beo.demoLink?.unitId === focusedSuite.id || beo.subVenue?.code === focusedSuite.code)
+    : selectedZone === 'all'
+      ? beos
+      : beos.filter((beo) => beo.zone?.level === selectedZone);
 
   const handleMarkDelivered = async () => {
     if (!deliveryModalBeo) return;
@@ -131,7 +139,7 @@ export default function SuiteAttendantRunnerScreen() {
           <TouchableOpacity
             key={lvl}
             style={[styles.zoneChip, selectedZone === lvl && styles.zoneChipActive]}
-            onPress={() => setSelectedZone(lvl)}
+            onPress={() => { setFocusedSuite(null); setSelectedZone(lvl); }}
           >
             <Text style={[styles.zoneChipText, selectedZone === lvl && styles.zoneChipTextActive]}>
               {lvl.toUpperCase()}
@@ -183,15 +191,23 @@ export default function SuiteAttendantRunnerScreen() {
               {/* Action Buttons */}
               <View style={styles.actionRow}>
                 {beo.isDemo && beo.demoLink ? (
-                  <TouchableOpacity
-                    style={styles.deliverBtn}
-                    onPress={() => router.push({
-                      pathname: '/stadium-map',
-                      params: { zoneId: beo.demoLink!.zoneId, unitId: beo.demoLink!.unitId },
-                    })}
-                  >
-                    <Text style={styles.deliverBtnText}>VIEW LINKED SUITE</Text>
-                  </TouchableOpacity>
+                  <>
+                    <TouchableOpacity
+                      style={styles.deliverBtn}
+                      onPress={() => router.push({ pathname: '/(tabs)/guests', params: { crmView: 'hub', crmBeoId: beo.id } })}
+                    >
+                      <Text style={styles.deliverBtnText}>OPEN LINKED BEO</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.replenishBtn}
+                      onPress={() => router.push({
+                        pathname: '/stadium-map',
+                        params: { zoneId: beo.demoLink!.zoneId, unitId: beo.demoLink!.unitId },
+                      })}
+                    >
+                      <Text style={styles.replenishBtnText}>VIEW LINKED SUITE</Text>
+                    </TouchableOpacity>
+                  </>
                 ) : beo.status !== 'delivered' ? (
                   <TouchableOpacity style={styles.deliverBtn} onPress={() => setDeliveryModalBeo(beo)}>
                     <Text style={styles.deliverBtnText}>MARK DELIVERED ✍️</Text>

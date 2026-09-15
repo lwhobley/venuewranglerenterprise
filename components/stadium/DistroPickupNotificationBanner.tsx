@@ -1,9 +1,11 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useApiQuery } from '../../lib/api-client';
 import { useStadiumLiveStream } from '../../lib/stadium-live-stream';
+import { COMPREHENSIVE_STADIUM_ZONES } from '../stadium-map/zone-data';
+import { buildDemoDistroTickets, mergeDistroTicketsById } from '../stadium-map/demo-suite-beos';
 
 export interface DistroTicketSummary {
   id: string;
@@ -45,11 +47,13 @@ export function DistroPickupNotificationBanner({ serviceAreaId, zoneId }: Distro
     invalidate: [DISTRO_TICKETS_KEY],
   });
 
-  if (query.isError || !query.data) {
-    return null;
-  }
-
-  const tickets = Array.isArray(query.data) ? query.data : [];
+  const demoTickets = useMemo(
+    () => buildDemoDistroTickets(COMPREHENSIVE_STADIUM_ZONES).filter((ticket) =>
+      (!serviceAreaId || ticket.serviceAreaId === serviceAreaId) && (!zoneId || ticket.zoneId === zoneId)),
+    [serviceAreaId, zoneId],
+  );
+  const liveTickets = Array.isArray(query.data) ? query.data : [];
+  const tickets = mergeDistroTicketsById<DistroTicketSummary>(liveTickets, demoTickets);
   const readyTickets = tickets.filter((t: DistroTicketSummary) => t.status === 'ready' || t.status === 'overdue_pickup');
   const overdueTickets = readyTickets.filter((t: DistroTicketSummary) => t.status === 'overdue_pickup' || t.isOverdue);
 

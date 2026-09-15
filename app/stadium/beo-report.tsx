@@ -17,6 +17,8 @@ import {
   isOpenLineStatus,
   parseReportDepartment,
 } from '../../lib/beo-report';
+import { COMPREHENSIVE_STADIUM_ZONES } from '../../components/stadium-map/zone-data';
+import { buildDemoSuiteReport, mergeDemoSuiteReport } from '../../components/stadium-map/demo-suite-beos';
 
 type UpcomingEvent = { id: string; title: string; startsAt: string; eventCode: string | null };
 type StadiumOverview = { events?: UpcomingEvent[] };
@@ -49,7 +51,14 @@ export default function EventBeoReportScreen() {
   );
 
   const published = reportQuery.data ?? null;
-  const document: EventBeoReportDocument | null = published?.report ?? null;
+  const demoDocument = useMemo(
+    () => buildDemoSuiteReport(COMPREHENSIVE_STADIUM_ZONES, upcoming.find((event) => event.id === eventId)?.startsAt.slice(0, 10)),
+    [eventId, upcoming],
+  );
+  const document: EventBeoReportDocument = useMemo(
+    () => mergeDemoSuiteReport(published?.report ?? null, demoDocument),
+    [demoDocument, published?.report],
+  );
 
   const [departmentFilter, setDepartmentFilter] = useState<string | null>(
     parseReportDepartment(params.department) ?? null
@@ -103,7 +112,11 @@ export default function EventBeoReportScreen() {
             {published.publishedBy}
             {published.trigger === 'scheduled' ? ' (scheduled)' : ''}
           </CommandText>
-        ) : null}
+        ) : (
+          <CommandText palette={palette} variant="caption" style={{ color: '#8FB0D0', marginTop: 2 }}>
+            Demo operational snapshot · linked to the stadium map, BEO hub, KDS, and runner queue
+          </CommandText>
+        )}
       </View>
 
       <View style={{ padding: spacing.md, gap: spacing.md }}>
@@ -136,25 +149,18 @@ export default function EventBeoReportScreen() {
         ) : null}
 
         <ScreenState
-          isLoading={reportQuery.isLoading || overview.isLoading}
-          error={reportQuery.error}
+          isLoading={(reportQuery.isLoading || overview.isLoading) && !document}
+          error={document ? null : reportQuery.error}
           onRetry={() => void reportQuery.refetch()}
         >
-          {!eventId ? (
-            <View style={[styles.card, { backgroundColor: palette.surface, borderColor: palette.border }]}>
-              <CommandText palette={palette} variant="title">No upcoming event</CommandText>
-              <CommandText palette={palette} variant="body" style={{ color: palette.muted }}>
-                Create an event before publishing a BEO report.
-              </CommandText>
-            </View>
-          ) : !document ? (
+          {!document ? (
             <View style={[styles.card, { backgroundColor: palette.surface, borderColor: palette.border }]}>
               <CommandText palette={palette} variant="title">No report published yet</CommandText>
               <CommandText palette={palette} variant="body" style={{ color: palette.muted }}>
                 A report publishes automatically the day before the event. Publish now to hand departments a copy
                 sooner.
               </CommandText>
-              {canManage ? (
+              {canManage && eventId ? (
                 <CommandButton palette={palette} icon="file-document-check-outline" selected onPress={() => void publish()}>
                   {publishing ? 'Publishing…' : 'Generate & publish report'}
                 </CommandButton>
@@ -174,7 +180,7 @@ export default function EventBeoReportScreen() {
                   />
                   <Summary palette={palette} label="Open items" value={String(document.totals.openLineCount)} />
                 </View>
-                {canManage ? (
+                {canManage && eventId ? (
                   <CommandButton palette={palette} icon="refresh" onPress={() => void publish()}>
                     {publishing ? 'Publishing…' : 'Publish new version'}
                   </CommandButton>
@@ -195,14 +201,14 @@ export default function EventBeoReportScreen() {
                 <CommandText palette={palette} variant="title" style={{ flex: 1 }}>Suite BEOs</CommandText>
                 {canManage ? (
                   <Pressable
-                    onPress={() => router.push(crmEventBeoRoute(document.event.title) as any)}
+                    onPress={() => router.push((published ? crmEventBeoRoute(document.event.title) : '/(tabs)/guests?crmView=hub') as any)}
                     accessibilityRole="button"
                     accessibilityLabel={`Edit BEOs for ${document.event.title} in the CRM`}
                     style={({ pressed }) => [styles.linkBtn, { borderColor: palette.border, opacity: pressed ? 0.7 : 1 }]}
                   >
                     <MaterialCommunityIcons name="pencil-outline" size={14} color={String(palette.primary)} />
                     <CommandText palette={palette} variant="caption" style={{ color: palette.primary, fontWeight: '700' }}>
-                      Edit in CRM
+                      {published ? 'Edit in CRM' : 'Open BEO Hub'}
                     </CommandText>
                   </Pressable>
                 ) : null}
@@ -272,6 +278,27 @@ export default function EventBeoReportScreen() {
                           <CommandText palette={palette} variant="caption" style={{ color: palette.primary, fontWeight: '700' }}>
                             Edit in CRM
                           </CommandText>
+                        </Pressable>
+                      </View>
+                    ) : row.demoLink ? (
+                      <View style={styles.beoHeader}>
+                        <Pressable
+                          onPress={() => router.push({ pathname: '/(tabs)/guests', params: { crmView: 'hub', crmBeoId: row.id } })}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Open ${row.beoNumber} in the BEO hub`}
+                          style={({ pressed }) => [styles.linkBtn, { borderColor: palette.border, opacity: pressed ? 0.7 : 1 }]}
+                        >
+                          <MaterialCommunityIcons name="file-document-outline" size={14} color={String(palette.primary)} />
+                          <CommandText palette={palette} variant="caption" style={{ color: palette.primary, fontWeight: '700' }}>Open BEO</CommandText>
+                        </Pressable>
+                        <Pressable
+                          onPress={() => router.push({ pathname: '/stadium-map', params: row.demoLink! })}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Open ${row.suiteName} on the stadium map`}
+                          style={({ pressed }) => [styles.linkBtn, { borderColor: palette.border, opacity: pressed ? 0.7 : 1 }]}
+                        >
+                          <MaterialCommunityIcons name="map-marker-outline" size={14} color={String(palette.primary)} />
+                          <CommandText palette={palette} variant="caption" style={{ color: palette.primary, fontWeight: '700' }}>View suite</CommandText>
                         </Pressable>
                       </View>
                     ) : (

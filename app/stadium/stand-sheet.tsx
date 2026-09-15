@@ -7,6 +7,7 @@ import { OpsQueryState } from '../../components/stadium/OpsQueryState';
 import { opsConsole } from '../../lib/theme';
 import { useResponsive } from '../../lib/responsive';
 import { requiredCount, requiredCents } from '../../lib/concourse-counts';
+import { useLocalSearchParams } from 'expo-router';
 
 export interface StandSheetItem {
   code: string;
@@ -40,13 +41,18 @@ export interface StandSheetData {
 const STAND_SHEETS_KEY = ['stadium', 'concourse', 'stand-sheets'];
 
 export default function StandSheetAuditScreen() {
+  const params = useLocalSearchParams<{ standCode?: string }>();
+  const requestedStandCode = typeof params.standCode === 'string' ? params.standCode : null;
   const { isPhone } = useResponsive();
   const queryClient = useQueryClient();
   const query = useApiQuery<StandSheetData[]>(STAND_SHEETS_KEY, '/v1/stadium/concourse/stand-sheets');
   const sheets = asArray<StandSheetData>(query.data);
   const loading = query.isLoading;
   const [selectedSheetId, setSelectedSheetId] = useState<string | null>(null);
-  const activeSheet = sheets.find((sheet) => sheet.id === selectedSheetId) ?? sheets[0] ?? null;
+  const activeSheet = sheets.find((sheet) => sheet.id === selectedSheetId)
+    ?? (requestedStandCode
+      ? sheets.find((sheet) => sheet.outlet?.code === requestedStandCode) ?? null
+      : sheets[0] ?? null);
 
   // Form states for manual count out input
   const [countOutDraft, setCountOutDraft] = useState<Record<string, string>>({});
@@ -105,7 +111,9 @@ export default function StandSheetAuditScreen() {
         error={query.error}
         isEmpty={!activeSheet}
         loadingMessage="Loading stand sheets…"
-        emptyMessage="No stand sheets recorded for this facility yet."
+        emptyMessage={requestedStandCode
+          ? `No stand sheet is recorded for ${requestedStandCode}.`
+          : 'No stand sheets recorded for this facility yet.'}
         onRetry={() => void query.refetch()}
       >
         {activeSheet ? <ScrollView contentContainerStyle={styles.body}>

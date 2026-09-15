@@ -74,6 +74,8 @@ export interface SuiteBeoReportRow {
   specialInstructions: string | null;
   totalCents: number;
   lineItems: { code: string; name: string; quantity: number; unitPriceCents: number; category: string }[];
+  /** Present for locally-projected stadium fixtures so every surface can open the exact space. */
+  demoLink?: { zoneId: string; unitId: string };
 }
 
 export interface EventBeoReportDocument {

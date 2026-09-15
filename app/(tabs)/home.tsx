@@ -38,6 +38,8 @@ import { canManageVenue, isCrossDepartmentRole } from '../../lib/permissions';
 import { useResponsive } from '../../lib/responsive';
 import { useWorkspaceResolution } from '../../lib/workspace-routing';
 import { EVENT_BEO_ROUTE, READINESS_ROW_ROUTES, SUITE_BEO_REPORT_ROUTE, type ReadinessRowLabel } from '../../lib/crm-routing';
+import { COMPREHENSIVE_STADIUM_ZONES } from '../../components/stadium-map/zone-data';
+import { buildDemoSuiteBeos, buildDemoSuiteRunnerOrders } from '../../components/stadium-map/demo-suite-beos';
 
 
 type NotificationItem = {
@@ -104,6 +106,13 @@ export default function HomeScreen() {
       ['Staffing & Union Roster', values.staffing ?? values['staffing'] ?? 0],
     ] as const satisfies ReadonlyArray<readonly [ReadinessRowLabel, number]>;
   }, [readiness?.categories]);
+  const demoSuiteBeos = useMemo(() => buildDemoSuiteBeos(COMPREHENSIVE_STADIUM_ZONES), []);
+  const demoSuiteOrders = useMemo(() => buildDemoSuiteRunnerOrders(COMPREHENSIVE_STADIUM_ZONES), []);
+  const demoFoodLines = demoSuiteOrders.flatMap((order) => order.cateringLineItems)
+    .filter((item) => item.category !== 'bar' && item.category !== 'beverage');
+  const demoBeverageLines = demoSuiteOrders.flatMap((order) => order.cateringLineItems)
+    .filter((item) => item.category === 'bar' || item.category === 'beverage');
+  const demoNeedsReview = demoSuiteBeos.filter((beo) => beo.departmentSlices.suites.preOrders.length === 0);
 
   const markAllRead = async () => {
     await Promise.all(notificationsList.filter((item) => !item.read).map((item) => markNotificationRead({ notificationId: item._id })));
@@ -156,9 +165,9 @@ export default function HomeScreen() {
 
           {/* Readiness Status Pill */}
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#FFFFFF', borderRadius: radius.pill, borderWidth: hairline, borderColor: '#D8CFC0', paddingHorizontal: 10, paddingVertical: 5 }}>
-            <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: readiness?.status === 'blocked' ? statusColors.alert : readiness?.status === 'at-risk' ? statusColors.needs_review : statusColors.confirmed }} />
+            <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: !readiness ? stone : readiness.status === 'blocked' ? statusColors.alert : readiness.status === 'at-risk' ? statusColors.needs_review : statusColors.confirmed }} />
             <CommandText palette={palette} variant="caption" style={{ color: ink, fontWeight: '700' }}>
-              {readiness?.status === 'blocked' ? 'Needs attention' : readiness?.status === 'at-risk' ? 'Watch operations' : 'Telemetry nominal'}
+              {!readiness ? 'Telemetry unavailable' : readiness.status === 'blocked' ? 'Needs attention' : readiness.status === 'at-risk' ? 'Watch operations' : 'Telemetry nominal'}
             </CommandText>
             <View style={{ width: hairline, height: 12, backgroundColor: '#D8CFC0' }} />
             <CommandText palette={palette} variant="caption" style={{ color: stone, fontVariant: ['tabular-nums'] }}>{currentDate}</CommandText>
@@ -182,25 +191,25 @@ export default function HomeScreen() {
           </View>
           <View style={{ flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center' }}>
             <MetricRing
-              value={readiness?.categories?.approvals ? `${readiness.categories.approvals}%` : '12'}
+              value={readiness?.categories?.approvals != null ? `${readiness.categories.approvals}%` : String(demoSuiteBeos.length)}
               label="Suites"
               tint={isCross ? dept.suites : activeDeptTint}
               onPress={() => router.push(SUITE_BEO_REPORT_ROUTE as any)}
             />
             <MetricRing
-              value={readiness?.categories?.setup ? `${readiness.categories.setup}%` : '94%'}
+              value={readiness?.categories?.setup != null ? `${readiness.categories.setup}%` : '—'}
               label="Kitchen"
               tint={isCross ? dept.culinary : activeDeptTint}
               onPress={() => router.push(EVENT_BEO_ROUTE as any)}
             />
             <MetricRing
-              value={dailyBrief?.outOfStockCount ?? '0'}
+              value={dailyBrief?.outOfStockCount ?? '—'}
               label="86 List"
               tint={isCross ? dept.concessions : activeDeptTint}
-              onPress={() => router.push('/(tabs)/inventory')}
+              onPress={() => router.push('/(tabs)/bar-stock')}
             />
             <MetricRing
-              value={readiness?.categories?.staffing ? `${readiness.categories.staffing}%` : '28'}
+              value={readiness?.categories?.staffing != null ? `${readiness.categories.staffing}%` : '—'}
               label="Staffing"
               tint={isCross ? dept.banquets : activeDeptTint}
               onPress={() => router.push('/(tabs)/staff')}
@@ -223,32 +232,32 @@ export default function HomeScreen() {
           <DeptRailRow
             tint={isCross ? dept.suites : activeDeptTint}
             title="Luxury Suite BEOs"
-            subtitle="VIP Box Pre-Orders & Champagne"
-            meta="Kickoff - 2h · Level 3 Suite Deck"
+            subtitle={`${demoSuiteBeos.length} linked suite and hospitality BEOs`}
+            meta={`${demoSuiteOrders.length} with active catering orders`}
             status="confirmed"
             onPress={() => router.push(SUITE_BEO_REPORT_ROUTE as any)}
           />
           <DeptRailRow
             tint={isCross ? dept.culinary : activeDeptTint}
-            title="Commissary & Kitchens"
-            subtitle="Batch Prep, Prime Rib, Carvery"
-            meta="Station 1-4 · Service T-45m"
+            title="Culinary Production"
+            subtitle={`${demoFoodLines.length} exact BEO food line items`}
+            meta={`${demoFoodLines.reduce((sum, item) => sum + item.quantity, 0)} portions across linked spaces`}
             status="in_service"
             onPress={() => router.push(EVENT_BEO_ROUTE as any)}
           />
           <DeptRailRow
             tint={isCross ? dept.banquets : activeDeptTint}
-            title="Banquet Operations"
-            subtitle="Founders Club 320 Plated Rundown"
-            meta="Floor Captain Call 16:30"
-            status="needs_review"
-            onPress={() => router.push('/banquet-floor-plan')}
+            title="BEO Exceptions"
+            subtitle={`${demoNeedsReview.length} BEOs without catering line items`}
+            meta="Review the exact source records in BEO Hub"
+            status={demoNeedsReview.length ? 'needs_review' : 'confirmed'}
+            onPress={() => router.push('/(tabs)/guests?crmView=hub' as any)}
           />
           <DeptRailRow
             tint={isCross ? dept.beverage : activeDeptTint}
-            title="Bars & Cellar Stock"
-            subtitle="Speed Rails, Draft Kegs, Club Bars"
-            meta="All Wells Verified · Par 100%"
+            title="Beverage Operations"
+            subtitle={`${demoBeverageLines.length} exact BEO beverage line items`}
+            meta={`${demoBeverageLines.reduce((sum, item) => sum + item.quantity, 0)} units across linked spaces`}
             status="confirmed"
             onPress={() => router.push(EVENT_BEO_ROUTE as any)}
           />

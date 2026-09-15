@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ScrollView, View } from 'react-native';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { Button, Chip, TextInput } from 'react-native-paper';
 import { CommandSurface, CommandText, StatusPill } from '../components/FutureUI';
 import { ScreenState } from '../components/ScreenState';
@@ -19,6 +19,9 @@ const severities: Issue['severity'][] = ['low', 'medium', 'high', 'critical'];
 const label = humanizeLabel;
 
 export default function EventIssuesScreen() {
+  const params = useLocalSearchParams<{ outletId?: string; outletCode?: string }>();
+  const outletId = typeof params.outletId === 'string' ? params.outletId : null;
+  const outletCode = typeof params.outletCode === 'string' ? params.outletCode : null;
   const palette = useDesignTheme();
   const { isReady, venue } = useVenueAuth();
   const overviewQuery = useQueryState<Overview>(api.stadium.getOverview, isReady && venue?.id ? {} : 'skip');
@@ -26,8 +29,8 @@ export default function EventIssuesScreen() {
   const [eventId, setEventId] = useState<string | null>(null);
   const [issueType, setIssueType] = useState('operational');
   const [severity, setSeverity] = useState<Issue['severity']>('high');
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
+  const [title, setTitle] = useState(outletCode ? `${outletCode} operational issue` : '');
+  const [description, setDescription] = useState(outletId ? `Reported from stadium space ${outletCode ?? outletId} (${outletId}).` : '');
   const [resolutionNotes, setResolutionNotes] = useState<Record<string, string>>({});
   const [message, setMessage] = useState<string | null>(null);
   const createIssue = useMutation(api.stadium.createEventIssue);
