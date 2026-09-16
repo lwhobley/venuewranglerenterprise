@@ -11,7 +11,7 @@ import type { VenueScopedRequest } from '../../venue/venue-scope.interceptor';
 
 type Scope = VenueScopedRequest['venueScope'];
 
-const RESERVATION_SOURCES = ['direct', 'opentable', 'resy', 'phone', 'walk_in', 'sevenrooms', 'tock', 'google'] as const;
+const RESERVATION_SOURCES = ['direct', 'phone', 'walk_in'] as const;
 const INTEGRATION_STATUSES = ['connected', 'paused', 'error'] as const;
 
 class UpsertReservationConnectionDto {

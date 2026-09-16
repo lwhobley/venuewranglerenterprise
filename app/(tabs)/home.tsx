@@ -20,6 +20,7 @@ import { Skeleton } from '../../components/Skeleton';
 import { useAuthStore } from '../../lib/auth-store';
 import { usePushNotifications } from '../../lib/usePushNotifications';
 import { useAuthenticatedSession } from '../../lib/auth-readiness';
+import { config } from '../../lib/config';
 import {
   chromeGold,
   dept,
@@ -57,7 +58,7 @@ const MORE_OPS = [
   { href: EVENT_BEO_ROUTE, label: 'Event BEO report', icon: 'file-document-edit-outline' as const },
   { href: '/(tabs)/documents', label: 'Documents & Files', icon: 'file-document-multiple-outline' as const },
   { href: '/(tabs)/reports', label: 'Reports & Recon', icon: 'chart-box-outline' as const },
-  { href: '/(tabs)/sales', label: 'Concessions POS', icon: 'cash-register' as const },
+  ...(config.stadiumShell ? [] : [{ href: '/(tabs)/sales', label: 'Concessions POS', icon: 'cash-register' as const }]),
   { href: '/(tabs)/guests?crmView=events', label: 'BEOs', icon: 'account-heart-outline' as const },
   { href: '/(tabs)/integrations', label: 'POS & Hardware', icon: 'connection' as const },
 ];
@@ -206,7 +207,7 @@ export default function HomeScreen() {
               value={dailyBrief?.outOfStockCount ?? '—'}
               label="86 List"
               tint={isCross ? dept.concessions : activeDeptTint}
-              onPress={() => router.push('/(tabs)/bar-stock')}
+              onPress={() => router.push(config.stadiumShell ? '/(tabs)/inventory' : '/(tabs)/bar-stock')}
             />
             <MetricRing
               value={readiness?.categories?.staffing != null ? `${readiness.categories.staffing}%` : '—'}

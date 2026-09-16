@@ -5,6 +5,7 @@ import {
   Delete,
   ForbiddenException,
   Get,
+  GoneException,
   Header,
   Headers,
   Param,
@@ -38,7 +39,7 @@ import { ReservationNotifierService } from './reservation-notifier.service';
 type Scope = VenueScopedRequest['venueScope'];
 const RESERVATION_STATUSES = ['requested', 'confirmed', 'checked_in', 'seated', 'completed', 'no_show', 'cancelled'] as const;
 const RESERVATION_SOURCES = ['direct', 'opentable', 'resy', 'phone', 'walk_in', 'sevenrooms', 'tock', 'google', 'generic'] as const;
-const SYNC_SOURCES = ['opentable', 'resy', 'sevenrooms', 'tock', 'google', 'generic'] as const;
+const SYNC_SOURCES = [] as const;
 const MAX_INGEST_EVENTS = 500;
 // Bound applied to the reservations CSV export only when the caller supplies
 // no date range at all (an explicit range is left uncapped).
@@ -210,13 +211,13 @@ class ReservationSyncEventDto {
 }
 
 class ReservationIngestDto {
-  @IsIn(SYNC_SOURCES)
-  provider!: string;
+  @IsString()
+  @IsOptional()
+  provider?: string;
 
   @IsArray()
-  @ValidateNested({ each: true })
-  @Type(() => ReservationSyncEventDto)
-  events!: ReservationSyncEventDto[];
+  @IsOptional()
+  events?: ReservationSyncEventDto[];
 }
 
 class ReservationHoldDto {
@@ -243,171 +244,16 @@ export class ReservationsController {
     if (!scope || !canManageVenue(scope.role, scope.allAccess)) throw new ForbiddenException('Not authorized');
   }
 
-  // External reservation providers (OpenTable, Resy, ...) POST sync events here,
-  // authenticated by the connection's webhook secret. Each event is recorded
-  // once (unique on venue+provider+externalEventId); redeliveries are skipped.
+  // External reservation provider sync is permanently discontinued for enterprise operations.
   @Public()
   @Post('ingest/:venueId')
   async ingest(
-    @Req() request: Request,
-    @Param('venueId') venueId: string,
-    @Headers('x-webhook-secret') secret: string | undefined,
-    @Body() body: ReservationIngestDto,
+    @Req() _request: Request,
+    @Param('venueId') _venueId: string,
+    @Headers('x-webhook-secret') _secret: string | undefined,
+    @Body() _body: ReservationIngestDto,
   ) {
-    if (body.events.length > MAX_INGEST_EVENTS) {
-      throw new BadRequestException(`A single sync request can include at most ${MAX_INGEST_EVENTS} events.`);
-    }
-    const provider = body.provider as ReservationSource;
-    // Verify the per-connection secret before touching the rate limiter so an
-    // unauthenticated spray of random venueIds can't churn RateLimitBucket rows.
-    const connection = await this.prisma.reservationConnection.findFirst({ where: { venueId, provider } });
-    if (!connection?.webhookSecret || !secretsMatch(secret, connection.webhookSecret)) {
-      throw new UnauthorizedException('Invalid webhook secret');
-    }
-    await assertWithinSharedRateLimit(this.prisma, `reservation-ingest:${venueId}:${getClientIp(request)}`, INGEST_RATE_LIMIT_MAX, INGEST_RATE_LIMIT_WINDOW_MS, 'Too many webhook requests.');
-    if (connection.status !== 'connected') {
-      throw new BadRequestException('This reservation integration is not currently connected.');
-    }
-
-    const now = new Date();
-    let duplicates = 0;
-    let processed = 0;
-    let failed = 0;
-
-    for (const event of body.events) {
-      // 1) Claim the idempotency row in its OWN committed transaction, before
-      //    any processing. If processing later fails and its transaction rolls
-      //    back, this row survives so the failure stays recorded (and the event
-      //    can be retried) — the previous single-transaction structure rolled
-      //    the row away on failure, so the "mark failed" update matched nothing.
-      try {
-        await this.prisma.reservationSyncEvent.create({
-          data: {
-            venueId,
-            provider,
-            externalEventId: event.externalEventId,
-            eventType: event.eventType,
-            payload: event as unknown as Prisma.InputJsonValue,
-            processedAt: now,
-            status: 'processing',
-          },
-        });
-      } catch (error: any) {
-        if (error?.code !== 'P2002') throw error;
-        // Already seen: a currently-processing delivery is also a duplicate.
-        // Only retry an explicitly failed event or a processing claim old enough
-        // to be considered abandoned after a worker crash.
-        const prior = await this.prisma.reservationSyncEvent.findFirst({
-          where: { venueId, provider, externalEventId: event.externalEventId },
-          select: { status: true, processedAt: true },
-        });
-        const activeProcessingClaim =
-          prior?.status === 'processing' && prior.processedAt.getTime() > Date.now() - 5 * 60 * 1000;
-        if (prior?.status === 'processed' || prior?.status === 'ignored_stale' || activeProcessingClaim) {
-          duplicates += 1;
-          continue;
-        }
-        await this.prisma.reservationSyncEvent.updateMany({
-          where: { venueId, provider, externalEventId: event.externalEventId },
-          data: { status: 'processing', errorMessage: null, processedAt: now },
-        });
-      }
-
-      // 2) Process the reservation in a separate transaction.
-      try {
-        const reservationTime = new Date(event.reservationTime);
-        const sourceEventAt = new Date(event.eventTimestamp);
-        if (isNaN(reservationTime.getTime())) {
-          throw new BadRequestException('Invalid reservationTime');
-        }
-        if (isNaN(sourceEventAt.getTime())) {
-          throw new BadRequestException('Invalid eventTimestamp');
-        }
-        // TODO(RLS cutover, tracked in scripts/rls-cutover/README.md): this is
-        // a @Public() webhook with no tenant context, so every prisma call in
-        // this handler — not just this one — currently runs unbound under a
-        // future NOBYPASSRLS stadium_api role. This transaction (the actual
-        // Reservation write) is fixed via withTenantTransaction below; the
-        // connection lookup above and the reservationSyncEvent
-        // create/findFirst/updateMany calls in this loop (deliberately
-        // committed independently of this transaction for idempotency
-        // durability — see the comment at the top of this method) are NOT yet
-        // — they need the same withTenantTransaction(..., { venueId }) wrap
-        // applied individually before cutover, since collapsing them into one
-        // transaction would break that durability guarantee.
-        const result = await withTenantTransaction(this.prisma, async (tx) => {
-          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`reservation-sync:${venueId}:${provider}:${event.externalId}`}))`;
-          const fields: Prisma.ReservationUpdateInput = {
-            guestName: event.guestName,
-            partySize: event.partySize,
-            reservationTime,
-            durationMinutes: event.durationMinutes ?? 90,
-            status: (event.status ?? 'confirmed') as ReservationStatus,
-            guestPhone: event.phone?.trim() ?? null,
-            guestEmail: event.email?.trim() ?? null,
-            notes: event.notes?.trim() ?? null,
-            specialRequests: event.specialRequests?.trim() ?? null,
-            lastExternalEventAt: sourceEventAt,
-          };
-          const existing = await tx.reservation.findFirst({
-            where: { venueId, source: provider, externalId: event.externalId },
-            select: { id: true, lastExternalEventAt: true },
-          });
-          if (existing?.lastExternalEventAt && existing.lastExternalEventAt > sourceEventAt) {
-            return { reservationId: existing.id, ignoredStale: true };
-          }
-          const reservationId = existing
-            ? (await tx.reservation.update({ where: { id: existing.id }, data: fields, select: { id: true } })).id
-            : (await tx.reservation.create({
-                data: {
-                  venueId,
-                  source: provider,
-                  externalId: event.externalId,
-                  guestName: event.guestName,
-                  partySize: event.partySize,
-                  reservationTime,
-                  durationMinutes: event.durationMinutes ?? 90,
-                  status: (event.status ?? 'confirmed') as ReservationStatus,
-                  guestPhone: event.phone?.trim() ?? null,
-                  guestEmail: event.email?.trim() ?? null,
-                  notes: event.notes?.trim() ?? null,
-                  specialRequests: event.specialRequests?.trim() ?? null,
-                  lastExternalEventAt: sourceEventAt,
-                },
-                select: { id: true },
-              })).id;
-          return { reservationId, ignoredStale: false };
-        }, { venueId });
-
-        // 3) Mark processed (committed independently of the processing tx).
-        await this.prisma.reservationSyncEvent.updateMany({
-          where: { venueId, provider, externalEventId: event.externalEventId },
-          data: {
-            reservationId: result.reservationId,
-            processedAt: new Date(),
-            status: result.ignoredStale ? 'ignored_stale' : 'processed',
-            errorMessage: null,
-          },
-        });
-        if (result.ignoredStale) duplicates += 1;
-        else processed += 1;
-      } catch (error: any) {
-        // The 'processing' row was committed in step 1, so this update matches it.
-        await this.prisma.reservationSyncEvent.updateMany({
-          where: { venueId, provider, externalEventId: event.externalEventId },
-          data: { status: 'failed', errorMessage: String(error?.message ?? error).slice(0, 500) },
-        });
-        failed += 1;
-      }
-    }
-
-    if (failed > 0) {
-      throw new ServiceUnavailableException(`Reservation sync failed for ${failed} event${failed === 1 ? '' : 's'}.`);
-    }
-
-    await this.prisma.reservationConnection.update({ where: { id: connection.id }, data: { lastSyncAt: new Date() } });
-
-    return { ok: true, processed, duplicates, failed };
+    throw new GoneException('External reservation provider sync is permanently discontinued.');
   }
 
   @RequireSubscription('active')

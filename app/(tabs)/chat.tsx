@@ -1,8 +1,9 @@
 import { memo, type ComponentProps, type ReactNode, useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, View } from 'react-native';
-import { router } from 'expo-router';
+import { Redirect, router } from 'expo-router';
 import { Button, HelperText, IconButton, Text, TextInput } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { config } from '../../lib/config';
 import { useMutation, useQuery } from '../../lib/railway-hooks';
 import { api } from '../../lib/railway-api';
 import type { Id } from '../../lib/ids';
@@ -122,6 +123,10 @@ function Section({ title, children, action }: { title: string; children: ReactNo
 }
 
 export default function ChatScreen() {
+  if (config.stadiumShell) {
+    return <Redirect href="/(tabs)/home" />;
+  }
+
   const { t } = useI18n();
   const { venue, isReady, me, canManage } = useVenueAuth();
   const ensureSetup = useMutation(api.chat.ensureChatSetup);

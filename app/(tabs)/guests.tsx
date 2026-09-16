@@ -14,6 +14,7 @@ import { SectionHeader } from '../../components/AppCard';
 import { BeoHubWorkspace } from '../../components/BeoHubWorkspace';
 import { parseWorkspaceView } from '../../lib/crm-routing';
 import { useI18n } from '../../lib/i18n';
+import { config } from '../../lib/config';
 
 
 type LifecycleStage = 'lead' | 'regular' | 'vip' | 'lapsed';
@@ -449,6 +450,29 @@ function GuestsScreenInner() {
     return (
       <ScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={{ padding: spacing.lg }}>
         <Text style={{ color: colors.muted }}>{t('guests.header.managerOnly')}</Text>
+      </ScrollView>
+    );
+  }
+
+  if (config.stadiumShell) {
+    return (
+      <ScrollView
+        style={{ flex: 1, backgroundColor: colors.background }}
+        contentContainerStyle={{ padding: spacing.lg, paddingBottom: spacing.xxl }}
+        showsVerticalScrollIndicator={false}
+      >
+        <SectionHeader
+          kicker="Stadium Operations"
+          title="BEO Hub & Hospitality"
+          subtitle={venue?.name ?? 'Stadium F&B Operations'}
+        />
+        <BeoHubWorkspace
+          venueId={venue?.id}
+          enabled={isReady && canManage}
+          initialView={crmView ?? 'hub'}
+          initialEventName={crmEvent}
+          initialBeoId={crmBeoId}
+        />
       </ScrollView>
     );
   }

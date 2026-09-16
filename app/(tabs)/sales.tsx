@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import { ScrollView, View } from 'react-native';
+import { Redirect } from 'expo-router';
 import { Card, Chip, SegmentedButtons, Text } from 'react-native-paper';
 import { ScreenErrorBoundary } from '../../components/ErrorBoundary';
 import { AnimatedTab, SectionHeader } from '../../components/AppCard';
+import { config } from '../../lib/config';
 import { useI18n } from '../../lib/i18n';
 import { useQueryState } from '../../lib/railway-hooks';
 import { api } from '../../lib/railway-api';
@@ -346,6 +348,10 @@ export default function SalesScreenWrapper() {
 }
 
 function SalesScreen() {
+  if (config.stadiumShell) {
+    return <Redirect href="/(tabs)/home" />;
+  }
+
   const { t } = useI18n();
   const { venue, isReady, profileLoading, canManage } = useVenueAuth();
 

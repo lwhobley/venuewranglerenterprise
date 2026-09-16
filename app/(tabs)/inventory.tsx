@@ -7,6 +7,7 @@ import { api } from '../../lib/railway-api';
 import { errorMessage, formatMoney, formatRelativeTime } from '../../lib/format';
 import { radius, spacing, useDesignTheme } from '../../lib/theme';
 import { useResponsive } from '../../lib/responsive';
+import { config } from '../../lib/config';
 import { SectionHeader } from '../../components/AppCard';
 import { InlineMessage } from '../../components/InlineMessage';
 import { InventorySubNav } from '../../components/inventory/InventorySubNav';
@@ -165,10 +166,12 @@ export default function InventoryOverviewScreen() {
           </Panel>
         ) : null}
 
-        <Pressable onPress={() => router.push('/bar-stock' as never)} accessibilityRole="link" style={styles.legacyLink}>
-          <MaterialCommunityIcons name="history" size={16} color={palette.muted} />
-          <Text style={{ color: palette.muted, fontSize: 13, fontWeight: '600' }}>Open legacy bar stock screen</Text>
-        </Pressable>
+        {!config.stadiumShell ? (
+          <Pressable onPress={() => router.push('/bar-stock' as never)} accessibilityRole="link" style={styles.legacyLink}>
+            <MaterialCommunityIcons name="history" size={16} color={palette.muted} />
+            <Text style={{ color: palette.muted, fontSize: 13, fontWeight: '600' }}>Open legacy bar stock screen</Text>
+          </Pressable>
+        ) : null}
       </ScrollView>
 
       <MovementSheet target={movementTarget} initialMode="receive" onClose={() => setMovementTarget(null)} />

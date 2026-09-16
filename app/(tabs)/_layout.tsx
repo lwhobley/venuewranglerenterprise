@@ -6,6 +6,7 @@ import { useAuthStore, type AuthState } from "../../lib/auth-store";
 import { CarouselTabBar } from "../../components/CarouselTabBar";
 import { useI18n } from "../../lib/i18n";
 import { useAuthenticatedSession } from "../../lib/auth-readiness";
+import { config } from "../../lib/config";
 
 const icon =
   (name: keyof typeof MaterialCommunityIcons.glyphMap) =>
@@ -77,11 +78,16 @@ export default function TabsLayout() {
         options={{
           title: "Concessions POS",
           tabBarIcon: icon("cash-register"),
+          href: config.stadiumShell ? null : '/(tabs)/sales',
         }}
       />
       <Tabs.Screen
         name="chat"
-        options={{ title: "Event Radio", tabBarIcon: icon("chat-outline") }}
+        options={{
+          title: "Event Radio",
+          tabBarIcon: icon("chat-outline"),
+          href: config.stadiumShell ? null : '/(tabs)/chat',
+        }}
       />
       <Tabs.Screen
         name="inventory"

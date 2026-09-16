@@ -6,12 +6,13 @@ import { CommandButton, CommandText } from '../components/FutureUI';
 import { StadiumVenueMap } from '../components/StadiumVenueMap';
 import { spacing, useDesignTheme } from '../lib/theme';
 import { EVENT_BEO_ROUTE } from '../lib/beo-report';
+import { config } from '../lib/config';
 
 export default function StadiumMapScreen() {
   const palette = useDesignTheme();
   const params = useLocalSearchParams<{ zoneId?: string; unitId?: string; mode?: 'operations' | '3d' }>();
   const initialZoneId = typeof params.zoneId === 'string' ? params.zoneId : undefined;
-  const initialViewMode = params.mode === '3d' ? '3d' : 'operations';
+  const initialViewMode = (config.enable3DMapLab && params.mode === '3d') ? '3d' : 'operations';
   // The 3D canvas is a WebView that needs the vertical drag to orbit. While it
   // is on screen this ScrollView must not claim that gesture.
   const [scrollEnabled, setScrollEnabled] = useState(true);

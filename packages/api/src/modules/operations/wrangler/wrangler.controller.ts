@@ -12,7 +12,7 @@ import { WranglerHistoryService } from './wrangler-history.service';
 import { WranglerService } from './wrangler.service';
 
 type Scope = VenueScopedRequest['venueScope'];
-class ExecuteWranglerActionDto { @IsString() @IsIn(['REASSIGN_RESERVATION', 'NOTIFY_STAFF', 'CREATE_FOLLOW_UP']) type!: 'REASSIGN_RESERVATION' | 'NOTIFY_STAFF' | 'CREATE_FOLLOW_UP'; @IsOptional() @IsString() reservationId?: string; @IsOptional() @IsString() tableId?: string; @IsOptional() @IsString() priorityId?: string; }
+class ExecuteWranglerActionDto { @IsString() @IsIn(['NOTIFY_STAFF', 'CREATE_FOLLOW_UP']) type!: 'NOTIFY_STAFF' | 'CREATE_FOLLOW_UP'; @IsOptional() @IsString() reservationId?: string; @IsOptional() @IsString() tableId?: string; @IsOptional() @IsString() priorityId?: string; }
 class AskWranglerDto { @IsString() @MinLength(2) @MaxLength(500) question!: string; }
 
 @Controller('v1/operations/wrangler')
