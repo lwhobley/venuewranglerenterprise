@@ -80,7 +80,7 @@ describe('buildWranglerRuleActions', () => {
       id: 'inventory:service-risk',
       kind: 'stock',
       severity: 'warning',
-      route: '/bar-stock',
+      route: '/inventory',
     });
   });
 });

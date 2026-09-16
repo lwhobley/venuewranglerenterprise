@@ -66,7 +66,7 @@ export function buildWranglerRuleActions(input: WranglerRuleInput): DailyBriefPr
   }
 
   if (input.lowStockCount > 0 && input.eightySixCount > 0) {
-    const route = '/bar-stock' as const;
+    const route = '/inventory' as const;
     actions.push({
       id: 'inventory:service-risk',
       kind: 'stock',

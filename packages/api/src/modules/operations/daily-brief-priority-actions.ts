@@ -2,7 +2,7 @@ export type WranglerAction = {
   id: string;
   type: 'NAVIGATE' | 'ACKNOWLEDGE' | 'REASSIGN_RESERVATION' | 'NOTIFY_STAFF';
   label: string;
-  route: '/reservations' | '/staff' | '/schedule' | '/bar-stock' | '/reports' | '/floor';
+  route: '/reservations' | '/staff' | '/schedule' | '/bar-stock' | '/reports' | '/floor' | '/inventory';
   requiresConfirmation: boolean;
   payload?: Record<string, string | number | boolean | null>;
 };
@@ -48,7 +48,7 @@ export function buildDailyBriefPriorityActions(input: { openShiftCount: number; 
   }
 
   if (lowStockCount > 0 || eightySixCount > 0) {
-    const route = '/bar-stock' as const;
+    const route = '/inventory' as const;
     const title = lowStockCount > 0 ? lowStockCount === 1 ? '1 low-stock item needs attention' : `${lowStockCount} low-stock items need attention` : `${pluralize(eightySixCount, 'item')} on the 86 list`;
     actions.push({ id: 'stock-risk', kind: 'stock', tone: lowStockCount > 0 ? 'warn' : 'neutral', severity: lowStockCount >= 3 ? 'warning' : 'watch', title, body: lowStockCount > 0 && eightySixCount > 0 ? `${pluralize(lowStockCount, 'low-stock item')} need attention and ${pluralize(eightySixCount, 'item')} are already 86'd. Refill before they interrupt service.` : lowStockCount > 0 ? 'Top up the bar list before the problem turns into a comp or a missed sale.' : 'Keep the 86 list current so the team does not sell what the bar cannot support.', reason: 'Current on-hand inventory is at or below par, or an item is already unavailable.', cta: 'Open inventory', route, actions: [action('stock-open-inventory', 'Review inventory', route)] });
   }

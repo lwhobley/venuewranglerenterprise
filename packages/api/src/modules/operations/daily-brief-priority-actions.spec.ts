@@ -56,13 +56,13 @@ describe('buildDailyBriefPriorityActions', () => {
       id: 'stock-risk',
       kind: 'stock',
       severity: 'watch',
-      route: '/bar-stock',
+      route: '/inventory',
       reason: expect.any(String),
       actions: [
         {
           id: 'stock-open-inventory',
           type: 'NAVIGATE',
-          route: '/bar-stock',
+          route: '/inventory',
           requiresConfirmation: false,
         },
       ],

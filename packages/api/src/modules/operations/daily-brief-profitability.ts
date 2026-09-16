@@ -4,7 +4,7 @@ export type DailyBriefRecoveryAction = {
   title: string;
   body: string;
   cta: string;
-  route: '/floor' | '/reports' | '/reservations' | '/schedule' | '/staff' | '/bar-stock';
+  route: '/floor' | '/reports' | '/reservations' | '/schedule' | '/staff' | '/bar-stock' | '/inventory';
 };
 
 export type DailyBriefProfitabilityPulse = {
@@ -132,7 +132,7 @@ export function buildDailyBriefProfitabilityPulse(input: {
           ? 'Top up the bar list before the problem turns into a comp or a missed sale.'
           : 'Keep the 86 list current so the team does not sell what the bar cannot support.',
       cta: 'Open inventory',
-      route: '/bar-stock',
+      route: '/inventory',
     });
   }
 

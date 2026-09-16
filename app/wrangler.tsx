@@ -23,6 +23,7 @@ const ALLOWED_WRANGLER_ROUTES = new Set([
   '/stadium/labor-dashboard',
   '/event-issues',
   '/event-closeout',
+  '/inventory',
   '/bar-stock',
   '/facility',
   '/reports',
