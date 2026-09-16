@@ -9,7 +9,8 @@ import { accents, colors, spacing } from '../lib/theme';
 import { useIsDesktop } from '../lib/responsive';
 import { asArray, dollarsToCents, errorMessage, formatMoneyWhole, formatShortDate, splitTags as baseSplitTags } from '../lib/format';
 import { AnimatedTab } from './AppCard';
-import type { WorkspaceView } from '../lib/crm-routing';
+/** Views this SMB CRM workspace renders. Enterprise WorkspaceView is separate. */
+type SalesCrmView = 'hub' | 'dashboard' | 'pipeline' | 'contacts' | 'events' | 'contracts' | 'insights' | 'templates';
 import { formatCrmNotesForDisplay } from '../lib/banquet-layout-engine';
 
 type LeadStatus = 'new' | 'contacted' | 'qualified' | 'proposal_sent' | 'negotiating' | 'won' | 'lost' | 'unqualified' | 'on_hold';
@@ -114,8 +115,7 @@ export function CrmSalesWorkspace({
 }: {
   venueId: Id<'venues'> | undefined;
   enabled: boolean;
-  /** Opens the workspace on a specific tab, so a BEO link can land on Events. */
-  initialView?: WorkspaceView;
+  initialView?: SalesCrmView;
   /**
    * Filters the Events tab to one event name. A link from the published BEO
    * report arrives with the event's title, which is the only handle the sales
@@ -126,11 +126,11 @@ export function CrmSalesWorkspace({
   initialBeoId?: string;
 }) {
   const isDesktop = useIsDesktop();
-  const [view, setView] = useState<WorkspaceView>(initialView ?? 'dashboard');
+  const [view, setView] = useState<SalesCrmView>(initialView ?? 'dashboard');
   // A second link to a different tab arrives as a prop change on a mounted
   // screen, so follow it rather than leaving the user on the previous tab.
   useEffect(() => {
-    if (initialView) setView(initialView);
+    if (initialView) setView(initialView as SalesCrmView);
   }, [initialView]);
   const [eventFilter, setEventFilter] = useState<string>(initialEventName ?? '');
   useEffect(() => {
@@ -361,7 +361,7 @@ export function CrmSalesWorkspace({
         <ScrollView horizontal showsHorizontalScrollIndicator={false}>
           <SegmentedButtons
             value={view}
-            onValueChange={(value) => setView(value as WorkspaceView)}
+            onValueChange={(value) => setView(value as SalesCrmView)}
             buttons={[
               { value: 'dashboard', label: 'Dashboard' },
               { value: 'pipeline', label: 'Pipeline' },
@@ -534,7 +534,7 @@ function DashboardView({
   beos: BeoRow[] | undefined;
   contracts: ContractRow[] | undefined;
   onSelectLead: (id: Id<'crmLeads'>) => void;
-  onView: (view: WorkspaceView) => void;
+  onView: (view: SalesCrmView) => void;
 }) {
   const hotLeads = [...asArray(leads)].sort((a, b) => (b.estimatedValueCents ?? 0) - (a.estimatedValueCents ?? 0)).slice(0, 5);
   return (

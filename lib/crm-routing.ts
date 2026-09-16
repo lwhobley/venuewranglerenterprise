@@ -7,26 +7,9 @@
  * readiness category entirely.
  */
 
-export type WorkspaceView =
-  | 'hub'
-  | 'dashboard'
-  | 'pipeline'
-  | 'contacts'
-  | 'events'
-  | 'contracts'
-  | 'insights'
-  | 'templates';
+export type WorkspaceView = 'hub' | 'events';
 
-const WORKSPACE_VIEWS: WorkspaceView[] = [
-  'hub',
-  'dashboard',
-  'pipeline',
-  'contacts',
-  'events',
-  'contracts',
-  'insights',
-  'templates',
-];
+const WORKSPACE_VIEWS: WorkspaceView[] = ['hub', 'events'];
 
 /** Narrows a deep-link parameter to a view the CRM workspace actually renders. */
 export function parseWorkspaceView(value: unknown): WorkspaceView | undefined {

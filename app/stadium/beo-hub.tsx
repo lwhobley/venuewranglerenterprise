@@ -96,7 +96,6 @@ function StadiumBeoHubScreen() {
           enabled={isReady && canManage}
           initialBeoId={beoId}
           initialEventName={eventName}
-          hideSalesMirror={true}
         />
       </View>
     </ScrollView>

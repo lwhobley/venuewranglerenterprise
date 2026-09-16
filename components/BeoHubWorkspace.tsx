@@ -36,7 +36,6 @@ import { StatusChip } from './HudPrimitives';
 import { useIsDesktop } from '../lib/responsive';
 import { errorMessage, formatShortDate, formatShortDateTime } from '../lib/format';
 import type { WorkspaceView } from '../lib/crm-routing';
-import { CrmSalesWorkspace } from './CrmSalesWorkspace';
 import { useAuthStore } from '../lib/auth-store';
 import { useWorkspaceResolution } from '../lib/workspace-routing';
 import { isCrossDepartmentRole } from '../lib/permissions';
@@ -80,20 +79,14 @@ export function BeoHubWorkspace({
   initialView,
   initialEventName,
   initialBeoId,
-  hideSalesMirror,
 }: {
   venueId: Id<'venues'> | undefined;
   enabled: boolean;
   initialView?: WorkspaceView;
   initialEventName?: string;
   initialBeoId?: string;
-  hideSalesMirror?: boolean;
 }) {
   const isDesktop = useIsDesktop();
-
-  // Mode: BEO Hub vs Sales CRM Mirror
-  const isInitialSales = !hideSalesMirror && initialView && initialView !== 'hub' && initialView !== 'events';
-  const [showSalesMirror, setShowSalesMirror] = useState(Boolean(isInitialSales));
 
   // Hub Filters & View Modes
   const userRole = useAuthStore((s) => s.user?.role);
@@ -388,34 +381,6 @@ export function BeoHubWorkspace({
 
   if (!enabled || !venueId) return null;
 
-  // Toggle to Sales CRM Mirror if explicitly opened
-  if (showSalesMirror) {
-    return (
-      <View style={{ gap: spacing.md }}>
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Text variant="headlineSmall" style={{ fontWeight: '800', color: colors.muted }}>
-            Sales (external CRM mirror)
-          </Text>
-          <Button
-            mode="contained"
-            buttonColor={colors.primary}
-            icon="arrow-left"
-            onPress={() => setShowSalesMirror(false)}
-          >
-            Back to BEO Operations Hub
-          </Button>
-        </View>
-        <CrmSalesWorkspace
-          venueId={venueId}
-          enabled={enabled}
-          initialView={initialView ?? 'pipeline'}
-          initialEventName={initialEventName}
-          initialBeoId={initialBeoId}
-        />
-      </View>
-    );
-  }
-
   return (
     <Card style={{ backgroundColor: colors.surface, borderRadius: radius.sharp }}>
       <Card.Content style={{ gap: spacing.md }}>
@@ -456,16 +421,7 @@ export function BeoHubWorkspace({
             >
               New Order
             </Button>
-            {isCross && !hideSalesMirror ? (
-              <Button
-                compact
-                mode="text"
-                textColor={colors.charcoal}
-                onPress={() => setShowSalesMirror(true)}
-              >
-                Sales CRM Mirror
-              </Button>
-            ) : null}
+
           </View>
         </View>
 
