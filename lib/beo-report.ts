@@ -137,6 +137,59 @@ export function formatWindow(startIso: string, endIso: string): string {
   return startLabel === endLabel ? startLabel : `${startLabel} – ${endLabel}`;
 }
 
+/**
+ * Shapes returned by the BEO upload parse step, mirroring
+ * `packages/api/src/modules/stadium/beo-upload.service.ts`.
+ */
+export interface SuiteCandidate {
+  id: string;
+  zoneId: string;
+  code: string;
+  name: string;
+}
+
+export interface SuiteMatch {
+  subVenueId: string;
+  zoneId: string;
+  code: string;
+  name: string;
+  confidence: 'exact_code' | 'exact_name' | 'number';
+}
+
+export interface ParsedSuiteRow {
+  rowId: string;
+  /** Exactly as the document wrote it, so a manager can check the mapping. */
+  suiteLabel: string;
+  beoNumber: string | null;
+  hostName: string;
+  guestCount: number;
+  serviceStart: string | null;
+  serviceEnd: string | null;
+  specialInstructions: string | null;
+  lineItems: { code: string; name: string; quantity: number; unitPriceCents: number; category: string }[];
+  totalCents: number;
+  match: SuiteMatch | null;
+  candidates: SuiteCandidate[];
+}
+
+export interface ParsedBeoUpload {
+  documentTitle: string;
+  eventName: string;
+  eventDate: string | null;
+  notes: string;
+  rows: ParsedSuiteRow[];
+  /** Every active suite in the venue, for assigning a row with no candidates. */
+  venueSuites: SuiteCandidate[];
+  matchedCount: number;
+  unmatchedCount: number;
+  readyToCommit: boolean;
+}
+
+/** Where a manager imports the catering document for an event. */
+export function beoUploadRoute(eventId?: string): string {
+  return eventId ? `/stadium/beo-upload?eventId=${encodeURIComponent(eventId)}` : '/stadium/beo-upload';
+}
+
 /** The published report for one event, optionally opened on one department. */
 export function beoReportRoute(options: { eventId?: string; department?: BeoReportDepartment } = {}): string {
   const query = new URLSearchParams();

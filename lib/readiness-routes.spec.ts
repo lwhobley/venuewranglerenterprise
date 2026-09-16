@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { EVENT_BEO_ROUTE, READINESS_ROW_ROUTES } from './readiness-routes';
-import { SUITE_BEO_REPORT_ROUTE, beoReportRoute, parseReportDepartment } from './beo-report';
+import { SUITE_BEO_REPORT_ROUTE, beoReportRoute, beoUploadRoute, parseReportDepartment } from './beo-report';
 
 /**
  * Each readiness row must lead to the screen that shows the work behind its
@@ -42,6 +42,13 @@ describe('readiness row routing', () => {
     expect(beoReportRoute({ eventId: 'evt_1', department: 'culinary_production' })).toBe(
       '/stadium/beo-report?eventId=evt_1&department=culinary_production'
     );
+  });
+
+  it('builds the upload route, scoped to an event when one is known', () => {
+    expect(beoUploadRoute()).toBe('/stadium/beo-upload');
+    expect(beoUploadRoute('evt_1')).toBe('/stadium/beo-upload?eventId=evt_1');
+    // Event ids are opaque, so the route must survive one needing encoding.
+    expect(beoUploadRoute('evt/1')).toBe('/stadium/beo-upload?eventId=evt%2F1');
   });
 
   it('ignores a deep-link department the report does not render', () => {

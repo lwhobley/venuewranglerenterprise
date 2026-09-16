@@ -21,6 +21,8 @@ import { DailyRosterController } from './daily-roster.controller';
 import { DailyRosterService } from './daily-roster.service';
 import { EventBeoReportController } from './event-beo-report.controller';
 import { EventBeoReportService } from './event-beo-report.service';
+import { BeoUploadController } from './beo-upload.controller';
+import { BeoUploadService } from './beo-upload.service';
 
 @Module({
   imports: [PrismaModule, NotificationsModule],
@@ -35,6 +37,7 @@ import { EventBeoReportService } from './event-beo-report.service';
     KitchenDistroFulfillmentController,
     DailyRosterController,
     EventBeoReportController,
+    BeoUploadController,
   ],
   providers: [
     SuiteHospitalityService,
@@ -47,6 +50,7 @@ import { EventBeoReportService } from './event-beo-report.service';
     KitchenDistroFulfillmentService,
     DailyRosterService,
     EventBeoReportService,
+    BeoUploadService,
   ],
   exports: [
     SuiteHospitalityService,
@@ -59,6 +63,7 @@ import { EventBeoReportService } from './event-beo-report.service';
     KitchenDistroFulfillmentService,
     DailyRosterService,
     EventBeoReportService,
+    BeoUploadService,
   ],
 })
 export class StadiumModule {}

@@ -12,6 +12,7 @@ import {
   type EventBeoReportDocument,
   type PublishedBeoReport,
   type ReportDepartmentSection,
+  beoUploadRoute,
   formatWindow,
   isOpenLineStatus,
   parseReportDepartment,
@@ -150,13 +151,23 @@ export default function EventBeoReportScreen() {
             <View style={[styles.card, { backgroundColor: palette.surface, borderColor: palette.border }]}>
               <CommandText palette={palette} variant="title">No report published yet</CommandText>
               <CommandText palette={palette} variant="body" style={{ color: palette.muted }}>
-                A report publishes automatically the day before the event. Publish now to hand departments a copy
-                sooner.
+                Upload the caterer's BEO document for this event, then publish. A report also publishes
+                automatically the day before the event.
               </CommandText>
               {canManage ? (
-                <CommandButton palette={palette} icon="file-document-check-outline" selected onPress={() => void publish()}>
-                  {publishing ? 'Publishing…' : 'Generate & publish report'}
-                </CommandButton>
+                <View style={{ flexDirection: 'row', gap: spacing.sm, flexWrap: 'wrap' }}>
+                  <CommandButton
+                    palette={palette}
+                    icon="tray-arrow-up"
+                    selected
+                    onPress={() => router.push(beoUploadRoute(eventId) as any)}
+                  >
+                    Upload BEOs
+                  </CommandButton>
+                  <CommandButton palette={palette} icon="file-document-check-outline" onPress={() => void publish()}>
+                    {publishing ? 'Publishing…' : 'Publish report'}
+                  </CommandButton>
+                </View>
               ) : null}
             </View>
           ) : (
@@ -174,9 +185,18 @@ export default function EventBeoReportScreen() {
                   <Summary palette={palette} label="Open items" value={String(document.totals.openLineCount)} />
                 </View>
                 {canManage ? (
-                  <CommandButton palette={palette} icon="refresh" onPress={() => void publish()}>
-                    {publishing ? 'Publishing…' : 'Publish new version'}
-                  </CommandButton>
+                  <View style={{ flexDirection: 'row', gap: spacing.sm, flexWrap: 'wrap' }}>
+                    <CommandButton
+                      palette={palette}
+                      icon="tray-arrow-up"
+                      onPress={() => router.push(beoUploadRoute(eventId) as any)}
+                    >
+                      Upload BEOs
+                    </CommandButton>
+                    <CommandButton palette={palette} icon="refresh" onPress={() => void publish()}>
+                      {publishing ? 'Publishing…' : 'Publish new version'}
+                    </CommandButton>
+                  </View>
                 ) : null}
                 {document.dataGaps.length ? (
                   <View style={{ gap: 4 }}>
