@@ -56,18 +56,11 @@ describe('buildWranglerFloorActions', () => {
       ],
     });
 
-    expect(results[0]?.actions[0]).toEqual({
-      id: 'floor-conflict:a1:reassign',
-      type: 'REASSIGN_RESERVATION',
-      label: 'Move to Table 12',
-      route: '/floor',
-      requiresConfirmation: true,
-      payload: {
-        reservationId: 'r1',
-        tableId: 't12',
-        tableLabel: 'Table 12',
-      },
-    });
+    // Reservation reassignment was cut from the enterprise shell; the conflict
+    // still surfaces with a navigation action and names the alternate table.
+    expect(results[0]?.actions.map((action) => action.type)).not.toContain('REASSIGN_RESERVATION');
+    expect(results[0]?.actions[0]?.id).toBe('floor-conflict:a1:open');
+    expect(results[0]?.body).toContain('Table 12');
   });
 
   it('flags a table seated beyond the service window', () => {

@@ -68,11 +68,13 @@ export default function NflBriefScreen() {
     try {
       await advancePhase({
         eventId,
-        phase: brief?.currentPhase ?? 'live',
+        phase: brief?.currentPhase ?? 'load_in',
         reason: nextCutoff ? 'Alcohol sales ceased per venue policy' : 'Alcohol sales restored',
         alcoholCutoffEnforced: nextCutoff,
       });
-      setMessage(nextCutoff ? 'Alcohol cutoff ENFORCED across all concourse outlets.' : 'Alcohol cutoff cleared.');
+      setMessage(nextCutoff
+        ? 'Alcohol cutoff issued and broadcast to event staff. POS terminals are not locked automatically; confirm each bar and stand has stopped sales.'
+        : 'Alcohol cutoff cleared and broadcast to event staff.');
       await query.refetch();
     } catch (err) {
       setMessage(errorMessage(err, 'Failed to update alcohol cutoff status.'));

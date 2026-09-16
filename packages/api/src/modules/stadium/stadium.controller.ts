@@ -106,8 +106,12 @@ class EventIssueQueryDto {
   @IsOptional() @IsString() outletId?: string;
 }
 
+/** Game-day phases in order; the NFL brief screen uses the same keys. */
+export const GAME_PHASES = ['load_in', 'gates', 'pregame', 'kickoff', 'halftime', 'q4_alcohol_cutoff', 'postgame'] as const;
+export type GamePhase = (typeof GAME_PHASES)[number];
+
 class AdvanceEventPhaseDto {
-  @IsString() phase!: string;
+  @IsIn(GAME_PHASES) phase!: GamePhase;
   @IsOptional() @IsString() reason?: string;
   @IsOptional() @IsBoolean() alcoholCutoffEnforced?: boolean;
   @IsOptional() @IsBoolean() isOvertime?: boolean;
@@ -271,8 +275,13 @@ export class StadiumController {
       throw new ForbiddenException('Executive multi-venue roll-up requires administrative access.');
     }
 
+    // Venue is the tenant root and is not auto-scoped: filter to the caller's
+    // organization explicitly or the roll-up exposes other operators' venues.
+    const organizationId = await this.organizationIdFor(scope.venueId);
     const venues = await this.prisma.venue.findMany({
+      where: { organizationId },
       select: { id: true, name: true, stadiumCapacity: true, homeTeam: true },
+      orderBy: { name: 'asc' },
       take: 20,
     });
 
@@ -386,6 +395,31 @@ export class StadiumController {
     if (!event) throw new NotFoundException('Stadium event not found.');
     const organizationId = event.organizationId ?? await this.organizationIdFor(scope.venueId);
 
+    const lastPhaseLog = await this.prisma.eventAuditLog.findFirst({
+      where: { venueId: scope.venueId, eventId: id, entityType: 'game_phase' },
+      orderBy: { createdAt: 'desc' },
+      select: { metadata: true },
+    });
+    const previous = (lastPhaseLog?.metadata ?? null) as { phase?: string; alcoholCutoffEnforced?: boolean } | null;
+    const currentIndex = GAME_PHASES.indexOf((previous?.phase ?? 'load_in') as GamePhase);
+    const nextIndex = GAME_PHASES.indexOf(body.phase);
+    const reason = body.reason?.trim() || null;
+    const previousCutoff = Boolean(previous?.alcoholCutoffEnforced);
+    // The cutoff is sticky: omitting it keeps the current state instead of
+    // silently reopening alcohol sales, and entering the Q4 cutoff phase sets it.
+    const alcoholCutoffEnforced = body.phase === 'q4_alcohol_cutoff' && nextIndex !== currentIndex
+      ? true
+      : body.alcoholCutoffEnforced ?? previousCutoff;
+    // Phases move forward. Stepping back or reopening alcohol sales is an
+    // override and must record why.
+    const movingBack = currentIndex >= 0 && nextIndex < currentIndex;
+    const clearingCutoff = previousCutoff && !alcoholCutoffEnforced;
+    if ((movingBack || clearingCutoff) && (!reason || reason.length < 3)) {
+      throw new BadRequestException(movingBack
+        ? `Moving the game back to ${body.phase} requires a reason.`
+        : 'Clearing the alcohol cutoff requires a reason.');
+    }
+
     const audit = await this.prisma.eventAuditLog.create({
       data: {
         organizationId,
@@ -395,11 +429,11 @@ export class StadiumController {
         entityType: 'game_phase',
         entityId: id,
         action: 'phase_advanced',
-        reason: body.reason ?? null,
+        reason,
         metadata: {
           phase: body.phase,
-          reason: body.reason ?? null,
-          alcoholCutoffEnforced: body.alcoholCutoffEnforced ?? false,
+          reason,
+          alcoholCutoffEnforced,
           isOvertime: body.isOvertime ?? false,
         },
       },
@@ -410,7 +444,7 @@ export class StadiumController {
         type: 'game_phase_advanced',
         eventId: id,
         phase: body.phase,
-        alcoholCutoffEnforced: body.alcoholCutoffEnforced ?? false,
+        alcoholCutoffEnforced,
         isOvertime: body.isOvertime ?? false,
       }).catch(() => undefined);
     }
@@ -419,7 +453,7 @@ export class StadiumController {
       ok: true,
       eventId: id,
       phase: body.phase,
-      alcoholCutoffEnforced: body.alcoholCutoffEnforced ?? false,
+      alcoholCutoffEnforced,
       isOvertime: body.isOvertime ?? false,
       updatedAt: audit.createdAt.toISOString(),
     };
@@ -860,18 +894,26 @@ export class StadiumController {
     let totalIssuedQty = 0;
     let totalReceivedQty = 0;
     let totalReturnedQty = 0;
+    let confirmedIssuedQty = 0;
+    let unconfirmedLines = 0;
 
     for (const t of transfers) {
       const items = Array.isArray(t.items) ? (t.items as any[]) : [];
       for (const item of items) {
         const req = Number(item.requestedQty ?? item.quantity ?? 0);
         const iss = Number(item.issuedQty ?? item.quantity ?? 0);
-        const rec = Number(item.receivedQty ?? (t.status === 'completed' ? iss : 0));
         const ret = Number(item.returnedQty ?? 0);
         totalRequestedQty += req;
         totalIssuedQty += iss;
-        totalReceivedQty += rec;
         totalReturnedQty += ret;
+        // A completed status is not proof of receipt. Only a recorded receipt
+        // counts; assuming received = issued made every discrepancy zero.
+        if (item.receivedQty == null) {
+          unconfirmedLines += 1;
+        } else {
+          totalReceivedQty += Number(item.receivedQty);
+          confirmedIssuedQty += iss;
+        }
       }
     }
 
@@ -881,7 +923,8 @@ export class StadiumController {
       issuedQty: totalIssuedQty,
       receivedQty: totalReceivedQty,
       returnedQty: totalReturnedQty,
-      discrepancyQty: Math.max(0, totalIssuedQty - totalReceivedQty),
+      discrepancyQty: Math.max(0, confirmedIssuedQty - totalReceivedQty),
+      unconfirmedReceiptLines: unconfirmedLines,
     };
 
     const variancePack = {
@@ -910,7 +953,9 @@ export class StadiumController {
       generatedAt: new Date().toISOString(),
     };
 
-    return filterDualOrgEventPayload(scope as any, event, variancePack);
+    // The venue scope carries no organizationId, so resolve the caller's.
+    const viewer = { organizationId: await this.organizationIdFor(scope.venueId), role: scope.role, allAccess: scope.allAccess };
+    return filterDualOrgEventPayload(viewer, event, variancePack);
   }
 
   @Post('events/:id/closeout')

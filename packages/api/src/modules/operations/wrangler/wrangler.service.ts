@@ -1,6 +1,5 @@
-import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { weekStartFor } from '../../../common/pay-period';
-import { withSerializableRetry } from '../../../common/tx-retry';
 import { zonedDayBounds, zonedDayOfWeek, zonedIsoDate } from '../../../common/venue-time';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { buildDailyBriefPriorityActions, type DailyBriefPriorityAction } from '../daily-brief-priority-actions';
@@ -135,37 +134,6 @@ export class WranglerService {
   async ask(venueId: string, timezone: string | null | undefined, question: string) {
     const snapshot = await this.getSnapshot(venueId, timezone);
     return answerWranglerQuestion(question, { phaseLabel: snapshot.servicePhaseLabel, summary: snapshot.summary, priorities: snapshot.priorities });
-  }
-
-  async executeAction(venueId: string, input: { type: 'REASSIGN_RESERVATION'; reservationId?: string; tableId?: string }) {
-    if (input.type !== 'REASSIGN_RESERVATION') throw new BadRequestException('Unsupported Wrangler action');
-    if (!input.reservationId || !input.tableId) throw new BadRequestException('reservationId and tableId are required');
-    const reservationId = input.reservationId;
-    const tableId = input.tableId;
-    const reassignment = await withSerializableRetry(this.prisma, async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`reservation-holds:${venueId}`}))`;
-      const reservation = await tx.reservation.findFirst({
-        where: { id: reservationId, venueId, deletedAt: null, status: { notIn: ['cancelled', 'no_show', 'completed'] } },
-        select: { id: true, partySize: true, reservationTime: true, durationMinutes: true },
-      });
-      if (!reservation) throw new ConflictException('Reservation is no longer active');
-      const table = await tx.floorTable.findFirst({
-        where: { id: tableId, floorPlan: { venueId, isActive: true }, isReservable: true, seats: { gte: reservation.partySize } },
-        select: { id: true, label: true },
-      });
-      if (!table) throw new ConflictException('Recommended table is no longer eligible');
-      const startsAt = reservation.reservationTime;
-      const endsAt = new Date(startsAt.getTime() + reservation.durationMinutes * 60_000);
-      const currentState = await tx.tableState.findFirst({ where: { venueId, tableId: table.id }, select: { status: true } });
-      if (!currentState || currentState.status !== 'available') throw new ConflictException(`${table.label} is no longer available`);
-      const conflict = await tx.tableAssignment.findFirst({ where: { venueId, tableId: table.id, releasedAt: null, startsAt: { lt: endsAt }, endsAt: { gt: startsAt }, NOT: { reservationId: reservation.id } }, select: { id: true } });
-      if (conflict) throw new ConflictException(`${table.label} is already booked for this time window`);
-      await tx.tableAssignment.updateMany({ where: { venueId, reservationId: reservation.id, releasedAt: null }, data: { releasedAt: new Date(), releasedReason: 'wrangler_reassigned' } });
-      await tx.tableAssignment.create({ data: { venueId, reservationId: reservation.id, tableId: table.id, holdType: 'reserved', startsAt, endsAt } });
-      await tx.tableState.updateMany({ where: { venueId, tableId: table.id }, data: { status: 'reserved', partySize: reservation.partySize, seatedAt: null, lastActivityAt: new Date() } });
-      return { reservation, table };
-    });
-    return { ok: true, type: input.type, reservationId: reassignment.reservation.id, tableId: reassignment.table.id, tableLabel: reassignment.table.label };
   }
 
   private findAlternateTable(args: { assignment: { id: string; tableId: string; startsAt: Date; endsAt: Date; table: { section: string }; reservation: { partySize: number } | null }; tableStates: Array<{ tableId: string; status: string; table: { label: string; seats: number; section: string; isReservable: boolean } }>; futureAssignments: Array<{ tableId: string; startsAt: Date; endsAt: Date; releasedAt: Date | null }> }) {

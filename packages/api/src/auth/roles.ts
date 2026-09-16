@@ -47,7 +47,10 @@ export function canManageEnterpriseSso(role?: string | null): boolean {
 export function canAssignEnterpriseRole(actorRole: string | null | undefined, targetRole: string): boolean {
   if (actorRole === 'platform_admin') return true;
   if (!canManageEnterpriseSso(actorRole)) return false;
-  return !['platform_admin', 'organization_admin'].includes(targetRole);
+  if (['platform_admin', 'organization_admin'].includes(targetRole)) return false;
+  // An admin must not be able to mint owners through an IdP group mapping.
+  if (targetRole === 'owner' && actorRole !== 'owner' && actorRole !== 'organization_admin') return false;
+  return true;
 }
 
 export function canViewPilotHealth(role?: string | null, allAccess = false): boolean {

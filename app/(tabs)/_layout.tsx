@@ -108,7 +108,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="documents"
         options={{
-          title: "BEOs & Docs",
+          title: "Documents",
           tabBarIcon: icon("file-document-multiple-outline"),
         }}
       />

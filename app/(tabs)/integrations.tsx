@@ -14,6 +14,7 @@ import { ManagerGate } from '../../components/ManagerGate';
 import { ScreenState } from '../../components/ScreenState';
 import { SectionHeader } from '../../components/AppCard';
 import { useI18n } from '../../lib/i18n';
+import { config } from '../../lib/config';
 
 
 // Must stay in sync with POS_PROVIDERS in packages/api/src/modules/pos/pos.controller.ts
@@ -235,6 +236,8 @@ function IntegrationsScreenInner() {
         </Card.Content>
       </Card>
 
+      {/* Guest reservation providers are a restaurant feature, cut from the stadium shell. */}
+      {!config.stadiumShell ? (
       <Card style={{ backgroundColor: colors.surface, borderRadius: radius.sharp }}>
         <Card.Content style={{ gap: spacing.sm }}>
           <Text variant="titleMedium" style={{ fontWeight: '700' }}>{t('integrations.reservation.title')}</Text>
@@ -252,6 +255,7 @@ function IntegrationsScreenInner() {
           <Text style={{ color: colors.muted }}>{t('integrations.reservation.webhookInfo')}</Text>
         </Card.Content>
       </Card>
+      ) : null}
 
       <Card style={{ backgroundColor: colors.surface, borderRadius: radius.sharp }}>
         <Card.Content style={{ gap: spacing.sm }}>
@@ -306,6 +310,7 @@ function IntegrationsScreenInner() {
         </Card.Content>
       </Card>
 
+      {!config.stadiumShell ? (
       <Card style={{ backgroundColor: colors.surface, borderRadius: radius.sharp }}>
         <Card.Content style={{ gap: spacing.sm }}>
           <Text variant="titleMedium" style={{ fontWeight: '700' }}>{t('integrations.reservationConnections.title')}</Text>
@@ -341,6 +346,7 @@ function IntegrationsScreenInner() {
           ) : null}
         </Card.Content>
       </Card>
+      ) : null}
 
       <Card style={{ backgroundColor: colors.surface, borderRadius: radius.sharp }}>
         <Card.Content style={{ gap: spacing.sm }}>

@@ -1,6 +1,6 @@
 export type WranglerAction = {
   id: string;
-  type: 'NAVIGATE' | 'ACKNOWLEDGE' | 'REASSIGN_RESERVATION' | 'NOTIFY_STAFF';
+  type: 'NAVIGATE' | 'ACKNOWLEDGE' | 'NOTIFY_STAFF';
   label: string;
   route: '/reservations' | '/staff' | '/schedule' | '/bar-stock' | '/reports' | '/floor' | '/inventory';
   requiresConfirmation: boolean;

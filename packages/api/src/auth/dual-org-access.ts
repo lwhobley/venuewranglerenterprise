@@ -79,11 +79,14 @@ export function filterDualOrgEventPayload<T extends Record<string, any>>(
   }
 
   // If payload has an inner variance object or closeout details
+  // Nested labor block, as returned by the event variance pack.
   if (redacted.labor && typeof redacted.labor === 'object') {
     redacted.labor = {
       ...redacted.labor,
       totalLaborCostCents: undefined,
       hourlyCostCents: undefined,
+      budgetCostCents: undefined,
+      forecastSalesCents: undefined,
     };
   }
 

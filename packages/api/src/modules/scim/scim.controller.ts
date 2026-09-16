@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Body,
+  ConflictException,
   Controller,
   Delete,
   Get,
@@ -12,10 +13,15 @@ import {
   Patch,
   Post,
   Query,
+  ServiceUnavailableException,
   UnauthorizedException,
   UseInterceptors,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import type { Role } from '@prisma/client';
+import { createHash, timingSafeEqual } from 'node:crypto';
+import { Public } from '../../auth/public.decorator';
+import { ROLE_RANK } from '../../auth/roles';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TenantRequestTransactionInterceptor } from '../../prisma/tenant-request-transaction.interceptor';
 
@@ -46,6 +52,26 @@ interface ScimUserResource {
   };
 }
 
+/** The organization and facility a SCIM token is bound to. */
+interface ScimTenant {
+  organizationId: string;
+  facilityId: string;
+}
+
+/**
+ * Roles an identity provider may assign. Owner and administrator tiers
+ * (ROLE_RANK 3) are granted inside Venue Wrangler only, so a compromised or
+ * misconfigured IdP cannot mint administrators.
+ */
+export const SCIM_PROVISIONABLE_ROLES: readonly string[] = Object.keys(ROLE_RANK).filter((role) => ROLE_RANK[role] < 3);
+
+export const SCIM_MIN_TOKEN_LENGTH = 32;
+
+// The global AuthGuard expects a user session JWT in the Authorization
+// header, which an identity provider never has. SCIM authenticates with its
+// own bearer token instead, so the guard is skipped and every handler must
+// call authenticate() before touching data.
+@Public()
 @Controller('v1/scim/v2')
 @UseInterceptors(TenantRequestTransactionInterceptor)
 export class ScimController {
@@ -54,15 +80,45 @@ export class ScimController {
     private readonly config: ConfigService,
   ) {}
 
-  private authenticate(authHeader?: string) {
-    const configuredToken = this.config.get<string>('SCIM_BEARER_TOKEN') || 'scim-enterprise-token';
+  /**
+   * Fails closed: there is no built-in token, and provisioning is refused until
+   * the token is bound to one organization and facility.
+   */
+  private authenticate(authHeader?: string): ScimTenant {
+    const configuredToken = this.config.get<string>('SCIM_BEARER_TOKEN');
+    const organizationId = this.config.get<string>('SCIM_ORGANIZATION_ID');
+    const facilityId = this.config.get<string>('SCIM_FACILITY_ID');
+    if (!configuredToken || configuredToken.length < SCIM_MIN_TOKEN_LENGTH || !organizationId || !facilityId) {
+      throw new ServiceUnavailableException('SCIM provisioning is not configured.');
+    }
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       throw new UnauthorizedException('Missing or invalid SCIM Bearer token.');
     }
-    const token = authHeader.slice(7).trim();
-    if (token !== configuredToken) {
+    const provided = createHash('sha256').update(authHeader.slice(7).trim()).digest();
+    const expected = createHash('sha256').update(configuredToken).digest();
+    if (!timingSafeEqual(provided, expected)) {
       throw new UnauthorizedException('Unauthorized SCIM token.');
     }
+    return { organizationId, facilityId };
+  }
+
+  /** Profiles at any venue of the token's organization, and nowhere else. */
+  private inTenant(tenant: ScimTenant) {
+    return { venue: { organizationId: tenant.organizationId } };
+  }
+
+  private assertManageable(profile: { role: string }) {
+    if ((ROLE_RANK[profile.role] ?? 3) >= 3) {
+      throw new ConflictException('Owner and administrator accounts are managed in Venue Wrangler, not through SCIM.');
+    }
+  }
+
+  private provisionableRole(value: unknown): Role {
+    if (value == null || value === '') return 'staff';
+    if (typeof value !== 'string' || !SCIM_PROVISIONABLE_ROLES.includes(value)) {
+      throw new BadRequestException(`Role "${String(value)}" cannot be assigned through SCIM.`);
+    }
+    return value as Role;
   }
 
   private toScimUser(profile: any): ScimUserResource {
@@ -121,10 +177,10 @@ export class ScimController {
     @Query('startIndex') startIndexRaw?: string,
     @Query('count') countRaw?: string,
   ) {
-    this.authenticate(authHeader);
+    const tenant = this.authenticate(authHeader);
 
-    const startIndex = Math.max(1, parseInt(startIndexRaw || '1', 10));
-    const count = Math.min(100, Math.max(1, parseInt(countRaw || '50', 10)));
+    const startIndex = Math.max(1, parseInt(startIndexRaw || '1', 10) || 1);
+    const count = Math.min(100, Math.max(1, parseInt(countRaw || '50', 10) || 50));
 
     let emailFilter: string | undefined;
     if (filter) {
@@ -132,7 +188,10 @@ export class ScimController {
       if (match) emailFilter = match[1];
     }
 
-    const where = emailFilter ? { email: emailFilter } : {};
+    const where = {
+      ...this.inTenant(tenant),
+      ...(emailFilter ? { email: { equals: emailFilter, mode: 'insensitive' as const } } : {}),
+    };
 
     const [profiles, total] = await Promise.all([
       this.prisma.profile.findMany({
@@ -158,8 +217,8 @@ export class ScimController {
     @Headers('authorization') authHeader: string | undefined,
     @Param('id') id: string,
   ) {
-    this.authenticate(authHeader);
-    const profile = await this.prisma.profile.findUnique({ where: { id } });
+    const tenant = this.authenticate(authHeader);
+    const profile = await this.prisma.profile.findFirst({ where: { id, ...this.inTenant(tenant) } });
     if (!profile) throw new NotFoundException(`SCIM user with id ${id} not found.`);
     return this.toScimUser(profile);
   }
@@ -170,27 +229,34 @@ export class ScimController {
     @Headers('authorization') authHeader: string | undefined,
     @Body() body: any,
   ) {
-    this.authenticate(authHeader);
+    const tenant = this.authenticate(authHeader);
 
-    const email = body.userName || body.emails?.[0]?.value;
-    if (!email) throw new BadRequestException('SCIM User must include userName or email.');
-
+    const rawEmail = body?.userName || body?.emails?.[0]?.value;
+    if (typeof rawEmail !== 'string' || !rawEmail.trim()) {
+      throw new BadRequestException('SCIM User must include userName or email.');
+    }
+    const email = rawEmail.trim().toLowerCase();
     const fullName = body.name?.formatted || `${body.name?.givenName ?? ''} ${body.name?.familyName ?? ''}`.trim() || email;
-    const role = body.roles?.[0]?.value || 'staff';
+    const role = this.provisionableRole(body.roles?.[0]?.value);
     const isActive = body.active !== false;
 
-    // Find default venue to anchor provisioned profile
-    const defaultVenue = await this.prisma.venue.findFirst({ select: { id: true } });
-    if (!defaultVenue) throw new BadRequestException('No venue exists to associate SCIM user.');
+    // The configured facility must belong to the token's organization.
+    const venue = await this.prisma.venue.findFirst({
+      where: { id: tenant.facilityId, organizationId: tenant.organizationId },
+      select: { id: true },
+    });
+    if (!venue) throw new ServiceUnavailableException('The SCIM facility is not part of the configured organization.');
 
-    // Look for existing user/profile
-    const existing = await this.prisma.profile.findFirst({ where: { email } });
+    const existing = await this.prisma.profile.findFirst({
+      where: { email: { equals: email, mode: 'insensitive' }, ...this.inTenant(tenant) },
+    });
     if (existing) {
+      this.assertManageable(existing);
       const updated = await this.prisma.profile.update({
         where: { id: existing.id },
         data: {
           fullName,
-          role: role as any,
+          role,
           membershipStatus: isActive ? 'active' : 'revoked',
         },
       });
@@ -199,11 +265,11 @@ export class ScimController {
 
     const created = await this.prisma.profile.create({
       data: {
-        venueId: defaultVenue.id,
+        venueId: venue.id,
         email,
         fullName,
         jobTitle: body.title || 'Staff Member',
-        role: role as any,
+        role,
         membershipStatus: isActive ? 'active' : 'revoked',
       },
     });
@@ -217,26 +283,28 @@ export class ScimController {
     @Param('id') id: string,
     @Body() body: any,
   ) {
-    this.authenticate(authHeader);
-    const profile = await this.prisma.profile.findUnique({ where: { id } });
+    const tenant = this.authenticate(authHeader);
+    const profile = await this.prisma.profile.findFirst({ where: { id, ...this.inTenant(tenant) } });
     if (!profile) throw new NotFoundException(`SCIM user with id ${id} not found.`);
+    this.assertManageable(profile);
 
     let nextActive = profile.membershipStatus !== 'revoked';
     let nextName = profile.fullName;
 
-    const operations = body.Operations || [];
+    const operations = Array.isArray(body?.Operations) ? body.Operations : [];
     for (const op of operations) {
       if (op.path === 'active' || op.value?.active !== undefined) {
         const val = op.path === 'active' ? op.value : op.value.active;
-        nextActive = Boolean(val);
+        nextActive = val === true || val === 'true' || val === 'True';
       }
       if (op.path === 'name.formatted' || op.value?.name?.formatted) {
-        nextName = op.path === 'name.formatted' ? op.value : op.value.name.formatted;
+        const name = op.path === 'name.formatted' ? op.value : op.value.name.formatted;
+        if (typeof name === 'string' && name.trim()) nextName = name.trim();
       }
     }
 
     const updated = await this.prisma.profile.update({
-      where: { id },
+      where: { id: profile.id },
       data: {
         fullName: nextName,
         membershipStatus: nextActive ? 'active' : 'revoked',
@@ -252,12 +320,13 @@ export class ScimController {
     @Headers('authorization') authHeader: string | undefined,
     @Param('id') id: string,
   ) {
-    this.authenticate(authHeader);
-    const profile = await this.prisma.profile.findUnique({ where: { id } });
+    const tenant = this.authenticate(authHeader);
+    const profile = await this.prisma.profile.findFirst({ where: { id, ...this.inTenant(tenant) } });
     if (!profile) throw new NotFoundException(`SCIM user with id ${id} not found.`);
+    this.assertManageable(profile);
 
     await this.prisma.profile.update({
-      where: { id },
+      where: { id: profile.id },
       data: { membershipStatus: 'revoked' },
     });
   }

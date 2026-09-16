@@ -60,4 +60,25 @@ describe('dual-org-access', () => {
     expect(result.labor.totalHours).toBe(1420);
     expect(result.labor.totalLaborCostCents).toBeUndefined();
   });
+
+  it('redacts labor cost and forecast from the event variance pack shape for host accounts', () => {
+    const variancePack = {
+      eventId: 'event-1',
+      labor: { budgetHours: 1400, budgetCostCents: 3100000, forecastSalesCents: 8000000, actualSalesCents: 8500000, salesVarianceCents: 500000 },
+    };
+    const host = filterDualOrgEventPayload({ organizationId: hostOrg }, dualOrgEvent, variancePack);
+    expect(host.labor.budgetCostCents).toBeUndefined();
+    expect(host.labor.forecastSalesCents).toBeUndefined();
+    expect(host.labor.budgetHours).toBe(1400);
+
+    const operator = filterDualOrgEventPayload({ organizationId: operatorOrg }, dualOrgEvent, variancePack);
+    expect(operator.labor.budgetCostCents).toBe(3100000);
+  });
+
+  it('treats a caller without an organization as a host, never as the operator', () => {
+    const payload = { laborCostCents: 1, labor: { budgetCostCents: 2 } };
+    const result = filterDualOrgEventPayload({ organizationId: undefined as unknown as string }, { organizationId: operatorOrg }, payload);
+    expect(result.laborCostCents).toBeUndefined();
+    expect(result.labor.budgetCostCents).toBeUndefined();
+  });
 });

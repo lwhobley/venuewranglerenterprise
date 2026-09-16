@@ -50,20 +50,6 @@ export function buildWranglerFloorActions(input: {
     const route = '/floor' as const;
     const recommendedActions: WranglerAction[] = [];
 
-    if (assignment.reservationId && assignment.alternateTableId && assignment.alternateTableLabel) {
-      recommendedActions.push({
-        id: `floor-conflict:${assignment.assignmentId}:reassign`,
-        type: 'REASSIGN_RESERVATION',
-        label: `Move to ${assignment.alternateTableLabel}`,
-        route,
-        requiresConfirmation: true,
-        payload: {
-          reservationId: assignment.reservationId,
-          tableId: assignment.alternateTableId,
-          tableLabel: assignment.alternateTableLabel,
-        },
-      });
-    }
     recommendedActions.push(navAction(`floor-conflict:${assignment.assignmentId}:open`, 'Resolve on floor', route));
 
     actions.push({

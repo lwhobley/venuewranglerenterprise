@@ -130,6 +130,7 @@ describe('StadiumController Phase 3 - Live Operations', () => {
         findUnique: vi.fn().mockResolvedValue({ id: 'venue-1' }),
       },
       eventAuditLog: {
+        findFirst: vi.fn().mockResolvedValue(null),
         create: vi.fn().mockImplementation(async ({ data }) => {
           auditLogRecord = { id: 'audit-1', createdAt: new Date(), ...data };
           return auditLogRecord;
@@ -156,6 +157,26 @@ describe('StadiumController Phase 3 - Live Operations', () => {
     expect(auditLogRecord.action).toBe('phase_advanced');
     expect(auditLogRecord.metadata.phase).toBe('q4_alcohol_cutoff');
     expect(auditLogRecord.metadata.alcoholCutoffEnforced).toBe(true);
+  });
+
+  it('refuses to move the game phase back or reopen alcohol sales without a reason', async () => {
+    const tx: any = {
+      venueEvent: { findFirst: vi.fn().mockResolvedValue({ id: 'event-1', organizationId: 'org-1', title: 'Game' }) },
+      eventAuditLog: {
+        findFirst: vi.fn().mockResolvedValue({ metadata: { phase: 'q4_alcohol_cutoff', alcoholCutoffEnforced: true } }),
+        create: vi.fn().mockImplementation(async ({ data }) => ({ id: 'audit-2', createdAt: new Date(), ...data })),
+      },
+    };
+    const controller = new StadiumController(tx);
+
+    await expect(controller.advanceEventPhase(scope, 'event-1', { phase: 'halftime' })).rejects.toThrow('requires a reason');
+    await expect(controller.advanceEventPhase(scope, 'event-1', { phase: 'q4_alcohol_cutoff', alcoholCutoffEnforced: false }))
+      .rejects.toThrow('Clearing the alcohol cutoff requires a reason');
+    expect(tx.eventAuditLog.create).not.toHaveBeenCalled();
+
+    // Moving forward without restating the cutoff keeps it enforced.
+    const next = await controller.advanceEventPhase(scope, 'event-1', { phase: 'postgame' });
+    expect(next.alcoholCutoffEnforced).toBe(true);
   });
 
   it('calculates comprehensive operational variance pack including dark stands and transfer shrink', async () => {
@@ -197,6 +218,8 @@ describe('StadiumController Phase 3 - Live Operations', () => {
 
     const mockTransfers = [
       { id: 't-1', status: 'completed', items: [{ requestedQty: 100, issuedQty: 100, receivedQty: 95, returnedQty: 0 }] },
+      // Completed but never received: must not be counted as a clean receipt.
+      { id: 't-2', status: 'completed', items: [{ requestedQty: 40, issuedQty: 40 }] },
     ];
 
     const tx: any = {
@@ -206,6 +229,8 @@ describe('StadiumController Phase 3 - Live Operations', () => {
       eventFnbReadiness: { findMany: vi.fn().mockResolvedValue(mockReadiness) },
       fnbOperationUnit: { findMany: vi.fn().mockResolvedValue(mockUnits) },
       inventoryTransferRequest: { findMany: vi.fn().mockResolvedValue(mockTransfers) },
+      venue: { findUniqueOrThrow: vi.fn().mockResolvedValue({ id: 'venue-1', organizationId: 'org-1' }) },
+      facility: { findUnique: vi.fn().mockResolvedValue({ id: 'venue-1' }) },
     };
 
     const controller = new StadiumController(tx);
@@ -219,6 +244,8 @@ describe('StadiumController Phase 3 - Live Operations', () => {
     expect(variance.darkStands.totalDarkStands).toBe(1); // Stand 105 unopened
     expect(variance.darkStands.stands[0].name).toBe('Stand 105');
     expect(variance.transfers.discrepancyQty).toBe(5); // 100 issued - 95 received
+    expect(variance.transfers.receivedQty).toBe(95);
+    expect(variance.transfers.unconfirmedReceiptLines).toBe(1);
   });
 
   it('aggregates multi-venue operational roll-up across accessible venues', async () => {
@@ -228,7 +255,11 @@ describe('StadiumController Phase 3 - Live Operations', () => {
     ];
 
     const tx: any = {
-      venue: { findMany: vi.fn().mockResolvedValue(mockVenues) },
+      venue: {
+        findMany: vi.fn().mockResolvedValue(mockVenues),
+        findUniqueOrThrow: vi.fn().mockResolvedValue({ id: 'venue-1', organizationId: 'org-1' }),
+      },
+      facility: { findUnique: vi.fn().mockResolvedValue({ id: 'venue-1' }) },
       venueEvent: {
         findFirst: vi.fn().mockResolvedValue({
           id: 'ev-active',
@@ -247,5 +278,6 @@ describe('StadiumController Phase 3 - Live Operations', () => {
     expect(rollup.totalVenues).toBe(2);
     expect(rollup.activeEventsCount).toBe(2);
     expect(rollup.venues[0].operationalHealth).toBe('watch'); // 1 issue
+    expect(tx.venue.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { organizationId: 'org-1' } }));
   });
 });
