@@ -201,23 +201,21 @@ export default function EventBeoReportScreen() {
                 <CommandText palette={palette} variant="title" style={{ flex: 1 }}>Suite BEOs</CommandText>
                 {canManage ? (
                   <Pressable
-                    onPress={() => router.push((published ? crmEventBeoRoute(document.event.title) : '/(tabs)/guests?crmView=hub') as any)}
+                    onPress={() => router.push((published ? crmEventBeoRoute(document.event.title) : '/stadium/beo-hub') as any)}
                     accessibilityRole="button"
-                    accessibilityLabel={`Edit BEOs for ${document.event.title} in the CRM`}
+                    accessibilityLabel={`Open BEOs for ${document.event.title} in the BEO Hub`}
                     style={({ pressed }) => [styles.linkBtn, { borderColor: palette.border, opacity: pressed ? 0.7 : 1 }]}
                   >
-                    <MaterialCommunityIcons name="pencil-outline" size={14} color={String(palette.primary)} />
+                    <MaterialCommunityIcons name="file-document-outline" size={14} color={String(palette.primary)} />
                     <CommandText palette={palette} variant="caption" style={{ color: palette.primary, fontWeight: '700' }}>
-                      {published ? 'Edit in CRM' : 'Open BEO Hub'}
+                      Open BEO Hub
                     </CommandText>
                   </Pressable>
                 ) : null}
               </View>
               {/*
                 The report is read-only by design — it is a published snapshot.
-                Editing happens in the CRM, which holds the sales BEO. A suite
-                row linked to its CrmBeo routes to that exact record; the header
-                action stays as the fallback for rows with no link yet.
+                Operational BEO execution happens in the stadium BEO Hub.
               */}
               {document.suites.rows.length === 0 ? (
                 <CommandText palette={palette} variant="body" style={{ color: palette.muted }}>
@@ -259,7 +257,7 @@ export default function EventBeoReportScreen() {
                       <View style={styles.beoHeader}>
                         <View style={{ flex: 1 }}>
                           <CommandText palette={palette} variant="caption" style={{ color: palette.muted }}>
-                            Sales BEO · {row.salesBeo.eventName} · {humanizeLabel(row.salesBeo.status)}
+                            Operational BEO · {row.salesBeo.eventName} · {humanizeLabel(row.salesBeo.status)}
                           </CommandText>
                           {row.salesBeo.fbMinimumCents != null || row.salesBeo.depositCents != null ? (
                             <CommandText palette={palette} variant="caption" style={{ color: palette.muted }}>
@@ -271,19 +269,19 @@ export default function EventBeoReportScreen() {
                         <Pressable
                           onPress={() => router.push(crmBeoRoute(row.salesBeo!.id) as any)}
                           accessibilityRole="button"
-                          accessibilityLabel={`Edit the sales BEO for ${row.suiteName} in the CRM`}
+                          accessibilityLabel={`Open the BEO for ${row.suiteName} in the BEO Hub`}
                           style={({ pressed }) => [styles.linkBtn, { borderColor: palette.border, opacity: pressed ? 0.7 : 1 }]}
                         >
-                          <MaterialCommunityIcons name="pencil-outline" size={14} color={String(palette.primary)} />
+                          <MaterialCommunityIcons name="file-document-outline" size={14} color={String(palette.primary)} />
                           <CommandText palette={palette} variant="caption" style={{ color: palette.primary, fontWeight: '700' }}>
-                            Edit in CRM
+                            Open BEO
                           </CommandText>
                         </Pressable>
                       </View>
                     ) : row.demoLink ? (
                       <View style={styles.beoHeader}>
                         <Pressable
-                          onPress={() => router.push({ pathname: '/(tabs)/guests', params: { crmView: 'hub', crmBeoId: row.id } })}
+                          onPress={() => router.push({ pathname: '/stadium/beo-hub', params: { beoId: row.id } })}
                           accessibilityRole="button"
                           accessibilityLabel={`Open ${row.beoNumber} in the BEO hub`}
                           style={({ pressed }) => [styles.linkBtn, { borderColor: palette.border, opacity: pressed ? 0.7 : 1 }]}

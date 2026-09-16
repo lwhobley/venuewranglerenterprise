@@ -185,7 +185,7 @@ export default function KitchenBumpScreen() {
                     <View style={{ gap: 8 }}>
                       <TouchableOpacity
                         style={[styles.actionBtn, styles.readyBtn]}
-                        onPress={() => router.push({ pathname: '/(tabs)/guests', params: { crmView: 'hub', crmBeoId: beo.id } })}
+                        onPress={() => router.push({ pathname: '/stadium/beo-hub', params: { beoId: beo.id } })}
                       >
                         <Text style={styles.actionBtnText}>OPEN LINKED BEO</Text>
                       </TouchableOpacity>

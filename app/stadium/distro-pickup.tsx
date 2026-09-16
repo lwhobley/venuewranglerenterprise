@@ -553,7 +553,7 @@ export default function DistroPickupConsoleScreen() {
                 {ticket.isDemo && ticket.demoLink ? (
                   <TouchableOpacity
                     style={styles.historyBtn}
-                    onPress={() => router.push({ pathname: '/(tabs)/guests', params: { crmView: 'hub', crmBeoId: ticket.beoId } })}
+                    onPress={() => router.push({ pathname: '/stadium/beo-hub', params: { beoId: ticket.beoId } })}
                   >
                     <MaterialCommunityIcons name="file-document-outline" size={14} color="#94A3B8" />
                     <Text style={styles.historyBtnText}>Linked BEO</Text>

@@ -59,7 +59,7 @@ const MORE_OPS = [
   { href: '/(tabs)/documents', label: 'Documents & Files', icon: 'file-document-multiple-outline' as const },
   { href: '/(tabs)/reports', label: 'Reports & Recon', icon: 'chart-box-outline' as const },
   ...(config.stadiumShell ? [] : [{ href: '/(tabs)/sales', label: 'Concessions POS', icon: 'cash-register' as const }]),
-  { href: '/(tabs)/guests?crmView=events', label: 'BEOs', icon: 'account-heart-outline' as const },
+  { href: '/stadium/beo-hub', label: 'BEO Hub', icon: 'file-document-outline' as const },
   { href: '/(tabs)/integrations', label: 'POS & Hardware', icon: 'connection' as const },
 ];
 
@@ -255,7 +255,7 @@ export default function HomeScreen() {
             subtitle={`${demoNeedsReview.length} BEOs without catering line items`}
             meta="Review the exact source records in BEO Hub"
             status={demoNeedsReview.length ? 'needs_review' : 'confirmed'}
-            onPress={() => router.push('/(tabs)/guests?crmView=hub' as any)}
+            onPress={() => router.push('/stadium/beo-hub' as any)}
           />
           <DeptRailRow
             tint={isCross ? dept.beverage : activeDeptTint}

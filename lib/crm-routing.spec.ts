@@ -16,13 +16,10 @@ import { SUITE_BEO_REPORT_ROUTE, beoReportRoute, parseReportDepartment } from '.
  * checklist, which is a task list and has nothing to do with either.
  */
 describe('BEO entry point routing', () => {
-  it('sends the suite BEO readiness row to the CRM, which holds the rows it scores', () => {
-    // `approvals` counts unconfirmed CrmBeo rows, so the report — built from
-    // SuiteBeoOrder — would show a different set of records than the number.
+  it('sends the suite BEO readiness row to the stadium BEO execution hub', () => {
     const route = READINESS_ROW_ROUTES['Luxury Suite BEOs'];
     expect(route).not.toContain('/checklist');
-    expect(route).toContain('/(tabs)/guests');
-    expect(parseWorkspaceView(new URLSearchParams(route.split('?')[1]).get('crmView'))).toBe('events');
+    expect(route).toBe('/stadium/beo-hub');
   });
 
   it('keeps the rows whose readiness category really is checklist-backed', () => {
@@ -45,21 +42,20 @@ describe('BEO entry point routing', () => {
     );
   });
 
-  it('links a suite row to its own sales BEO record when one is linked', () => {
-    const params = new URLSearchParams(crmBeoRoute('crm_1').split('?')[1]);
-    expect(params.get('crmView')).toBe('events');
-    expect(params.get('crmBeoId')).toBe('crm_1');
-    // An exact record link never also carries a name filter to compete with it.
-    expect(params.get('crmEvent')).toBeNull();
+  it('links a suite row to its own operational BEO record in the stadium hub', () => {
+    const route = crmBeoRoute('crm_1');
+    expect(route).toBe('/stadium/beo-hub?beoId=crm_1');
+    const params = new URLSearchParams(route.split('?')[1]);
+    expect(params.get('beoId')).toBe('crm_1');
   });
 
-  it('falls back to filtering the CRM by event name for an unlinked suite row', () => {
-    expect(crmEventBeoRoute()).toBe('/(tabs)/guests?crmView=events');
+  it('falls back to filtering the stadium BEO hub by event name for an unlinked suite row', () => {
+    expect(crmEventBeoRoute()).toBe('/stadium/beo-hub');
 
     const route = crmEventBeoRoute('Texans vs Colts');
+    expect(route).toBe('/stadium/beo-hub?event=Texans+vs+Colts');
     const params = new URLSearchParams(route.split('?')[1]);
-    expect(params.get('crmView')).toBe('events');
-    expect(params.get('crmEvent')).toBe('Texans vs Colts');
+    expect(params.get('event')).toBe('Texans vs Colts');
   });
 
   it('ignores deep-link values the screens do not render', () => {

@@ -194,7 +194,7 @@ export default function SuiteAttendantRunnerScreen() {
                   <>
                     <TouchableOpacity
                       style={styles.deliverBtn}
-                      onPress={() => router.push({ pathname: '/(tabs)/guests', params: { crmView: 'hub', crmBeoId: beo.id } })}
+                      onPress={() => router.push({ pathname: '/stadium/beo-hub', params: { beoId: beo.id } })}
                     >
                       <Text style={styles.deliverBtnText}>OPEN LINKED BEO</Text>
                     </TouchableOpacity>

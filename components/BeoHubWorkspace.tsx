@@ -80,17 +80,19 @@ export function BeoHubWorkspace({
   initialView,
   initialEventName,
   initialBeoId,
+  hideSalesMirror,
 }: {
   venueId: Id<'venues'> | undefined;
   enabled: boolean;
   initialView?: WorkspaceView;
   initialEventName?: string;
   initialBeoId?: string;
+  hideSalesMirror?: boolean;
 }) {
   const isDesktop = useIsDesktop();
 
   // Mode: BEO Hub vs Sales CRM Mirror
-  const isInitialSales = initialView && initialView !== 'hub' && initialView !== 'events';
+  const isInitialSales = !hideSalesMirror && initialView && initialView !== 'hub' && initialView !== 'events';
   const [showSalesMirror, setShowSalesMirror] = useState(Boolean(isInitialSales));
 
   // Hub Filters & View Modes
@@ -454,7 +456,7 @@ export function BeoHubWorkspace({
             >
               New Order
             </Button>
-            {isCross ? (
+            {isCross && !hideSalesMirror ? (
               <Button
                 compact
                 mode="text"

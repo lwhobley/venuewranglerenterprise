@@ -171,8 +171,8 @@ export function StadiumUnitDetailModal({ visible, unit, onClose, onStatusChange 
     if (!suiteDetails?.beoNumber) return;
     onClose();
     router.push({
-      pathname: '/(tabs)/guests',
-      params: { crmView: 'hub', crmBeoId: `demo-suite-beo:${suiteDetails.beoNumber}` },
+      pathname: '/stadium/beo-hub',
+      params: { beoId: `demo-suite-beo:${suiteDetails.beoNumber}` },
     });
   };
 
