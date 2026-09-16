@@ -12,7 +12,7 @@ import { WranglerHistoryService } from './wrangler-history.service';
 import { WranglerService } from './wrangler.service';
 
 type Scope = VenueScopedRequest['venueScope'];
-class ExecuteWranglerActionDto { @IsString() @IsIn(['NOTIFY_STAFF', 'CREATE_FOLLOW_UP']) type!: 'NOTIFY_STAFF' | 'CREATE_FOLLOW_UP'; @IsOptional() @IsString() reservationId?: string; @IsOptional() @IsString() tableId?: string; @IsOptional() @IsString() priorityId?: string; }
+class ExecuteWranglerActionDto { @IsString() @IsIn(['NOTIFY_STAFF', 'CREATE_FOLLOW_UP']) type!: 'NOTIFY_STAFF' | 'CREATE_FOLLOW_UP'; @IsOptional() @IsString() priorityId?: string; }
 class AskWranglerDto { @IsString() @MinLength(2) @MaxLength(500) question!: string; }
 
 @Controller('v1/operations/wrangler')
@@ -79,6 +79,6 @@ export class WranglerController {
       await this.prisma.auditLog.create({ data: { venueId: scope.venueId, actorProfileId: scope.profileId, actorName: scope.fullName, actorRole: scope.role, entityType: 'manager_goal', entityId: created.id, action: 'wrangler_follow_up_created', summary: `Created follow-up from Wrangler priority: ${priority.title}` } });
       return { ok: true, type: body.type, followUpId: created.id, title: created.title, existing: false };
     }
-    return this.wrangler.executeAction(scope.venueId, { type: body.type, reservationId: body.reservationId, tableId: body.tableId });
+    throw new BadRequestException('Unsupported Wrangler action');
   }
 }
