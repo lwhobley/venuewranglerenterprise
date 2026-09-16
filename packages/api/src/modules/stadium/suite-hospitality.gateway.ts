@@ -485,6 +485,34 @@ export class SuiteHospitalityGateway implements OnModuleDestroy {
     );
   }
 
+  async broadcastEventIssue(
+    organizationId: string,
+    facilityId: string,
+    zoneId: string | null | undefined,
+    issue: Record<string, unknown>,
+  ): Promise<void> {
+    if (!organizationId || organizationId === 'default-org') return;
+    const cleanZone = zoneId && zoneId !== 'global' ? zoneId : null;
+    const seq = await this.nextSequence();
+    const timestamp = new Date().toISOString();
+    const item: BufferedStadiumEvent = {
+      seq,
+      organizationId,
+      facilityId,
+      zoneId: cleanZone,
+      event: 'event_issue_updated',
+      data: issue,
+      timestamp,
+    };
+    this.eventBuffer.push(item);
+    if (this.eventBuffer.length > this.MAX_BUFFER) {
+      this.eventBuffer.shift();
+    }
+    const payload = { event: 'event_issue_updated', data: issue, seq, timestamp };
+    this.publishCrossReplica(organizationId, facilityId, cleanZone, payload);
+    this.logger.log(`Broadcasted event_issue_updated for issue ${(issue as any).id ?? 'item'} (seq: ${seq}) to ${organizationId}:${facilityId}${cleanZone ? `:zone:${cleanZone}` : ''}`);
+  }
+
   async onModuleDestroy() {
     await Promise.allSettled([this.pubClient?.quit(), this.subClient?.quit()]);
   }

@@ -314,6 +314,12 @@ const mutationRoutes: Record<string, Route> = {
     body: ({ state, reason }) => ({ state, reason }),
     invalidate: [['stadium', 'getOverview'], ['operations', 'getCommandCenter']],
   },
+  'stadium.advanceEventPhase': {
+    path: (args) => `/v1/stadium/events/${args.eventId}/phase`,
+    method: 'PATCH',
+    body: ({ phase, reason, alcoholCutoffEnforced, isOvertime }) => ({ phase, reason, alcoholCutoffEnforced, isOvertime }),
+    invalidate: [['stadium', 'getOverview'], ['stadium', 'getNflBrief'], ['stadium', 'listEventAudit']],
+  },
   'stadium.createEventIssue': {
     path: (args) => `/v1/stadium/events/${args.eventId}/issues`,
     method: 'POST',

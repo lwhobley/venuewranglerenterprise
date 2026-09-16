@@ -91,6 +91,9 @@ export default function HomeScreen() {
   const managerDashboard = useQuery(api.operations.getManagerDashboard, isReady && canManage && venue?.id ? { venueId: venue.id } : 'skip') as any;
   const dailyBrief = useQuery(api.operations.getDailyBrief, isReady && canManage && venue?.id ? { venueId: venue.id } : 'skip') as any;
   const commandCenter = useQuery(api.operations.getCommandCenter, isReady && canManage && venue?.id ? { venueId: venue.id } : 'skip') as any;
+  const stadiumOverview = useQuery(api.stadium.getOverview, isReady && venue?.id ? {} : 'skip') as any;
+  const activeStadiumEvent = stadiumOverview?.events?.find((e: any) => e.operationalState === 'live') ?? stadiumOverview?.events?.[0];
+  const activeIssueCount = activeStadiumEvent?.openHighOrCriticalIssueCount ?? 0;
   const notificationsList = asArray(notifications) as NotificationItem[];
   const unreadCount = notificationsList.filter((item) => !item.read).length;
   const readiness = commandCenter?.readiness;
@@ -265,8 +268,22 @@ export default function HomeScreen() {
         </View>
       </View>
 
-      {/* Stadium Navigation HUD Tiles */}
+      {/* Game Day Operations Hub */}
       <View style={{ paddingHorizontal: pagePadding, paddingTop: spacing.md, gap: spacing.sm }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 }}>
+          <CommandText palette={palette} variant="label" style={{ color: stone, letterSpacing: 0.8 }}>
+            GAME DAY OPERATIONS
+          </CommandText>
+          {activeStadiumEvent ? (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: activeStadiumEvent.operationalState === 'live' ? statusColors.alert : statusColors.confirmed }} />
+              <CommandText palette={palette} variant="caption" style={{ color: ink, fontWeight: '700' }}>
+                {activeStadiumEvent.title} ({activeStadiumEvent.operationalState?.toUpperCase() ?? 'SCHEDULED'})
+              </CommandText>
+            </View>
+          ) : null}
+        </View>
+
         <HairlinePanel
           onPress={() => router.push('/stadium-map')}
           style={{ padding: spacing.md, flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}
@@ -276,19 +293,45 @@ export default function HomeScreen() {
           </View>
           <View style={{ flex: 1 }}>
             <CommandText palette={palette} variant="body" style={{ color: ink, fontWeight: '700', fontSize: 16 }}>Stadium Map</CommandText>
-            <CommandText palette={palette} variant="caption" style={{ color: stone }}>Zones, suites, stands</CommandText>
+            <CommandText palette={palette} variant="caption" style={{ color: stone }}>Zones, suites, stands & 3D telemetry</CommandText>
           </View>
           <MaterialCommunityIcons name="chevron-right" size={20} color={stone} />
         </HairlinePanel>
 
+        {/* Row 1: Command & Live Issues & NFL Brief */}
         <View style={{ flexDirection: 'row', gap: spacing.sm }}>
           <HairlinePanel
             onPress={() => router.push('/event-command-center')}
             style={styles.subTile}
           >
             <MaterialCommunityIcons name="shield-star-outline" size={18} color={chromeGold} />
-            <CommandText palette={palette} variant="caption" style={{ fontWeight: '700', color: ink }}>Command Center</CommandText>
+            <CommandText palette={palette} variant="caption" style={{ fontWeight: '700', color: ink }}>Command</CommandText>
           </HairlinePanel>
+          <HairlinePanel
+            onPress={() => router.push('/event-issues')}
+            style={[styles.subTile, activeIssueCount > 0 ? { borderColor: statusColors.alert } : null]}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+              <MaterialCommunityIcons name="alert-circle-outline" size={18} color={activeIssueCount > 0 ? statusColors.alert : chromeGold} />
+              {activeIssueCount > 0 ? (
+                <View style={{ backgroundColor: statusColors.alert, borderRadius: 9, paddingHorizontal: 5, paddingVertical: 1 }}>
+                  <CommandText palette={palette} variant="caption" style={{ color: '#FFFFFF', fontSize: 10, fontWeight: '800' }}>{activeIssueCount}</CommandText>
+                </View>
+              ) : null}
+            </View>
+            <CommandText palette={palette} variant="caption" style={{ fontWeight: '700', color: ink }}>Live Issues</CommandText>
+          </HairlinePanel>
+          <HairlinePanel
+            onPress={() => router.push(activeStadiumEvent ? `/nfl-brief?eventId=${activeStadiumEvent.id}` as any : '/nfl-brief' as any)}
+            style={styles.subTile}
+          >
+            <MaterialCommunityIcons name="football" size={18} color={chromeGold} />
+            <CommandText palette={palette} variant="caption" style={{ fontWeight: '700', color: ink }}>Game Brief</CommandText>
+          </HairlinePanel>
+        </View>
+
+        {/* Row 2: Concourse & Kitchen & Hospitality */}
+        <View style={{ flexDirection: 'row', gap: spacing.sm }}>
           <HairlinePanel
             onPress={() => router.push('/stadium/stand-sheet')}
             style={styles.subTile}
@@ -297,11 +340,43 @@ export default function HomeScreen() {
             <CommandText palette={palette} variant="caption" style={{ fontWeight: '700', color: ink }}>Stand Sheets</CommandText>
           </HairlinePanel>
           <HairlinePanel
-            onPress={() => router.push(SUITE_BEO_REPORT_ROUTE as any)}
+            onPress={() => router.push('/stadium/kds')}
+            style={styles.subTile}
+          >
+            <MaterialCommunityIcons name="chef-hat" size={18} color={chromeGold} />
+            <CommandText palette={palette} variant="caption" style={{ fontWeight: '700', color: ink }}>Kitchen KDS</CommandText>
+          </HairlinePanel>
+          <HairlinePanel
+            onPress={() => router.push('/stadium/suite-attendant')}
             style={styles.subTile}
           >
             <MaterialCommunityIcons name="room-service-outline" size={18} color={chromeGold} />
-            <CommandText palette={palette} variant="caption" style={{ fontWeight: '700', color: ink }}>Suite BEOs</CommandText>
+            <CommandText palette={palette} variant="caption" style={{ fontWeight: '700', color: ink }}>Suites</CommandText>
+          </HairlinePanel>
+        </View>
+
+        {/* Row 3: Logistics & Labor & Closeout */}
+        <View style={{ flexDirection: 'row', gap: spacing.sm }}>
+          <HairlinePanel
+            onPress={() => router.push('/stadium/commissary')}
+            style={styles.subTile}
+          >
+            <MaterialCommunityIcons name="truck-delivery-outline" size={18} color={chromeGold} />
+            <CommandText palette={palette} variant="caption" style={{ fontWeight: '700', color: ink }}>Commissary</CommandText>
+          </HairlinePanel>
+          <HairlinePanel
+            onPress={() => router.push('/stadium/labor-dashboard')}
+            style={styles.subTile}
+          >
+            <MaterialCommunityIcons name="account-clock-outline" size={18} color={chromeGold} />
+            <CommandText palette={palette} variant="caption" style={{ fontWeight: '700', color: ink }}>Labor & Roster</CommandText>
+          </HairlinePanel>
+          <HairlinePanel
+            onPress={() => router.push(activeStadiumEvent ? `/event-closeout?eventId=${activeStadiumEvent.id}` as any : '/event-closeout' as any)}
+            style={styles.subTile}
+          >
+            <MaterialCommunityIcons name="file-lock-outline" size={18} color={chromeGold} />
+            <CommandText palette={palette} variant="caption" style={{ fontWeight: '700', color: ink }}>Closeout</CommandText>
           </HairlinePanel>
         </View>
       </View>

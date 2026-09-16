@@ -1,4 +1,4 @@
-import { BadRequestException, Body, ConflictException, Controller, ForbiddenException, Get, NotFoundException, Param, Patch, Post, Query, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, ConflictException, Controller, ForbiddenException, Get, NotFoundException, Optional, Param, Patch, Post, Query, UseInterceptors } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { PartialType } from '@nestjs/mapped-types';
 import { IsBoolean, IsDateString, IsIn, IsInt, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
@@ -12,6 +12,7 @@ import { VenueScope } from '../../venue/venue-scope.decorator';
 import type { VenueScopedRequest } from '../../venue/venue-scope.interceptor';
 import { assertEventTransition, EVENT_OPERATIONAL_STATES, legacyStatusForState, type EventOperationalState } from './event-state';
 import { organizationIdForPairedVenue } from '../../common/venue-facility';
+import { SuiteHospitalityGateway } from './suite-hospitality.gateway';
 
 
 type Scope = NonNullable<VenueScopedRequest['venueScope']>;
@@ -104,6 +105,20 @@ class EventIssueQueryDto {
   @IsOptional() @IsString() outletId?: string;
 }
 
+class AdvanceEventPhaseDto {
+  @IsString() phase!: string;
+  @IsOptional() @IsString() reason?: string;
+  @IsOptional() @IsBoolean() alcoholCutoffEnforced?: boolean;
+  @IsOptional() @IsBoolean() isOvertime?: boolean;
+}
+
+export const EVENT_ISSUE_SLA_LIMITS_MS = {
+  critical: { ack: 5 * 60 * 1000, resolve: 30 * 60 * 1000 },
+  high: { ack: 15 * 60 * 1000, resolve: 60 * 60 * 1000 },
+  medium: { ack: 30 * 60 * 1000, resolve: 120 * 60 * 1000 },
+  low: { ack: 60 * 60 * 1000, resolve: 240 * 60 * 1000 },
+} as const;
+
 class UpsertEventCloseoutDto {
   @IsOptional() @IsIn(['draft', 'finalized', 'adjusted']) status?: 'draft' | 'finalized' | 'adjusted';
   @IsOptional() @IsInt() @Min(0) actualAttendance?: number;
@@ -146,7 +161,10 @@ class UpsertPartnerDto {
 @Controller('v1/stadium')
 @RequireSubscription()
 export class StadiumController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly wsGateway?: SuiteHospitalityGateway,
+  ) {}
 
   private assertManager(scope: Scope) {
     if (!canManageVenue(scope.role, scope.allAccess)) {
@@ -172,7 +190,13 @@ export class StadiumController {
         orderBy: [{ department: 'asc' }, { stadiumZone: 'asc' }, { code: 'asc' }],
       }),
       this.prisma.venueEvent.findMany({
-        where: { venueId: scope.venueId, startsAt: { gte: now } },
+        where: {
+          venueId: scope.venueId,
+          OR: [
+            { startsAt: { gte: now } },
+            { operationalState: { in: ['pre_open', 'live', 'closing'] } },
+          ],
+        },
         orderBy: { startsAt: 'asc' },
         take: 20,
         include: {
@@ -205,12 +229,14 @@ export class StadiumController {
   @Get('pilot-health')
   async pilotHealth(@VenueScope() scope: Scope) {
     if (!canViewPilotHealth(scope.role, scope.allAccess)) throw new ForbiddenException('Pilot Health access is restricted to leadership and audit roles.');
-    const [events, readiness, issues, closeouts, activity] = await Promise.all([
+    const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const [events, readiness, issues, closeouts, activityTotal, distinctActors] = await Promise.all([
       this.prisma.venueEvent.findMany({ where: { venueId: scope.venueId, operationalState: { notIn: ['archived'] } }, select: { id: true, operationalState: true, startsAt: true } }),
       this.prisma.eventFnbReadiness.findMany({ where: { venueId: scope.venueId }, select: { status: true } }),
       this.prisma.eventIssue.findMany({ where: { venueId: scope.venueId, status: { not: 'resolved' } }, select: { severity: true, status: true, openedAt: true } }),
       this.prisma.eventCloseout.findMany({ where: { venueId: scope.venueId }, select: { status: true, eventId: true, updatedAt: true } }),
-      this.prisma.eventAuditLog.findMany({ where: { venueId: scope.venueId, createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } }, select: { actorProfileId: true, action: true, createdAt: true }, orderBy: { createdAt: 'desc' }, take: 200 }),
+      this.prisma.eventAuditLog.count({ where: { venueId: scope.venueId, createdAt: { gte: since24h } } }),
+      this.prisma.eventAuditLog.findMany({ where: { venueId: scope.venueId, createdAt: { gte: since24h } }, distinct: ['actorProfileId'], select: { actorProfileId: true } }),
     ]);
     const readyCount = readiness.filter((row) => row.status === 'ready').length;
     return {
@@ -220,7 +246,7 @@ export class StadiumController {
       openCriticalIssues: issues.filter((issue) => issue.severity === 'critical').length,
       unresolvedIssues: issues.length,
       closeoutStatus: { draft: closeouts.filter((row) => row.status === 'draft').length, finalized: closeouts.filter((row) => row.status === 'finalized').length, adjusted: closeouts.filter((row) => row.status === 'adjusted').length },
-      userActivity24h: { total: activity.length, uniqueUsers: new Set(activity.map((item) => item.actorProfileId).filter(Boolean)).size, byAction: activity.reduce<Record<string, number>>((counts, item) => { counts[item.action] = (counts[item.action] ?? 0) + 1; return counts; }, {}) },
+      userActivity24h: { total: activityTotal, uniqueUsers: distinctActors.map((item) => item.actorProfileId).filter(Boolean).length },
       generatedAt: new Date().toISOString(),
     };
   }
@@ -244,14 +270,94 @@ export class StadiumController {
     const event = await this.prisma.venueEvent.findFirst({ where: { id, venueId: scope.venueId }, select: { id: true, title: true, eventType: true, startsAt: true, gatesOpenAt: true, endsAt: true, expectedGuests: true, opponentOrHeadliner: true, operationalState: true } });
     if (!event) throw new NotFoundException('Stadium event not found.');
     if (event.eventType !== 'game') throw new BadRequestException('NFL game-day brief is only available for game events.');
-    const [outlets, readiness, issues] = await Promise.all([
+    const [outlets, readiness, issues, lastPhaseLog] = await Promise.all([
       this.prisma.fnbOperationUnit.findMany({ where: { venueId: scope.venueId }, select: { id: true, name: true, department: true, type: true, stadiumZone: true, status: true }, orderBy: [{ department: 'asc' }, { stadiumZone: 'asc' }, { name: 'asc' }] }),
       this.prisma.eventFnbReadiness.findMany({ where: { venueId: scope.venueId, eventId: id }, select: { zoneId: true, status: true, notes: true } }),
       this.prisma.eventIssue.findMany({ where: { venueId: scope.venueId, eventId: id, status: { not: 'resolved' } }, select: { title: true, severity: true, outletId: true } }),
+      this.prisma.eventAuditLog.findFirst({ where: { venueId: scope.venueId, eventId: id, entityType: 'game_phase' }, orderBy: { createdAt: 'desc' } }),
     ]);
+    const currentPhase = (lastPhaseLog?.metadata as any)?.phase ?? 'load_in';
+    const alcoholCutoffEnforced = Boolean((lastPhaseLog?.metadata as any)?.alcoholCutoffEnforced);
+    const isOvertime = Boolean((lastPhaseLog?.metadata as any)?.isOvertime);
+    const phaseStartedAt = lastPhaseLog?.createdAt?.toISOString() ?? null;
     const kickoff = event.startsAt.getTime();
     const gates = event.gatesOpenAt?.getTime() ?? kickoff - 90 * 60 * 1000;
-    return { event, phases: [{ key: 'load_in', label: 'Load-in and production', at: new Date(gates - 4 * 60 * 60 * 1000).toISOString() }, { key: 'gates', label: 'Gates open', at: new Date(gates).toISOString() }, { key: 'pregame', label: 'Pregame surge', at: new Date(kickoff - 30 * 60 * 1000).toISOString() }, { key: 'kickoff', label: 'Kickoff', at: event.startsAt.toISOString() }, { key: 'halftime', label: 'Halftime surge', at: new Date(kickoff + 2 * 60 * 60 * 1000).toISOString() }, { key: 'postgame', label: 'Postgame egress', at: new Date((event.endsAt?.getTime() ?? kickoff + 4 * 60 * 60 * 1000)).toISOString() }], activation: outlets.map((outlet) => ({ ...outlet, readiness: readiness.find((row) => row.zoneId === outlet.id)?.status ?? 'not_started' })), openIssues: issues, controls: ['Confirm alcohol ID-check and responsible-service coverage before gates.', 'Stage water, ice, and nonalcoholic beverage backup for heat and halftime demand.', 'Verify hot/cold holding, allergen labeling, and batch release times.', 'Keep a runner and warehouse transfer path open for halftime replenishment.'], assumptions: ['Halftime timing is a planning estimate; replace with the official game clock/run of show.', 'Weather is not connected; apply venue-approved heat, cold, rain, and lightning procedures.'] };
+    return {
+      event,
+      currentPhase,
+      phaseStartedAt,
+      alcoholCutoffEnforced,
+      isOvertime,
+      phases: [
+        { key: 'load_in', label: 'Load-in and production', at: new Date(gates - 4 * 60 * 60 * 1000).toISOString() },
+        { key: 'gates', label: 'Gates open', at: new Date(gates).toISOString() },
+        { key: 'pregame', label: 'Pregame surge', at: new Date(kickoff - 30 * 60 * 1000).toISOString() },
+        { key: 'kickoff', label: 'Kickoff', at: event.startsAt.toISOString() },
+        { key: 'halftime', label: 'Halftime surge', at: new Date(kickoff + 2 * 60 * 60 * 1000).toISOString() },
+        { key: 'postgame', label: 'Postgame egress', at: new Date((event.endsAt?.getTime() ?? kickoff + 4 * 60 * 60 * 1000)).toISOString() },
+      ],
+      activation: outlets.map((outlet) => ({ ...outlet, readiness: readiness.find((row) => row.zoneId === outlet.id)?.status ?? 'not_started' })),
+      openIssues: issues,
+      controls: [
+        'Confirm alcohol ID-check and responsible-service coverage before gates.',
+        'Stage water, ice, and nonalcoholic beverage backup for heat and halftime demand.',
+        'Verify hot/cold holding, allergen labeling, and batch release times.',
+        'Keep a runner and warehouse transfer path open for halftime replenishment.',
+      ],
+      assumptions: [
+        'Halftime timing is a planning estimate; replace with the official game clock/run of show.',
+        'Weather is not connected; apply venue-approved heat, cold, rain, and lightning procedures.',
+      ],
+    };
+  }
+
+  @Patch('events/:id/phase')
+  async advanceEventPhase(@VenueScope() scope: Scope, @Param('id') id: string, @Body() body: AdvanceEventPhaseDto) {
+    this.assertOperational(scope);
+    const event = await this.prisma.venueEvent.findFirst({
+      where: { id, venueId: scope.venueId },
+      select: { id: true, title: true, organizationId: true },
+    });
+    if (!event) throw new NotFoundException('Stadium event not found.');
+    const organizationId = event.organizationId ?? await this.organizationIdFor(scope.venueId);
+
+    const audit = await this.prisma.eventAuditLog.create({
+      data: {
+        organizationId,
+        venueId: scope.venueId,
+        eventId: id,
+        actorProfileId: scope.profileId,
+        entityType: 'game_phase',
+        entityId: id,
+        action: 'phase_advanced',
+        reason: body.reason ?? null,
+        metadata: {
+          phase: body.phase,
+          reason: body.reason ?? null,
+          alcoholCutoffEnforced: body.alcoholCutoffEnforced ?? false,
+          isOvertime: body.isOvertime ?? false,
+        },
+      },
+    });
+
+    if (this.wsGateway) {
+      await this.wsGateway.broadcastEventIssue(organizationId, scope.venueId, undefined, {
+        type: 'game_phase_advanced',
+        eventId: id,
+        phase: body.phase,
+        alcoholCutoffEnforced: body.alcoholCutoffEnforced ?? false,
+        isOvertime: body.isOvertime ?? false,
+      }).catch(() => undefined);
+    }
+
+    return {
+      ok: true,
+      eventId: id,
+      phase: body.phase,
+      alcoholCutoffEnforced: body.alcoholCutoffEnforced ?? false,
+      isOvertime: body.isOvertime ?? false,
+      updatedAt: audit.createdAt.toISOString(),
+    };
   }
 
   @Post('zones')
@@ -352,10 +458,54 @@ export class StadiumController {
   }
 
   @Get('events/:id/issues')
-  async listEventIssues(@VenueScope() scope: Scope, @Param('id') id: string, @Query() query: EventIssueQueryDto) {
+  async listEventIssues(@VenueScope() scope: Scope, @Param('id') id: string, @Query() query: EventIssueQueryDto = {}) {
     const event = await this.prisma.venueEvent.findFirst({ where: { id, venueId: scope.venueId }, select: { id: true } });
     if (!event) throw new NotFoundException('Stadium event not found.');
-    return this.prisma.eventIssue.findMany({ where: { venueId: scope.venueId, eventId: id, ...(query.status ? { status: query.status } : {}), ...(query.severity ? { severity: query.severity } : {}), ...(query.outletId ? { outletId: query.outletId } : {}) }, orderBy: [{ severity: 'desc' }, { openedAt: 'desc' }] });
+    const nowMs = Date.now();
+    const items = await this.prisma.eventIssue.findMany({
+      where: {
+        venueId: scope.venueId,
+        eventId: id,
+        ...(query.status ? { status: query.status } : {}),
+        ...(query.severity ? { severity: query.severity } : {}),
+        ...(query.outletId ? { outletId: query.outletId } : {}),
+      },
+      orderBy: [{ severity: 'desc' }, { openedAt: 'desc' }],
+    });
+
+    return items.map((issue) => {
+      const openedMs = issue.openedAt.getTime();
+      const limits = EVENT_ISSUE_SLA_LIMITS_MS[issue.severity as keyof typeof EVENT_ISSUE_SLA_LIMITS_MS] ?? EVENT_ISSUE_SLA_LIMITS_MS.medium;
+      const ackDeadlineAt = new Date(openedMs + limits.ack).toISOString();
+      const resolveDeadlineAt = new Date(openedMs + limits.resolve).toISOString();
+      const isAckBreached = issue.status === 'open' && (openedMs + limits.ack < nowMs);
+      const isResolveBreached = issue.status !== 'resolved' && (openedMs + limits.resolve < nowMs);
+      const isBreached = isAckBreached || isResolveBreached;
+      const ackRemainingMs = Math.max(0, (openedMs + limits.ack) - nowMs);
+      const resolveRemainingMs = Math.max(0, (openedMs + limits.resolve) - nowMs);
+
+      let slaStatus: 'nominal' | 'warning' | 'breached' | 'resolved' = 'nominal';
+      if (issue.status === 'resolved') {
+        slaStatus = 'resolved';
+      } else if (isBreached) {
+        slaStatus = 'breached';
+      } else if (
+        (issue.status === 'open' && ackRemainingMs < limits.ack * 0.3) ||
+        resolveRemainingMs < limits.resolve * 0.3
+      ) {
+        slaStatus = 'warning';
+      }
+
+      return {
+        ...issue,
+        ackDeadlineAt,
+        resolveDeadlineAt,
+        isAckBreached,
+        isResolveBreached,
+        isBreached,
+        slaStatus,
+      };
+    });
   }
 
   @Get('events/:id/audit')
@@ -377,15 +527,26 @@ export class StadiumController {
     if (body.outletId && !outlet) throw new NotFoundException('F&B outlet not found.');
     if (['closed', 'archived'].includes(event.operationalState)) throw new ForbiddenException('Issues cannot be opened after event closeout. Use an authorized adjustment workflow.');
     try {
-      return await withTenantTransaction(this.prisma, async (tx) => {
+      const issue = await withTenantTransaction(this.prisma, async (tx) => {
         if (body.clientMutationId) {
           const existing = await tx.eventIssue.findFirst({ where: { venueId: scope.venueId, clientMutationId: body.clientMutationId } });
           if (existing) return existing;
         }
-        const issue = await tx.eventIssue.create({ data: { organizationId, venueId: scope.venueId, eventId, outletId: body.outletId ?? null, issueType: body.issueType.trim(), severity: body.severity, title: body.title.trim(), description: body.description.trim(), reportedByUserId: scope.profileId, ownerUserId: body.ownerUserId?.trim() || null, clientMutationId: body.clientMutationId ?? null } });
-        await tx.eventAuditLog.create({ data: { organizationId, venueId: scope.venueId, eventId, issueId: issue.id, actorProfileId: scope.profileId, entityType: 'event_issue', entityId: issue.id, action: 'issue_created', metadata: { issueType: issue.issueType, severity: issue.severity, outletId: issue.outletId } } });
-        return issue;
+        const created = await tx.eventIssue.create({ data: { organizationId, venueId: scope.venueId, eventId, outletId: body.outletId ?? null, issueType: body.issueType.trim(), severity: body.severity, title: body.title.trim(), description: body.description.trim(), reportedByUserId: scope.profileId, ownerUserId: body.ownerUserId?.trim() || null, clientMutationId: body.clientMutationId ?? null } });
+        await tx.eventAuditLog.create({ data: { organizationId, venueId: scope.venueId, eventId, issueId: created.id, actorProfileId: scope.profileId, entityType: 'event_issue', entityId: created.id, action: 'issue_created', metadata: { issueType: created.issueType, severity: created.severity, outletId: created.outletId } } });
+        return created;
       }, { venueId: scope.venueId });
+
+      if (this.wsGateway) {
+        await this.wsGateway.broadcastEventIssue(organizationId, scope.venueId, body.outletId, {
+          id: issue.id,
+          eventId,
+          severity: issue.severity,
+          title: issue.title,
+          status: issue.status,
+        }).catch(() => undefined);
+      }
+      return issue;
     } catch (error) {
       if ((error as { code?: string }).code === 'P2002' && body.clientMutationId) {
         const existing = await this.prisma.eventIssue.findFirst({ where: { venueId: scope.venueId, clientMutationId: body.clientMutationId } });
@@ -402,31 +563,53 @@ export class StadiumController {
   @Patch('issues/:id/acknowledge')
   async acknowledgeEventIssue(@VenueScope() scope: Scope, @Param('id') id: string) {
     this.assertOperational(scope);
-    const issue = await this.prisma.eventIssue.findFirst({ where: { id, venueId: scope.venueId }, select: { id: true, eventId: true, organizationId: true, status: true } });
+    const issue = await this.prisma.eventIssue.findFirst({ where: { id, venueId: scope.venueId }, select: { id: true, eventId: true, organizationId: true, status: true, outletId: true, severity: true, title: true } });
     if (!issue) throw new NotFoundException('Event issue not found.');
     if (issue.status === 'resolved') throw new BadRequestException('A resolved issue cannot be acknowledged.');
-    return withTenantTransaction(this.prisma, async (tx) => {
+    const updated = await withTenantTransaction(this.prisma, async (tx) => {
       const transition = await tx.eventIssue.updateMany({ where: { id, venueId: scope.venueId, status: 'open' }, data: { status: 'acknowledged', acknowledgedAt: new Date(), ownerUserId: scope.profileId } });
       if (transition.count !== 1) throw new ConflictException('Issue state changed. Refresh and try again.');
-      const updated = await tx.eventIssue.findUniqueOrThrow({ where: { id } });
+      const result = await tx.eventIssue.findUniqueOrThrow({ where: { id } });
       await tx.eventAuditLog.create({ data: { organizationId: issue.organizationId, venueId: scope.venueId, eventId: issue.eventId, issueId: id, actorProfileId: scope.profileId, entityType: 'event_issue', entityId: id, action: 'issue_acknowledged' } });
-      return updated;
+      return result;
     }, { venueId: scope.venueId });
+
+    if (this.wsGateway) {
+      await this.wsGateway.broadcastEventIssue(issue.organizationId, scope.venueId, issue.outletId, {
+        id: updated.id,
+        eventId: issue.eventId,
+        severity: issue.severity,
+        title: issue.title,
+        status: updated.status,
+      }).catch(() => undefined);
+    }
+    return updated;
   }
 
   @Patch('issues/:id/resolve')
   async resolveEventIssue(@VenueScope() scope: Scope, @Param('id') id: string, @Body() body: ResolveEventIssueDto) {
     this.assertOperational(scope);
-    const issue = await this.prisma.eventIssue.findFirst({ where: { id, venueId: scope.venueId }, select: { id: true, eventId: true, organizationId: true, status: true } });
+    const issue = await this.prisma.eventIssue.findFirst({ where: { id, venueId: scope.venueId }, select: { id: true, eventId: true, organizationId: true, status: true, outletId: true, severity: true, title: true } });
     if (!issue) throw new NotFoundException('Event issue not found.');
     if (issue.status === 'resolved') throw new BadRequestException('Event issue is already resolved.');
-    return withTenantTransaction(this.prisma, async (tx) => {
+    const updated = await withTenantTransaction(this.prisma, async (tx) => {
       const transition = await tx.eventIssue.updateMany({ where: { id, venueId: scope.venueId, status: { in: ['open', 'acknowledged'] } }, data: { status: 'resolved', resolvedAt: new Date(), resolutionNotes: body.resolutionNotes.trim(), ownerUserId: scope.profileId } });
       if (transition.count !== 1) throw new ConflictException('Issue state changed. Refresh and try again.');
-      const updated = await tx.eventIssue.findUniqueOrThrow({ where: { id } });
+      const result = await tx.eventIssue.findUniqueOrThrow({ where: { id } });
       await tx.eventAuditLog.create({ data: { organizationId: issue.organizationId, venueId: scope.venueId, eventId: issue.eventId, issueId: id, actorProfileId: scope.profileId, entityType: 'event_issue', entityId: id, action: 'issue_resolved', metadata: { resolutionNotes: body.resolutionNotes.trim() } } });
-      return updated;
+      return result;
     }, { venueId: scope.venueId });
+
+    if (this.wsGateway) {
+      await this.wsGateway.broadcastEventIssue(issue.organizationId, scope.venueId, issue.outletId, {
+        id: updated.id,
+        eventId: issue.eventId,
+        severity: issue.severity,
+        title: issue.title,
+        status: updated.status,
+      }).catch(() => undefined);
+    }
+    return updated;
   }
 
   @Post('event-plan')

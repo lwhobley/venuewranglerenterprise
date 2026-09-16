@@ -12,10 +12,26 @@ import { useVenueAuth } from '../lib/useVenueAuth';
 import { SyncStatus } from '../lib/sync-status';
 
 type EventSummary = { id: string; title: string; startsAt: string; operationalState?: string };
-type Issue = { id: string; issueType: string; severity: 'low' | 'medium' | 'high' | 'critical'; status: 'open' | 'acknowledged' | 'resolved'; title: string; description: string; openedAt: string; resolutionNotes: string | null };
+type Issue = {
+  id: string;
+  issueType: string;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  status: 'open' | 'acknowledged' | 'resolved';
+  title: string;
+  description: string;
+  openedAt: string;
+  resolutionNotes: string | null;
+  ackDeadlineAt?: string;
+  resolveDeadlineAt?: string;
+  isAckBreached?: boolean;
+  isResolveBreached?: boolean;
+  slaStatus?: 'nominal' | 'warning' | 'breached' | 'resolved';
+};
 type Overview = { events: EventSummary[] };
 
 const severities: Issue['severity'][] = ['low', 'medium', 'high', 'critical'];
+const filterOptions = ['all', 'critical', 'high', 'open', 'breached'] as const;
+type FilterOption = (typeof filterOptions)[number];
 const label = humanizeLabel;
 
 export default function EventIssuesScreen() {
@@ -29,6 +45,7 @@ export default function EventIssuesScreen() {
   const [eventId, setEventId] = useState<string | null>(null);
   const [issueType, setIssueType] = useState('operational');
   const [severity, setSeverity] = useState<Issue['severity']>('high');
+  const [activeFilter, setActiveFilter] = useState<FilterOption>('all');
   const [title, setTitle] = useState(outletCode ? `${outletCode} operational issue` : '');
   const [description, setDescription] = useState(outletId ? `Reported from stadium space ${outletCode ?? outletId} (${outletId}).` : '');
   const [resolutionNotes, setResolutionNotes] = useState<Record<string, string>>({});
@@ -45,13 +62,23 @@ export default function EventIssuesScreen() {
   const issues = asArray<Issue>(issuesQuery.data);
   const activeEvent = useMemo(() => overview?.events?.find((event) => event.id === eventId), [eventId, overview?.events]);
 
+  const filteredIssues = useMemo(() => {
+    return issues.filter((issue) => {
+      if (activeFilter === 'critical') return issue.severity === 'critical';
+      if (activeFilter === 'high') return issue.severity === 'high';
+      if (activeFilter === 'open') return issue.status === 'open';
+      if (activeFilter === 'breached') return issue.slaStatus === 'breached' || issue.isAckBreached || issue.isResolveBreached;
+      return true;
+    });
+  }, [issues, activeFilter]);
+
   const report = async () => {
     if (!eventId || !title.trim() || !description.trim()) return;
     setMessage(null);
     try {
       await createIssue({ eventId, issueType, severity, title, description });
       setTitle(''); setDescription(''); setMessage('Issue reported to the event command center.');
-    } catch (error) { setMessage(errorMessage(error, 'The issue could not be reported.')); }
+    } catch (error) { setMessage(errorMessage(error, 'The issue could not be resolved.')); }
   };
 
   const resolve = async (issue: Issue) => {
@@ -68,7 +95,19 @@ export default function EventIssuesScreen() {
     {message ? <CommandSurface palette={palette}><CommandText palette={palette} variant="body">{message}</CommandText></CommandSurface> : null}
     <CommandSurface palette={palette} strong style={{ gap: spacing.sm }}><CommandText palette={palette} variant="title">Event in scope</CommandText><View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs }}>{overview?.events?.map((event) => <Chip key={event.id} selected={event.id === eventId} onPress={() => setEventId(event.id)}>{event.title}</Chip>)}</View>{activeEvent ? <CommandText palette={palette} variant="caption">{new Date(activeEvent.startsAt).toLocaleString()} · {label(activeEvent.operationalState ?? 'draft')}</CommandText> : <CommandText palette={palette} variant="caption">Create or select an event before reporting issues.</CommandText>}</CommandSurface>
     <CommandSurface palette={palette} style={{ gap: spacing.sm }}><CommandText palette={palette} variant="title">Report an issue</CommandText><TextInput mode="outlined" label="Issue type" value={issueType} onChangeText={setIssueType} placeholder="e.g. stockout, equipment, safety" /><View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs }}>{severities.map((value) => <Chip key={value} selected={severity === value} onPress={() => setSeverity(value)}>{label(value)}</Chip>)}</View><TextInput mode="outlined" label="Short title" value={title} onChangeText={setTitle} /><TextInput mode="outlined" label="What happened?" value={description} onChangeText={setDescription} multiline /><Button mode="contained" buttonColor={palette.primary} disabled={!eventId || !title.trim() || !description.trim()} onPress={() => void report()}>Report issue</Button></CommandSurface>
-    <CommandSurface palette={palette} style={{ gap: spacing.sm }}><CommandText palette={palette} variant="title">Open and recent issues</CommandText><ScreenState isLoading={issuesQuery.isLoading} error={issuesQuery.error} isEmpty={!issues.length} emptyMessage="No issues have been reported for this event." onRetry={() => void issuesQuery.refetch()}>{issues.map((issue) => <View key={issue.id} style={{ borderTopWidth: 1, borderColor: palette.border, paddingTop: spacing.sm, gap: spacing.xs }}><View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.sm }}><View style={{ flex: 1, minWidth: 160 }}><CommandText palette={palette} variant="body" style={{ fontWeight: '800' }}>{issue.title}</CommandText><CommandText palette={palette} variant="caption">{label(issue.issueType)} · {new Date(issue.openedAt).toLocaleTimeString()}</CommandText></View><StatusPill palette={palette} tone={issue.severity === 'critical' || issue.severity === 'high' ? 'warn' : issue.status === 'resolved' ? 'good' : 'neutral'}>{label(issue.status)} · {label(issue.severity)}</StatusPill></View><CommandText palette={palette} variant="caption">{issue.description}</CommandText>{issue.status === 'open' ? <Button compact mode="outlined" textColor={palette.primary} onPress={() => void acknowledgeIssue({ issueId: issue.id })}>Acknowledge</Button> : null}{issue.status !== 'resolved' ? <><TextInput mode="outlined" dense label="Resolution notes" value={resolutionNotes[issue.id] ?? ''} onChangeText={(value) => setResolutionNotes((notes) => ({ ...notes, [issue.id]: value }))} /><Button compact mode="contained-tonal" textColor={palette.primary} onPress={() => void resolve(issue)}>Resolve</Button></> : <CommandText palette={palette} variant="caption">Resolution: {issue.resolutionNotes}</CommandText>}</View>)}</ScreenState></CommandSurface>
+    <CommandSurface palette={palette} style={{ gap: spacing.sm }}>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: spacing.xs }}>
+        <CommandText palette={palette} variant="title">Issues ({filteredIssues.length})</CommandText>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs }}>
+          {filterOptions.map((opt) => (
+            <Chip key={opt} selected={activeFilter === opt} onPress={() => setActiveFilter(opt)} compact>
+              {label(opt)}
+            </Chip>
+          ))}
+        </View>
+      </View>
+      <ScreenState isLoading={issuesQuery.isLoading} error={issuesQuery.error} isEmpty={!filteredIssues.length} emptyMessage={activeFilter === 'all' ? "No issues have been reported for this event." : `No ${activeFilter} issues found.`} onRetry={() => void issuesQuery.refetch()}>{filteredIssues.map((issue) => <View key={issue.id} style={{ borderTopWidth: 1, borderColor: palette.border, paddingTop: spacing.sm, gap: spacing.xs }}><View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.sm }}><View style={{ flex: 1, minWidth: 160 }}><CommandText palette={palette} variant="body" style={{ fontWeight: '800' }}>{issue.title}</CommandText><CommandText palette={palette} variant="caption">{label(issue.issueType)} · {new Date(issue.openedAt).toLocaleTimeString()}</CommandText></View><View style={{ flexDirection: 'row', gap: spacing.xs }}><StatusPill palette={palette} tone={issue.severity === 'critical' || issue.severity === 'high' ? 'warn' : issue.status === 'resolved' ? 'good' : 'neutral'}>{label(issue.status)} · {label(issue.severity)}</StatusPill>{issue.slaStatus ? <StatusPill palette={palette} tone={issue.slaStatus === 'breached' ? 'danger' : issue.slaStatus === 'warning' ? 'warn' : issue.slaStatus === 'resolved' ? 'good' : 'neutral'}>{issue.slaStatus === 'breached' ? 'SLA Breached' : issue.slaStatus === 'warning' ? 'SLA Risk' : issue.slaStatus === 'nominal' ? 'SLA Nominal' : 'Resolved'}</StatusPill> : null}</View></View><CommandText palette={palette} variant="caption">{issue.description}</CommandText>{issue.status === 'open' ? <Button compact mode="outlined" textColor={palette.primary} onPress={() => void acknowledgeIssue({ issueId: issue.id })}>Acknowledge</Button> : null}{issue.status !== 'resolved' ? <><TextInput mode="outlined" dense label="Resolution notes" value={resolutionNotes[issue.id] ?? ''} onChangeText={(value) => setResolutionNotes((notes) => ({ ...notes, [issue.id]: value }))} /><Button compact mode="contained-tonal" textColor={palette.primary} onPress={() => void resolve(issue)}>Resolve</Button></> : <CommandText palette={palette} variant="caption">Resolution: {issue.resolutionNotes}</CommandText>}</View>)}</ScreenState>
+    </CommandSurface>
   </ScrollView>;
 }
 
