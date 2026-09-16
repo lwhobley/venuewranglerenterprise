@@ -27,7 +27,6 @@ const DOCUMENTED_EXCEPTIONS: Record<string, string> = {
   'documents.controller.ts': 'S3 document upload/download in the request path',
   'operations.controller.ts': 'injects S3ImageService for media upload routes',
   'pos.controller.ts': 'outbound POS provider calls in the request path',
-  'scheduling.controller.ts': 'AI scheduler provider calls in the request path',
   'workforce.controller.ts': 'injects EmailService for invite/notification routes',
 };
 

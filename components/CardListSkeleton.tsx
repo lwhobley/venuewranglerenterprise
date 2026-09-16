@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { Animated, View } from 'react-native';
 import { Card } from 'react-native-paper';
-import { colors, spacing } from '../../lib/theme';
+import { colors, spacing } from '../lib/theme';
 
 function Bar({ width, height = 14, pulse }: { width: number | string; height?: number; pulse: Animated.Value }) {
   return (
@@ -17,9 +17,9 @@ function Bar({ width, height = 14, pulse }: { width: number | string; height?: n
   );
 }
 
-// Lightweight loading placeholder for the schedule screens. Pulses opacity so
+// Lightweight loading placeholder for card-and-row screens. Pulses opacity so
 // the wait reads as "loading" rather than a frozen empty state.
-export function ScheduleSkeleton({ rows = 4 }: { rows?: number }) {
+export function CardListSkeleton({ rows = 4 }: { rows?: number }) {
   const pulse = useRef(new Animated.Value(0.4)).current;
 
   useEffect(() => {
@@ -34,7 +34,7 @@ export function ScheduleSkeleton({ rows = 4 }: { rows?: number }) {
   }, [pulse]);
 
   return (
-    <View accessibilityLabel="Loading schedule" style={{ gap: spacing.md }}>
+    <View accessibilityLabel="Loading" style={{ gap: spacing.md }}>
       <Card style={{ backgroundColor: colors.surface, borderRadius: 10 }}>
         <Card.Content style={{ gap: spacing.sm }}>
           <Bar width="40%" height={20} pulse={pulse} />

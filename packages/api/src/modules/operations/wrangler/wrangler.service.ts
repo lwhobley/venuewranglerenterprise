@@ -28,7 +28,6 @@ export class WranglerService {
 
     const [
       reservations,
-      shifts,
       pendingRequests,
       barItems,
       prepItems,
@@ -36,16 +35,12 @@ export class WranglerService {
       tableStates,
       futureAssignments,
       waitlistEntries,
-      crmLeads,
       posConnections,
       resConnections,
       posChecks,
     ] = await Promise.all([
       this.prisma.reservation?.findMany
         ? this.prisma.reservation.findMany({ where: { venueId, reservationTime: { gte: todayStart, lt: todayEnd }, status: { notIn: ['cancelled', 'no_show'] } }, orderBy: { reservationTime: 'asc' }, take: 200 })
-        : Promise.resolve([]),
-      this.prisma.scheduleShift?.findMany
-        ? this.prisma.scheduleShift.findMany({ where: { venueId, weekStart, dayIndex }, orderBy: [{ startMinutes: 'asc' }, { jobTitle: 'asc' }], take: 200 })
         : Promise.resolve([]),
       this.prisma.staffRequest?.findMany
         ? this.prisma.staffRequest.findMany({ where: { venueId, status: 'pending' }, select: { id: true }, take: 100 })
@@ -68,9 +63,6 @@ export class WranglerService {
       this.prisma.waitlist?.findMany
         ? this.prisma.waitlist.findMany({ where: { venueId, status: 'waiting' }, take: 100 })
         : Promise.resolve([]),
-      this.prisma.crmLead?.findMany
-        ? this.prisma.crmLead.findMany({ where: { venueId, deletedAt: null, status: { notIn: ['won', 'lost', 'unqualified'] } }, take: 100 })
-        : Promise.resolve([]),
       this.prisma.posConnection?.findMany
         ? this.prisma.posConnection.findMany({ where: { venueId } })
         : Promise.resolve([]),
@@ -82,14 +74,13 @@ export class WranglerService {
         : Promise.resolve([]),
     ]);
 
-    const openShiftCount = shifts.filter((shift) => shift.status === 'open').length;
     const lowStockItems = barItems.filter((item) => item.onHand <= item.parLevel);
     const eightySixCount = prepItems.filter((item) => item.kind === 'eighty_six').length;
     const seatedTables = tableStates.filter((table) => table.status === 'seated').length;
     const servicePhase = deriveWranglerServicePhase({ now: nowMs, reservations: reservations.map((reservation) => ({ reservationTime: reservation.reservationTime.getTime(), durationMinutes: reservation.durationMinutes, status: reservation.status })), seatedTables });
 
-    const eventPriorities = buildDailyBriefPriorityActions({ openShiftCount, pendingRequestCount: pendingRequests.length, lowStockCount: lowStockItems.length, eightySixCount, events: events.map((event) => ({ title: event.title, startsAt: event.startsAt.getTime(), expectedGuests: event.expectedGuests, reservationGuestName: null, reservationPartySize: null, notes: event.notes })) });
-    const rulePriorities = buildWranglerRuleActions({ now: nowMs, reservations: reservations.map((reservation) => ({ id: reservation.id, guestName: reservation.guestName, partySize: reservation.partySize, reservationTime: reservation.reservationTime.getTime(), tags: reservation.tags })), openShiftCount, lowStockCount: lowStockItems.length, eightySixCount });
+    const eventPriorities = buildDailyBriefPriorityActions({ pendingRequestCount: pendingRequests.length, lowStockCount: lowStockItems.length, eightySixCount, events: events.map((event) => ({ title: event.title, startsAt: event.startsAt.getTime(), expectedGuests: event.expectedGuests, reservationGuestName: null, reservationPartySize: null, notes: event.notes })) });
+    const rulePriorities = buildWranglerRuleActions({ now: nowMs, reservations: reservations.map((reservation) => ({ id: reservation.id, guestName: reservation.guestName, partySize: reservation.partySize, reservationTime: reservation.reservationTime.getTime(), tags: reservation.tags })), lowStockCount: lowStockItems.length, eightySixCount });
     const upcomingAssignments = futureAssignments.filter((assignment) => assignment.startsAt.getTime() >= nowMs && assignment.startsAt.getTime() <= thirtyMinutesFromNowMs && assignment.reservation && !['cancelled', 'no_show', 'completed'].includes(assignment.reservation.status));
     const floorPriorities = buildWranglerFloorActions({ now: nowMs, tables: tableStates.map((tableState) => ({ tableId: tableState.tableId, label: tableState.table.label, status: tableState.status, seatedAt: tableState.seatedAt?.getTime() ?? null })), upcomingAssignments: upcomingAssignments.map((assignment) => { const alternate = this.findAlternateTable({ assignment, tableStates, futureAssignments }); return { assignmentId: assignment.id, tableId: assignment.tableId, tableLabel: assignment.table.label, startsAt: assignment.startsAt.getTime(), endsAt: assignment.endsAt.getTime(), reservationId: assignment.reservation?.id ?? null, guestName: assignment.reservation?.guestName ?? null, partySize: assignment.reservation?.partySize ?? null, tags: assignment.reservation?.tags ?? [], alternateTableId: alternate?.tableId ?? null, alternateTableLabel: alternate?.label ?? null }; }) });
 
@@ -105,8 +96,6 @@ export class WranglerService {
       covers: reservations.reduce((sum, reservation) => sum + reservation.partySize, 0),
       reservations: reservations.length,
       vipArrivals: reservations.filter((reservation) => reservation.tags.some((tag) => tag.toLowerCase().includes('vip'))).length,
-      scheduledStaff: shifts.filter((shift) => shift.status === 'scheduled').length,
-      openShifts: openShiftCount,
       lowStockItems: lowStockItems.length,
       eightySixItems: eightySixCount,
       pendingStaffRequests: pendingRequests.length,
@@ -114,7 +103,6 @@ export class WranglerService {
       activeWaitlist: waitlistEntries.length,
       totalSalesCents,
       openChecksCount,
-      activeLeadsCount: crmLeads.length,
       connectedIntegrationsCount: connectedCount,
       disconnectedIntegrationsCount: disconnectedCount,
     };

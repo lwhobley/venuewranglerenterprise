@@ -12,7 +12,7 @@ import { WranglerHistoryService } from './wrangler-history.service';
 import { WranglerService } from './wrangler.service';
 
 type Scope = VenueScopedRequest['venueScope'];
-class ExecuteWranglerActionDto { @IsString() @IsIn(['REASSIGN_RESERVATION', 'NOTIFY_STAFF', 'CREATE_FOLLOW_UP']) type!: 'REASSIGN_RESERVATION' | 'NOTIFY_STAFF' | 'CREATE_FOLLOW_UP'; @IsOptional() @IsString() reservationId?: string; @IsOptional() @IsString() tableId?: string; @IsOptional() @IsString() priorityId?: string; }
+class ExecuteWranglerActionDto { @IsString() @IsIn(['REASSIGN_RESERVATION', 'CREATE_FOLLOW_UP']) type!: 'REASSIGN_RESERVATION' | 'CREATE_FOLLOW_UP'; @IsOptional() @IsString() reservationId?: string; @IsOptional() @IsString() tableId?: string; @IsOptional() @IsString() priorityId?: string; }
 class AskWranglerDto { @IsString() @MinLength(2) @MaxLength(500) question!: string; }
 
 @Controller('v1/operations/wrangler')
@@ -70,7 +70,6 @@ export class WranglerController {
     if (!isAdminRole(scope.role)) throw new ForbiddenException('Manager access required to execute Wrangler actions');
     const venue = await this.prisma.venue.findUnique({ where: { id: scope.venueId }, select: { timezone: true } });
     if (!venue) throw new BadRequestException('Venue not found');
-    if (body.type === 'NOTIFY_STAFF') { const snapshot = await this.wrangler.getSnapshot(scope.venueId, venue.timezone); if (snapshot.summary.openShifts <= 0) throw new BadRequestException('No open shifts currently need coverage'); const count = snapshot.summary.openShifts; await this.notifications.notifyStaff({ venueId: scope.venueId, kind: 'wrangler_coverage', title: 'Open shifts need coverage', body: `${count} open shift${count === 1 ? '' : 's'} still need coverage. Check Venue Wrangler for available shifts.` }); return { ok: true, type: body.type, notified: 'staff', openShifts: count }; }
     if (body.type === 'CREATE_FOLLOW_UP') {
       if (!body.priorityId) throw new BadRequestException('priorityId is required');
       const snapshot = await this.wrangler.getSnapshot(scope.venueId, venue.timezone); const priority = snapshot.priorities.find((item) => item.id === body.priorityId); if (!priority || priority.kind === 'steady') throw new BadRequestException('Wrangler priority is no longer active');

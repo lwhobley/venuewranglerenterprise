@@ -388,8 +388,6 @@ describe('OperationsController', () => {
       expect(result.covers).toBe(5);
       expect(result.posCovers).toBe(5);
       expect(result.salesCents).toBe(3000);
-      expect(result.scheduledCount).toBe(2);
-      expect(result.openShiftCount).toBe(1);
       expect(result.clockedInCount).toBe(4);
       expect(result.pendingRequestCount).toBe(2);
       expect(result.lowStockCount).toBe(2);
@@ -397,14 +395,12 @@ describe('OperationsController', () => {
       expect(result.prepOpenCount).toBe(1);
 
       expect(buildDailyBriefAlerts).toHaveBeenCalledWith({
-        openShiftCount: 1,
         pendingRequestCount: 2,
         lowStockCount: 2,
         eightySixCount: 2,
       });
       expect(buildDailyBriefPriorityActions).toHaveBeenCalledWith(
         expect.objectContaining({
-          openShiftCount: 1,
           pendingRequestCount: 2,
           lowStockCount: 2,
           eightySixCount: 2,
@@ -424,7 +420,6 @@ describe('OperationsController', () => {
         laborHours: 0,
         openChecks: 7,
         activeClocks: 4,
-        openShiftCount: 1,
         pendingRequestCount: 2,
         lowStockCount: 2,
         eightySixCount: 2,
@@ -457,7 +452,6 @@ describe('OperationsController', () => {
       expect(prisma.prepBoardItem.createMany).not.toHaveBeenCalled();
       expect(result.readiness.status).toBe('blocked');
       expect(result.blockers).toEqual(expect.arrayContaining([
-        expect.objectContaining({ code: 'OPEN_SHIFT' }),
         expect.objectContaining({ code: 'OPEN_PREP' }),
       ]));
       expect(result.events[0]).toEqual(expect.objectContaining({ title: 'Launch Party', readiness: 'watch' }));

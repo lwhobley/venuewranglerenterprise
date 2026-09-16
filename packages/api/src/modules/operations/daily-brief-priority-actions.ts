@@ -25,10 +25,9 @@ type DailyBriefEvent = { title: string; startsAt: number; expectedGuests: number
 function pluralize(count: number, singular: string, plural = `${singular}s`) { return `${count} ${count === 1 ? singular : plural}`; }
 function guestSummary(event: DailyBriefEvent) { const guestCount = event.expectedGuests ?? event.reservationPartySize; return guestCount ? `${pluralize(guestCount, 'guest')} expected` : 'Guest count still needs a final check'; }
 function action(id: string, label: string, route: WranglerAction['route']): WranglerAction { return { id, type: 'NAVIGATE', label, route, requiresConfirmation: false }; }
-function notifyCoverageAction(openShiftCount: number): WranglerAction { return { id: 'coverage-notify-staff', type: 'NOTIFY_STAFF', label: 'Notify available staff', route: '/staff', requiresConfirmation: true, payload: { openShiftCount } }; }
 
-export function buildDailyBriefPriorityActions(input: { openShiftCount: number; pendingRequestCount: number; lowStockCount: number; eightySixCount: number; events: DailyBriefEvent[] }): DailyBriefPriorityAction[] {
-  const { openShiftCount, pendingRequestCount, lowStockCount, eightySixCount, events } = input;
+export function buildDailyBriefPriorityActions(input: { pendingRequestCount: number; lowStockCount: number; eightySixCount: number; events: DailyBriefEvent[] }): DailyBriefPriorityAction[] {
+  const { pendingRequestCount, lowStockCount, eightySixCount, events } = input;
   const actions: DailyBriefPriorityAction[] = [];
   const nextEvent = [...events].sort((a, b) => a.startsAt - b.startsAt)[0] ?? null;
 
@@ -37,14 +36,9 @@ export function buildDailyBriefPriorityActions(input: { openShiftCount: number; 
     actions.push({ id: `event-${nextEvent.startsAt}`, kind: 'event', tone: 'warn', severity: 'warning', title: `Prep ${nextEvent.reservationGuestName ?? nextEvent.title}`, body: `${guestSummary(nextEvent)}. Review the run sheet, seating plan, and service notes before doors open.`, reason: 'An upcoming event or reservation is the nearest time-sensitive service commitment.', cta: 'Open reservations', route, actions: [action(`event-${nextEvent.startsAt}-open`, 'Review reservation', route)] });
   }
 
-  if (openShiftCount > 0) {
-    const route = '/staff' as const;
-    actions.push({ id: 'coverage-open-shifts', kind: 'coverage', tone: 'warn', severity: openShiftCount >= 3 ? 'critical' : 'warning', title: `Cover ${pluralize(openShiftCount, 'open shift')}`, body: 'Get the floor staffed before service so the shift starts with the right coverage.', reason: `${pluralize(openShiftCount, 'scheduled shift')} currently have no assigned coverage.`, cta: 'Notify staff', route, actions: [notifyCoverageAction(openShiftCount), action('coverage-open-staff', 'Open staff', route)] });
-  }
-
   if (pendingRequestCount > 0) {
-    const route = '/schedule' as const;
-    actions.push({ id: 'requests-pending', kind: 'requests', tone: 'neutral', severity: 'watch', title: `Review ${pluralize(pendingRequestCount, 'pending request')}`, body: 'Approve or deny the queue now so the schedule stays stable for the next publish.', reason: `${pluralize(pendingRequestCount, 'staff request')} can still change upcoming coverage.`, cta: 'Open schedule', route, actions: [action('requests-open-schedule', 'Review requests', route)] });
+    const route = '/staff' as const;
+    actions.push({ id: 'requests-pending', kind: 'requests', tone: 'neutral', severity: 'watch', title: `Review ${pluralize(pendingRequestCount, 'pending request')}`, body: 'Approve or deny the queue so time-off and correction requests do not sit unanswered.', reason: `${pluralize(pendingRequestCount, 'staff request')} are waiting on a manager.`, cta: 'Open staff', route, actions: [action('requests-open-staff', 'Review requests', route)] });
   }
 
   if (lowStockCount > 0 || eightySixCount > 0) {

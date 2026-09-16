@@ -52,20 +52,6 @@ export default function TabsLayout() {
         options={{ title: "Time Clock", tabBarIcon: icon("clock-outline") }}
       />
       <Tabs.Screen
-        name="schedule"
-        options={{
-          title: "Rosters",
-          tabBarIcon: icon("calendar-week"),
-        }}
-      />
-      <Tabs.Screen
-        name="guests"
-        options={{
-          title: "CRM",
-          tabBarIcon: icon("account-heart-outline"),
-        }}
-      />
-      <Tabs.Screen
         name="integrations"
         options={{
           title: "POS & Hardware",

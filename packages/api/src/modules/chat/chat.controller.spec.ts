@@ -82,7 +82,7 @@ afterEach(() => {
 });
 
 describe('ChatController', () => {
-  it('creates missing contextual role and shift conversations', async () => {
+  it('creates missing contextual role conversations', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-07-15T12:00:00Z'));
 
@@ -92,10 +92,6 @@ describe('ChatController', () => {
       { id: 'server-1', jobTitle: 'Server', role: 'staff', allAccess: false },
       { id: 'server-2', jobTitle: 'Server', role: 'staff', allAccess: false },
       { id: 'bar-1', jobTitle: 'Bartender', role: 'staff', allAccess: false },
-    ]);
-    prisma.scheduleShift.findMany.mockResolvedValue([
-      { profileId: 'server-1', dayIndex: 3 },
-      { profileId: 'bar-1', dayIndex: 3 },
     ]);
     prisma.conversation.findMany.mockResolvedValue([]);
 
@@ -111,19 +107,72 @@ describe('ChatController', () => {
         isSystem: true,
       }),
     }));
-    expect(prisma.conversation.create).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({
-        venueId: 'venue-1',
-        type: 'shift',
-        shiftDate: '2026-07-15',
-        name: '#Crew - Wednesday (Jul 15)',
-        memberIds: ['bar-1', 'manager-1', 'server-1'],
-        isSystem: true,
-      }),
-    }));
-    expect(prisma.conversation.create).toHaveBeenCalledTimes(10);
+    expect(prisma.conversation.create).toHaveBeenCalledTimes(3);
   });
 
+
+  it('returns dm messages, read receipts, and signed image paths', async () => {
+    const { controller, prisma, mediaAccess } = makeController();
+    prisma.conversation.findFirst.mockResolvedValue({
+      id: 'conv-1',
+      venueId: 'venue-1',
+      type: 'dm',
+      name: null,
+      memberIds: ['staff-1', 'staff-2'],
+    });
+    prisma.profile.findMany.mockResolvedValue([
+      { id: 'staff-1', fullName: 'Alex Agent' },
+      { id: 'staff-2', fullName: 'Jamie Jones' },
+    ]);
+    prisma.conversationRead.findMany.mockResolvedValue([
+      { profileId: 'staff-1', readAt: new Date('2026-07-15T10:00:00Z') },
+      { profileId: 'staff-2', readAt: new Date('2026-07-15T10:05:00Z') },
+    ]);
+    prisma.message.findMany.mockResolvedValue([
+      {
+        id: 'msg-2',
+        text: 'Newest',
+        senderId: null,
+        createdAt: new Date('2026-07-15T10:02:00Z'),
+        imageUrl: null,
+        reactions: null,
+      },
+      {
+        id: 'msg-1',
+        text: 'Photo',
+        senderId: 'staff-2',
+        createdAt: new Date('2026-07-15T10:01:00Z'),
+        imageUrl: '/v1/chat/images/img-1',
+        reactions: { fire: ['staff-2'] },
+      },
+    ]);
+
+    const result = await controller.getMessages(staffScope, 'conv-1');
+
+    expect(result.title).toBe('Jamie Jones');
+    expect(result.readReceipts).toEqual([{ name: 'Jamie Jones', readAt: new Date('2026-07-15T10:05:00Z').getTime() }]);
+    expect(result.messages).toEqual([
+      expect.objectContaining({
+        id: 'msg-1',
+        senderName: 'Jamie Jones',
+        mine: false,
+        imageUrl: 'signed:/v1/chat/images/img-1',
+        reactions: { fire: ['staff-2'] },
+      }),
+      expect.objectContaining({
+        id: 'msg-2',
+        senderName: 'Former teammate',
+        mine: false,
+        imageUrl: null,
+        reactions: {},
+      }),
+    ]);
+    expect(prisma.conversationRead.upsert).toHaveBeenCalled();
+    expect(prisma.message.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    }));
+    expect(mediaAccess.createPath).toHaveBeenCalledWith('chat-image', 'img-1', 'venue-1', '/v1/chat/images/img-1');
+  });
   it('updates contextual conversations when membership or naming drifts', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-07-15T12:00:00Z'));
@@ -145,38 +194,8 @@ describe('ChatController', () => {
       where: { id: 'role-server' },
       data: { memberIds: ['staff-1', 'staff-2'], name: '#Role - Server', isSystem: true },
     });
-    expect(prisma.conversation.update).toHaveBeenCalledWith({
-      where: { id: 'shift-day' },
-      data: { memberIds: ['staff-1'], name: '#Crew - Wednesday (Jul 15)', isSystem: true },
-    });
     expect(prisma.conversation.create).not.toHaveBeenCalled();
   });
-
-  it('uses the venue calendar week when UTC is already on the next day', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-07-12T01:00:00Z'));
-    const { controller, prisma } = makeController();
-    prisma.venue.findUnique.mockResolvedValue({ timezone: 'America/Chicago' });
-    prisma.profile.findMany.mockResolvedValue([
-      { id: 'manager-1', jobTitle: 'Manager', role: 'manager', allAccess: false },
-      { id: 'staff-1', jobTitle: 'Server', role: 'staff', allAccess: false },
-    ]);
-    prisma.scheduleShift.findMany.mockResolvedValue([{ profileId: 'staff-1', dayIndex: 6 }]);
-
-    await controller.ensureContextualConversations('venue-1');
-
-    expect(prisma.scheduleShift.findMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { venueId: 'venue-1', weekStart: '2026-07-05' },
-    }));
-    expect(prisma.conversation.create).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({
-        type: 'shift',
-        shiftDate: '2026-07-11',
-        name: '#Crew - Saturday (Jul 11)',
-      }),
-    }));
-  });
-
   it('allows only one replica to run a contextual sync during the shared lease', async () => {
     const first = makeController();
     const second = makeController();
@@ -457,74 +476,6 @@ describe('ChatController', () => {
     );
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
-
-  it('returns dm messages, read receipts, and signed image paths', async () => {
-    const { controller, prisma, mediaAccess } = makeController();
-    prisma.conversation.findFirst.mockResolvedValue({
-      id: 'conv-1',
-      venueId: 'venue-1',
-      type: 'dm',
-      name: null,
-      memberIds: ['staff-1', 'staff-2'],
-    });
-    prisma.profile.findMany.mockResolvedValue([
-      { id: 'staff-1', fullName: 'Alex Agent' },
-      { id: 'staff-2', fullName: 'Jamie Jones' },
-    ]);
-    prisma.conversationRead.findMany.mockResolvedValue([
-      { profileId: 'staff-1', readAt: new Date('2026-07-15T10:00:00Z') },
-      { profileId: 'staff-2', readAt: new Date('2026-07-15T10:05:00Z') },
-    ]);
-    prisma.message.findMany.mockResolvedValue([
-      {
-        id: 'msg-2',
-        text: 'Newest',
-        senderId: null,
-        createdAt: new Date('2026-07-15T10:02:00Z'),
-        shiftId: null,
-        swapId: null,
-        imageUrl: null,
-        reactions: null,
-      },
-      {
-        id: 'msg-1',
-        text: 'Photo',
-        senderId: 'staff-2',
-        createdAt: new Date('2026-07-15T10:01:00Z'),
-        shiftId: 'shift-1',
-        swapId: 'swap-1',
-        imageUrl: '/v1/chat/images/img-1',
-        reactions: { fire: ['staff-2'] },
-      },
-    ]);
-
-    const result = await controller.getMessages(staffScope, 'conv-1');
-
-    expect(result.title).toBe('Jamie Jones');
-    expect(result.readReceipts).toEqual([{ name: 'Jamie Jones', readAt: new Date('2026-07-15T10:05:00Z').getTime() }]);
-    expect(result.messages).toEqual([
-      expect.objectContaining({
-        id: 'msg-1',
-        senderName: 'Jamie Jones',
-        mine: false,
-        imageUrl: 'signed:/v1/chat/images/img-1',
-        reactions: { fire: ['staff-2'] },
-      }),
-      expect.objectContaining({
-        id: 'msg-2',
-        senderName: 'Former teammate',
-        mine: false,
-        imageUrl: null,
-        reactions: {},
-      }),
-    ]);
-    expect(prisma.conversationRead.upsert).toHaveBeenCalled();
-    expect(prisma.message.findMany).toHaveBeenCalledWith(expect.objectContaining({
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-    }));
-    expect(mediaAccess.createPath).toHaveBeenCalledWith('chat-image', 'img-1', 'venue-1', '/v1/chat/images/img-1');
-  });
-
   it('rejects non-participants from reacting to messages', async () => {
     const { controller, prisma } = makeController();
     prisma.message.findFirst.mockResolvedValue({
@@ -680,40 +631,6 @@ describe('ChatController', () => {
       imageUrl: '/bad/url',
     })).rejects.toThrow('Invalid image URL format');
   });
-
-  it('rejects shift and swap references that do not belong to the venue', async () => {
-    const { controller, prisma } = makeController();
-    prisma.conversation.findFirst.mockResolvedValue({
-      id: 'conv-1',
-      venueId: 'venue-1',
-      type: 'group',
-      name: 'Closing Crew',
-      memberIds: ['staff-1'],
-    });
-    // Mock returns null: no such shift/swap inside this venue.
-    await expect(controller.sendMessage(staffScope, 'conv-1', {
-      text: 'Can you cover?',
-      shiftId: 'other-venue-shift',
-    })).rejects.toThrow('Shift not found in this venue');
-    await expect(controller.sendMessage(staffScope, 'conv-1', {
-      text: 'Take my swap?',
-      swapId: 'other-venue-swap',
-    })).rejects.toThrow('Shift swap not found in this venue');
-    expect(prisma.message.create).not.toHaveBeenCalled();
-
-    // Same-venue references pass through to the create.
-    prisma.scheduleShift.findFirst.mockResolvedValue({ id: 'shift-1' });
-    prisma.message.create.mockResolvedValue({ id: 'msg-1' });
-    await expect(controller.sendMessage(staffScope, 'conv-1', {
-      text: 'Can you cover?',
-      shiftId: 'shift-1',
-    })).resolves.toEqual({ _id: 'msg-1', id: 'msg-1' });
-    expect(prisma.scheduleShift.findFirst).toHaveBeenCalledWith({
-      where: { id: 'shift-1', venueId: 'venue-1' },
-      select: { id: true },
-    });
-  });
-
   it('rejects empty uploads and returns a signed chat image path for valid uploads', async () => {
     const { controller, prisma, mediaAccess, s3ImageService } = makeController();
 

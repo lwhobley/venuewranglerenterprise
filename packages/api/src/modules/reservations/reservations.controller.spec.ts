@@ -283,12 +283,6 @@ describe('ReservationsController', () => {
       const { controller } = makeController();
       await expect(controller.getCoverPacing(staffScope, '2026-07-20')).rejects.toThrow(ForbiddenException);
     });
-
-    it('rejects staff from guestAutofill', async () => {
-      const { controller } = makeController();
-      await expect(controller.guestAutofill(staffScope)).rejects.toThrow(ForbiddenException);
-    });
-
     it('rejects staff from listHolds', async () => {
       const { controller } = makeController();
       await expect(controller.listHolds(staffScope)).rejects.toThrow(ForbiddenException);
@@ -535,40 +529,6 @@ describe('ReservationsController', () => {
         }),
       );
       expect(result).toEqual([{ id: 'hold-1', startsAt: startsAt.getTime(), endsAt: endsAt.getTime(), reason: 'private event' }]);
-    });
-  });
-
-  describe('guestAutofill', () => {
-    it('returns null when neither email nor phone is provided', async () => {
-      const { controller, prisma } = makeController();
-      const result = await controller.guestAutofill(managerScope);
-      expect(result).toEqual({ guest: null });
-      expect(prisma.guest.findFirst).not.toHaveBeenCalled();
-    });
-
-    it('looks up a guest scoped to the venue by normalized email/phone', async () => {
-      const { controller, prisma } = makeController();
-      prisma.guest.findFirst.mockResolvedValue({
-        id: 'guest-1',
-        fullName: 'Alex Guest',
-        email: 'alex@example.com',
-        phone: '+15551234567',
-        favoriteTable: null,
-        preferredServer: null,
-        dietaryNotes: null,
-        tags: [],
-        lifecycleStage: 'regular',
-      });
-      prisma.reservation.findFirst.mockResolvedValue(null);
-
-      const result = await controller.guestAutofill(managerScope, 'Alex@Example.com');
-
-      expect(prisma.guest.findFirst).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: expect.objectContaining({ venueId: 'venue-1', OR: [{ email: 'alex@example.com' }] }),
-        }),
-      );
-      expect(result.guest).toEqual(expect.objectContaining({ id: 'guest-1', email: 'alex@example.com' }));
     });
   });
 

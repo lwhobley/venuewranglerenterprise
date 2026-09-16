@@ -10,7 +10,7 @@ import type { Id } from '../../lib/ids';
 import { accents, colors, radius, spacing } from '../../lib/theme';
 import { useVenueAuth } from '../../lib/useVenueAuth';
 import { asArray, formatDuration, formatMoney, formatPct } from '../../lib/format';
-import { ScheduleSkeleton } from '../../components/schedule/ScheduleSkeleton';
+import { CardListSkeleton } from '../../components/CardListSkeleton';
 import { PremiumFeatureGate } from '../../components/PremiumFeatureGate';
 import { ManagerGate } from '../../components/ManagerGate';
 import { ScreenState } from '../../components/ScreenState';
@@ -48,7 +48,7 @@ function SummaryTab({ venueId, days, startTs, endTs }: SalesTabProps) {
   const dashboardQuery = useQueryState<any>(api.pos.getSalesSummaryDashboard, { venueId, windowDays: days, startTs, endTs });
   const dashboard = dashboardQuery.data;
 
-  if (dashboardQuery.isLoading) return <ScheduleSkeleton rows={5} />;
+  if (dashboardQuery.isLoading) return <CardListSkeleton rows={5} />;
   if (dashboardQuery.error) return <ScreenState isLoading={false} error={dashboardQuery.error} onRetry={() => void dashboardQuery.refetch()}>{null}</ScreenState>;
 
   if (!dashboard?.summary || dashboard.summary.checkCount === 0) {
@@ -176,7 +176,7 @@ function ServersTab({ venueId, days, startTs, endTs }: SalesTabProps) {
   const serverQuery = useQueryState<any>(api.pos.getSalesByServer, { venueId, windowDays: days, startTs, endTs });
   const result = serverQuery.data;
 
-  if (serverQuery.isLoading) return <ScheduleSkeleton rows={4} />;
+  if (serverQuery.isLoading) return <CardListSkeleton rows={4} />;
   if (serverQuery.error) return <ScreenState isLoading={false} error={serverQuery.error} onRetry={() => void serverQuery.refetch()}>{null}</ScreenState>;
   const data = asArray<any>(result);
   if (data.length === 0) {
@@ -233,7 +233,7 @@ function ItemsTab({ venueId, days, startTs, endTs }: SalesTabProps) {
   const itemsQuery = useQueryState<any>(api.pos.getTopMenuItems, { venueId, windowDays: days, limit: 30, startTs, endTs });
   const result = itemsQuery.data;
 
-  if (itemsQuery.isLoading) return <ScheduleSkeleton rows={4} />;
+  if (itemsQuery.isLoading) return <CardListSkeleton rows={4} />;
   if (itemsQuery.error) return <ScreenState isLoading={false} error={itemsQuery.error} onRetry={() => void itemsQuery.refetch()}>{null}</ScreenState>;
   const data = asArray<any>(result);
   if (data.length === 0) {
@@ -286,7 +286,7 @@ function LaborTab({ venueId, days, startTs, endTs }: SalesTabProps) {
   const laborQuery = useQueryState<any>(api.pos.getLaborSummary, { venueId, windowDays: days, startTs, endTs });
   const data = laborQuery.data;
 
-  if (laborQuery.isLoading) return <ScheduleSkeleton rows={4} />;
+  if (laborQuery.isLoading) return <CardListSkeleton rows={4} />;
   if (laborQuery.error) return <ScreenState isLoading={false} error={laborQuery.error} onRetry={() => void laborQuery.refetch()}>{null}</ScreenState>;
   const byEmployee = asArray<any>(data?.byEmployee);
   if (byEmployee.length === 0) {

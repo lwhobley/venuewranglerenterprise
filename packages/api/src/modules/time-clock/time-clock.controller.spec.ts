@@ -87,16 +87,6 @@ describe('TimeClockController', () => {
       prisma.timeEntry.findFirst.mockResolvedValue({ id: 'open-entry' });
       await expect(controller.clockIn(scope, validPunch)).rejects.toThrow('Already clocked in');
     });
-
-    it('blocks staff from clocking in too early for their shift', async () => {
-      const { controller, prisma } = makeController();
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date('2026-07-15T12:00:00.000Z')); // Wed noon UTC = 08:00 America/New_York
-      prisma.scheduleShift.findFirst.mockResolvedValue({ startMinutes: 600, dayIndex: 3, status: 'scheduled' });
-
-      await expect(controller.clockIn(scope, validPunch)).rejects.toThrow('Too early to clock in');
-    });
-
     it('does not apply the early-shift check to managers', async () => {
       const { controller, prisma } = makeController();
       prisma.profile.findUniqueOrThrow.mockResolvedValue({ ...profile, id: 'manager-1', role: 'manager' });

@@ -23,12 +23,10 @@ import { StaffImportParserService } from './modules/app/staff-import-parser.serv
 import { StaffController } from './modules/staff/staff.controller';
 import { StaffRequestsController } from './modules/staff-requests/staff-requests.controller';
 import { TimeClockController } from './modules/time-clock/time-clock.controller';
-import { SchedulingController } from './modules/scheduling/scheduling.controller';
 import { PosModule } from './modules/pos/pos.module';
 import { BarInventoryModule } from './modules/bar-inventory/bar-inventory.module';
 import { OperationsModule } from './modules/operations/operations.module';
 import { InsightsModule } from './modules/insights/insights.module';
-import { GuestsModule } from './modules/guests/guests.module';
 import { ReservationsModule } from './modules/reservations/reservations.module';
 import { PayrollModule } from './modules/payroll/payroll.module';
 import { FloorModule } from './modules/floor/floor.module';
@@ -36,8 +34,6 @@ import { ChatModule } from './modules/chat/chat.module';
 import { CrmModule } from './modules/crm/crm.module';
 import { IntegrationsModule } from './modules/integrations/integrations.module';
 import { WorkforceModule } from './modules/workforce/workforce.module';
-import { SchedulingAssignmentService } from './modules/scheduling/scheduling-assignment.service';
-import { AiSchedulerService } from './modules/scheduling/ai-scheduler.service';
 import { DocumentsModule } from './modules/documents/documents.module';
 import { WranglerOperatorController } from './modules/operations/wrangler/wrangler-operator.controller';
 import { WranglerOperatorService } from './modules/operations/wrangler/wrangler-operator.service';
@@ -71,7 +67,6 @@ import { VmsModule } from './modules/vms/vms.module';
     BarInventoryModule,
     OperationsModule,
     InsightsModule,
-    GuestsModule,
     ReservationsModule,
     PayrollModule,
     FloorModule,
@@ -92,7 +87,6 @@ import { VmsModule } from './modules/vms/vms.module';
     AppController,
     AppBillingController,
     AppStaffController,
-    SchedulingController,
     TimeClockController,
     StaffRequestsController,
     StaffController,
@@ -112,8 +106,6 @@ import { VmsModule } from './modules/vms/vms.module';
     // AppStaff controllers all depend on it).
     ProfileService,
     StaffImportParserService,
-    SchedulingAssignmentService,
-    AiSchedulerService,
     { provide: WranglerOperatorService, useClass: SafeWranglerOperatorService },
   ],
 })

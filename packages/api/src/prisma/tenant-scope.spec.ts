@@ -15,7 +15,7 @@ const VENUE = 'venue-1';
 
 describe('isVenueScoped', () => {
   it('recognises models with a venueId column', () => {
-    expect(isVenueScoped('ScheduleShift')).toBe(true);
+    expect(isVenueScoped('Reservation')).toBe(true);
     expect(isVenueScoped('BarInventoryItem')).toBe(true);
     expect(isVenueScoped('Profile')).toBe(true);
     expect(isVenueScoped('VenueDocument')).toBe(true);

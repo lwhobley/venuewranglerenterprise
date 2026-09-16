@@ -22,7 +22,6 @@ import { RequireSubscription } from '../../billing/require-subscription.decorato
 import { Public } from '../../auth/public.decorator';
 import { SkipVenueScope } from '../../venue/skip-venue-scope.decorator';
 import { ALLOWED_IMAGE_MIME, assertAllowedImageBytes } from '../../common/image-bytes';
-import { addDays, todayInZone, weekStartFor } from '../../common/pay-period';
 import { tryAcquireSharedLease, releaseSharedLease } from '../../common/shared-lease';
 import { PrismaService } from '../../prisma/prisma.service';
 import { VenueScope } from '../../venue/venue-scope.decorator';
@@ -62,12 +61,8 @@ class SendMessageDto {
   text!: string;
 
   @IsString()
-  @IsOptional()
-  shiftId?: string;
 
   @IsString()
-  @IsOptional()
-  swapId?: string;
 
   @IsString()
   @IsOptional()
@@ -134,21 +129,13 @@ export class ChatController {
     // --- Read phase (no transaction lock) ---
     // The shared lease already serializes concurrent syncs for this venue,
     // so the snapshot is stable without a transactional read lock.
-    const venue = this.prisma.venue?.findUnique
-      ? await this.prisma.venue.findUnique({ where: { id: venueId }, select: { timezone: true } })
-      : null;
-    const weekStart = venue ? weekStartFor(todayInZone(venue.timezone)) : undefined;
-    const [profiles, allShifts, existingConvs] = await Promise.all([
+    const [profiles, existingConvs] = await Promise.all([
       this.prisma.profile.findMany({
         where: { venueId, OR: ACTIVE_MEMBERSHIP },
         select: { id: true, jobTitle: true, role: true, allAccess: true },
       }),
-      this.prisma.scheduleShift.findMany({
-        where: { venueId, ...(weekStart ? { weekStart } : {}) },
-        select: { profileId: true, dayIndex: true },
-      }),
       this.prisma.conversation.findMany({
-        where: { venueId, type: { in: ['role', 'shift'] } },
+        where: { venueId, type: 'role' },
       }),
     ]);
 
@@ -156,7 +143,6 @@ export class ChatController {
     const managerIds = profiles.filter((p) => canManageVenue(p.role, p.allAccess)).map((p) => p.id);
 
     const existingRolesMap = new Map(existingConvs.filter((c) => c.type === 'role' && c.roleName).map((c) => [c.roleName!, c]));
-    const existingShiftsMap = new Map(existingConvs.filter((c) => c.type === 'shift' && c.shiftDate).map((c) => [c.shiftDate!, c]));
 
     type WriteOp = { action: 'create'; data: any } | { action: 'update'; where: any; data: any };
     const writes: WriteOp[] = [];
@@ -181,38 +167,6 @@ export class ChatController {
       }
     }
 
-    // 2. Shift crew channels for the current week
-    const dayLabels = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-    const shiftsByDay = Array.from({ length: 7 }, () => [] as string[]);
-    for (const s of allShifts) {
-      if (s.profileId) {
-        shiftsByDay[s.dayIndex].push(s.profileId);
-      }
-    }
-
-    for (let dayIndex = 0; dayIndex < 7; dayIndex++) {
-      if (!weekStart) continue;
-      const dateStr = addDays(weekStart, dayIndex);
-      const dayLabel = dayLabels[dayIndex];
-
-      const crewMemberIds = Array.from(new Set([
-        ...managerIds,
-        ...shiftsByDay[dayIndex],
-      ])).sort();
-
-      if (crewMemberIds.length > 0) {
-        const existing = existingShiftsMap.get(dateStr);
-        const name = `#Crew - ${dayLabel} (${formatMonthDay(dateStr)})`;
-        if (!existing) {
-          writes.push({ action: 'create', data: { venueId, type: 'shift', shiftDate: dateStr, name, memberIds: crewMemberIds, isSystem: true } });
-        } else {
-          const sortedExistingMembers = [...existing.memberIds].sort();
-          if (!sameMembers(crewMemberIds, sortedExistingMembers) || existing.name !== name || !existing.isSystem) {
-            writes.push({ action: 'update', where: { id: existing.id }, data: { memberIds: crewMemberIds, name, isSystem: true } });
-          }
-        }
-      }
-    }
 
     // --- Write phase (transaction lock — writes only) ---
     if (writes.length > 0) {
@@ -530,8 +484,6 @@ export class ChatController {
           senderName: (m.senderId && nameById.get(m.senderId)) || 'Former teammate',
           createdAt: m.createdAt.getTime(),
           mine: m.senderId === scope.profileId,
-          shiftId: m.shiftId,
-          swapId: m.swapId,
           imageUrl: imageId
             ? await this.mediaAccess.createPath('chat-image', imageId, scope.venueId, m.imageUrl!)
             : m.imageUrl,
@@ -553,24 +505,6 @@ export class ChatController {
 
     if (!canAccessConversation(conv.memberIds, conv.type, scope.profileId)) {
       throw new ForbiddenException('Not a participant');
-    }
-
-    // Shift/swap references deep-link into venue-owned scheduling records, so
-    // they must belong to this venue — otherwise a member could attach foreign
-    // venue ids to messages.
-    if (body.shiftId) {
-      const shift = await this.prisma.scheduleShift.findFirst({
-        where: { id: body.shiftId, venueId: scope.venueId },
-        select: { id: true },
-      });
-      if (!shift) throw new BadRequestException('Shift not found in this venue');
-    }
-    if (body.swapId) {
-      const swap = await this.prisma.shiftSwap.findFirst({
-        where: { id: body.swapId, venueId: scope.venueId },
-        select: { id: true },
-      });
-      if (!swap) throw new BadRequestException('Shift swap not found in this venue');
     }
 
     const text = body.text.trim();
@@ -603,8 +537,6 @@ export class ChatController {
           venueId: conv.venueId,
           senderId: scope.profileId,
           text,
-          shiftId: body.shiftId || null,
-          swapId: body.swapId || null,
           imageUrl,
           createdAt: now,
         },
@@ -771,10 +703,3 @@ function sameMembers(a: string[], b: string[]) {
   return a.length === b.length && a.every((id, index) => id === b[index]);
 }
 
-function formatMonthDay(isoDate: string) {
-  return new Date(`${isoDate}T12:00:00Z`).toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    timeZone: 'UTC',
-  });
-}

@@ -17,7 +17,7 @@ import { radius, spacing, useDesignTheme } from '../../lib/theme';
 import { asArray, formatDuration, formatMoney } from '../../lib/format';
 import { canManageVenue } from '../../lib/permissions';
 import { useResponsive } from '../../lib/responsive';
-import { EVENT_BEO_ROUTE, READINESS_ROW_ROUTES, SUITE_BEO_REPORT_ROUTE, type ReadinessRowLabel } from '../../lib/crm-routing';
+import { EVENT_BEO_ROUTE, READINESS_ROW_ROUTES, SUITE_BEO_REPORT_ROUTE, type ReadinessRowLabel } from '../../lib/readiness-routes';
 
 
 type NotificationItem = {
@@ -30,13 +30,11 @@ type NotificationItem = {
 const todayLabel = new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 
 const MORE_OPS = [
-  { href: '/(tabs)/schedule', label: 'Rosters', icon: 'calendar-week' as const },
   { href: '/(tabs)/staff', label: 'Staff & Union', icon: 'account-group' as const },
   { href: EVENT_BEO_ROUTE, label: 'Event BEO report', icon: 'file-document-edit-outline' as const },
   { href: '/(tabs)/documents', label: 'Documents & Files', icon: 'file-document-multiple-outline' as const },
   { href: '/(tabs)/reports', label: 'Reports & Recon', icon: 'chart-box-outline' as const },
   { href: '/(tabs)/sales', label: 'Concessions POS', icon: 'cash-register' as const },
-  { href: '/(tabs)/guests', label: 'CRM', icon: 'account-heart-outline' as const },
   { href: '/(tabs)/integrations', label: 'POS & Hardware', icon: 'connection' as const },
 ];
 
@@ -72,7 +70,6 @@ export default function HomeScreen() {
       ['Concessions & Stands', values.floor ?? values['floor'] ?? 0],
       ['Luxury Suite BEOs', values.approvals ?? values['approvals'] ?? 0],
       ['Commissary & Kitchens', values.setup ?? values['setup'] ?? 0],
-      ['Staffing & Union Roster', values.staffing ?? values['staffing'] ?? 0],
     ] as const satisfies ReadonlyArray<readonly [ReadinessRowLabel, number]>;
   }, [readiness?.categories]);
 
@@ -217,7 +214,7 @@ export default function HomeScreen() {
                 <Pressable key={label} onPress={() => router.push(READINESS_ROW_ROUTES[label])} style={({ pressed }) => ({ opacity: pressed ? 0.65 : 1, flexDirection: 'row', alignItems: 'center', paddingVertical: spacing.md, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: palette.divider })}>
                   <CommandText palette={palette} variant="body" style={{ flex: 1 }}>{label}</CommandText>
                   <View style={{ width: 88, flexDirection: 'row', alignItems: 'center', gap: 6 }}><View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: color }} /><CommandText palette={palette} variant="caption" style={{ color, fontWeight: '700' }}>{state}</CommandText></View>
-                  <CommandText palette={palette} variant="caption" style={{ width: 80, textAlign: 'right' }}>{label === 'Staffing & Union Roster' ? 'Manager' : 'Team'}</CommandText>
+                  <CommandText palette={palette} variant="caption" style={{ width: 80, textAlign: 'right' }}>Team</CommandText>
                 </Pressable>
               );
             })}

@@ -365,7 +365,6 @@ export class OperationsController {
 
     const [
       reservations,
-      shifts,
       openTimeEntries,
       timeEntriesToday,
       pendingRequests,
@@ -383,11 +382,6 @@ export class OperationsController {
           status: { notIn: ['cancelled', 'no_show'] },
         },
         orderBy: { reservationTime: 'asc' },
-        take: 100,
-      }),
-      this.prisma.scheduleShift.findMany({
-        where: { venueId, weekStart, dayIndex: zonedDayOfWeek(timezone, now.getTime()) },
-        orderBy: [{ startMinutes: 'asc' }, { jobTitle: 'asc' }],
         take: 100,
       }),
       this.prisma.timeEntry.findMany({
@@ -445,19 +439,15 @@ export class OperationsController {
     const covers = reservations.reduce((sum, row) => sum + row.partySize, 0);
     const posCovers = posChecks.reduce((sum, row) => sum + (row.guestCount ?? 0), 0);
     const salesCents = posChecks.reduce((sum, row) => sum + row.totalCents, 0);
-    const scheduledCount = shifts.filter((shift) => shift.status === 'scheduled').length;
-    const openShiftCount = shifts.filter((shift) => shift.status === 'open').length;
     const prepOpenCount = prepItems.filter((item) => item.kind === 'prep').length;
     const eightySixCount = prepItems.filter((item) => item.kind === 'eighty_six').length;
 
     const alerts = buildDailyBriefAlerts({
-      openShiftCount,
       pendingRequestCount: pendingRequests.length,
       lowStockCount: lowStockItems.length,
       eightySixCount,
     });
     const priorityActions = buildDailyBriefPriorityActions({
-      openShiftCount,
       pendingRequestCount: pendingRequests.length,
       lowStockCount: lowStockItems.length,
       eightySixCount,
@@ -496,7 +486,6 @@ export class OperationsController {
       laborHours,
       openChecks: openChecksCount,
       activeClocks: openTimeEntries.length,
-      openShiftCount,
       pendingRequestCount: pendingRequests.length,
       lowStockCount: lowStockItems.length,
       eightySixCount,
@@ -507,8 +496,6 @@ export class OperationsController {
       covers,
       posCovers,
       salesCents,
-      scheduledCount,
-      openShiftCount,
       clockedInCount: openTimeEntries.length,
       pendingRequestCount: pendingRequests.length,
       lowStockCount: lowStockItems.length,
@@ -564,14 +551,13 @@ export class OperationsController {
     const todayStart = new Date(bounds.start);
     const todayEnd = new Date(bounds.end);
     const dayIndex = zonedDayOfWeek(timezone, now.getTime());
-    const [events, reservations, shifts, checklistItems, checklistCompletions, floorPlan, beos] = await Promise.all([
+    const [events, reservations, checklistItems, checklistCompletions, floorPlan, beos] = await Promise.all([
       this.prisma.venueEvent.findMany({ where: { venueId, startsAt: { gte: todayStart, lt: todayEnd } }, orderBy: { startsAt: 'asc' }, take: 50 }),
       this.prisma.reservation.findMany({
         where: { venueId, reservationTime: { gte: todayStart, lt: todayEnd }, status: { notIn: ['cancelled', 'no_show'] } },
         include: { tableAssignments: { where: { releasedAt: null }, select: { id: true } } },
         orderBy: { reservationTime: 'asc' }, take: 200,
       }),
-      this.prisma.scheduleShift.findMany({ where: { venueId, weekStart, dayIndex }, orderBy: [{ startMinutes: 'asc' }, { jobTitle: 'asc' }], take: 200 }),
       this.prisma.checklistTemplateItem.findMany({ where: { venueId, kind: 'opening', active: true }, orderBy: { sortOrder: 'asc' }, take: 100 }),
       this.prisma.checklistCompletion.findMany({ where: { venueId, date: today }, select: { templateItemId: true, status: true } }),
       this.prisma.floorPlan.findFirst({ where: { venueId, isActive: true }, include: { tables: { select: { id: true, label: true, section: true } } } }),
@@ -616,19 +602,18 @@ export class OperationsController {
       || workspace.vendors.some((vendor) => vendor.status !== 'arrived')
       || workspace.incidents.some((incident) => incident.status === 'open' && incident.blocksReadiness) : false;
 
-    const openShifts = shifts.filter((shift) => shift.status === 'open');
     const incompleteChecklist = checklistItems.filter((item) => checklistCompletions.find((completion) => completion.templateItemId === item.id)?.status !== 'done');
     const unassignedReservations = reservations.filter((reservation) => reservation.tableAssignments.length === 0);
     const unconfirmedBeos = beos.filter((beo) => beo.status !== 'confirmed');
-    const staffingScore = shifts.length === 0 ? 1 : (shifts.length - openShifts.length) / shifts.length;
     const setupOpen = prepItems.length + incompleteChecklist.length;
     const setupTotal = checklistItems.length + setupOpen;
     const setupScore = setupOpen === 0 ? 1 : Math.max(0, 1 - setupOpen / Math.max(1, setupTotal));
     const floorScore = reservations.length === 0 ? 1 : (reservations.length - unassignedReservations.length) / reservations.length;
     const approvalScore = beos.length === 0 ? 1 : (beos.length - unconfirmedBeos.length) / beos.length;
-    const score = Math.round(staffingScore * 25 + setupScore * 20 + floorScore * 15 + approvalScore * 10 + executionScore * 30);
+    // Staffing carried 25 points before the schedule was removed; the rest
+    // are scaled up proportionally so the score still reads out of 100.
+    const score = Math.round(setupScore * 27 + floorScore * 20 + approvalScore * 13 + executionScore * 40);
     const blockers = [
-      ...openShifts.slice(0, 8).map((shift) => ({ code: 'OPEN_SHIFT', severity: 'blocker', title: `${shift.jobTitle} shift is uncovered`, detail: `${shift.station || 'Service'} needs coverage.`, targetId: shift.id })),
       ...prepItems.slice(0, 8).map((item) => ({ code: 'OPEN_PREP', severity: 'blocker', title: item.title, detail: `${item.station || 'Operations'} prep is still open.`, targetId: item.id })),
       ...incompleteChecklist.slice(0, 8).map((item) => ({ code: 'OPEN_CHECKLIST', severity: 'blocker', title: item.title, detail: 'Opening checklist item is incomplete.', targetId: item.id })),
       ...unassignedReservations.slice(0, 8).map((reservation) => ({ code: 'UNASSIGNED_TABLE', severity: 'warning', title: `${reservation.guestName} needs a table`, detail: `${reservation.partySize} covers are not assigned on the floor plan.`, targetId: reservation.id })),
@@ -651,10 +636,9 @@ export class OperationsController {
 
     return {
       date: today,
-      readiness: { score, status, categories: { staffing: Math.round(staffingScore * 100), setup: Math.round(setupScore * 100), floor: Math.round(floorScore * 100), approvals: Math.round(approvalScore * 100), execution: Math.round(executionScore * 100) } },
+      readiness: { score, status, categories: { setup: Math.round(setupScore * 100), floor: Math.round(floorScore * 100), approvals: Math.round(approvalScore * 100), execution: Math.round(executionScore * 100) } },
       blockers,
       events: eventRows,
-      staffing: { scheduled: shifts.length, open: openShifts.length, covered: shifts.length - openShifts.length },
       setup: { prepOpen: prepItems.length, checklistOpen: incompleteChecklist.length },
       floor: { tableCount: floorPlan?.tables.length ?? 0, unassignedReservations: unassignedReservations.length },
       approvals: { open: unconfirmedBeos.length, total: beos.length },
@@ -748,22 +732,20 @@ export class OperationsController {
     if (!workspace) throw new NotFoundException('Execution workspace not found');
     const tasks = workspace.tasks;
     const eventWeekStart = weekStartFor(zonedIsoDate(profile.venue?.timezone, start.getTime()));
-    const shifts = await this.prisma.scheduleShift.findMany({ where: { venueId, weekStart: eventWeekStart, dayIndex: zonedDayOfWeek(profile.venue?.timezone, start.getTime()) }, orderBy: [{ startMinutes: 'asc' }, { jobTitle: 'asc' }], take: 100 });
     const openTasks = tasks.filter((task) => task.status !== 'done');
-    const openShifts = shifts.filter((shift) => shift.status === 'open');
     const hasFloorAssignment = reservation ? reservation.tableAssignments.length > 0 : true;
     const taskScore = tasks.length === 0 ? 1 : (tasks.length - openTasks.length) / tasks.length;
-    const staffingScore = shifts.length === 0 ? 1 : (shifts.length - openShifts.length) / shifts.length;
     const floorScore = hasFloorAssignment ? 1 : 0;
     const approvalScore = beo ? (beo.status === 'confirmed' ? 1 : 0) : 1;
     const dueTimeline = workspace.timeline.filter((item) => item.startsAt <= new Date());
     const timelineScore = dueTimeline.length === 0 ? 1 : dueTimeline.filter((item) => item.status === 'done').length / dueTimeline.length;
     const vendorScore = workspace.vendors.length === 0 ? 1 : workspace.vendors.filter((vendor) => vendor.status === 'arrived').length / workspace.vendors.length;
     const incidentScore = workspace.incidents.filter((incident) => incident.status === 'open' && incident.blocksReadiness).length === 0 ? 1 : 0;
-    const score = Math.round(taskScore * 40 + staffingScore * 20 + floorScore * 10 + approvalScore * 10 + timelineScore * 5 + vendorScore * 10 + incidentScore * 5);
+    // Staffing carried 20 points before the schedule was removed; the rest
+    // are scaled up proportionally so the score still reads out of 100.
+    const score = Math.round(taskScore * 50 + floorScore * 13 + approvalScore * 12 + timelineScore * 6 + vendorScore * 13 + incidentScore * 6);
     const blockers = [
       ...openTasks.map((task) => ({ code: 'OPEN_EXECUTION_TASK', title: task.title, detail: `${task.department || 'Operations'} task is incomplete.`, targetId: task.id })),
-      ...openShifts.map((shift) => ({ code: 'OPEN_SHIFT', title: `${shift.jobTitle} shift is uncovered`, detail: `${shift.station || 'Service'} needs coverage.`, targetId: shift.id })),
       ...(!hasFloorAssignment ? [{ code: 'UNASSIGNED_TABLE', title: 'Floor assignment missing', detail: 'Assign this booking to the floor plan before service.', targetId: reservation?.id }] : []),
       ...(beo && beo.status !== 'confirmed' ? [{ code: 'BEO_NOT_CONFIRMED', title: 'Event brief is not confirmed', detail: 'Review and confirm the CRM event brief.', targetId: beo.id }] : []),
       ...workspace.timeline.filter((item) => item.status !== 'done' && item.startsAt <= new Date()).map((item) => ({ code: 'TIMELINE_LATE', title: item.title, detail: 'Run-of-show milestone is behind.', targetId: item.id })),
@@ -783,13 +765,12 @@ export class OperationsController {
         reservationId: reservation?.id ?? venueEvent?.reservationId ?? null,
         beoId: beo?.id ?? null,
       },
-      readiness: { score, status: blockers.length ? 'blocked' : 'on-track', categories: { tasks: Math.round(taskScore * 100), staffing: Math.round(staffingScore * 100), floor: Math.round(floorScore * 100), approvals: Math.round(approvalScore * 100), timeline: Math.round(timelineScore * 100), vendors: Math.round(vendorScore * 100), incidents: Math.round(incidentScore * 100) } },
+      readiness: { score, status: blockers.length ? 'blocked' : 'on-track', categories: { tasks: Math.round(taskScore * 100), floor: Math.round(floorScore * 100), approvals: Math.round(approvalScore * 100), timeline: Math.round(timelineScore * 100), vendors: Math.round(vendorScore * 100), incidents: Math.round(incidentScore * 100) } },
       blockers,
       tasks: tasks.map((task) => ({ _id: task.id, title: task.title, station: task.department, status: task.status, completedAt: toMs(task.completedAt) })),
       timeline: workspace.timeline.map((item) => ({ _id: item.id, title: item.title, startsAt: item.startsAt.getTime(), status: item.status, completedAt: toMs(item.completedAt) })),
       vendors: workspace.vendors.map((vendor) => ({ _id: vendor.id, name: vendor.name, status: vendor.status, dueAt: toMs(vendor.dueAt), ownerId: vendor.ownerId })),
       incidents: workspace.incidents.map((incident) => ({ _id: incident.id, title: incident.title, severity: incident.severity, status: incident.status, blocksReadiness: incident.blocksReadiness })),
-      staffing: { scheduled: shifts.length, open: openShifts.length, covered: shifts.length - openShifts.length },
       floor: { assigned: hasFloorAssignment, tableIds: reservation?.tableAssignments.map((assignment) => assignment.tableId) ?? [] },
     };
   }

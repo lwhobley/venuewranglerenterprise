@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { Role, TableStatus, CrmLeadStatus } from '@prisma/client';
+import { Role, TableStatus } from '@prisma/client';
 import { canManageRole } from '../../../auth/roles';
 import { callAiJson, resolveAiApiKey, resolveAiModel } from '../../../common/ai-json-parse';
 import { weekStartFor } from '../../../common/pay-period';
@@ -14,17 +14,10 @@ const ALLOWED_TOOLS = [
   'CREATE_RESERVATION',
   'UPDATE_RESERVATION',
   'CANCEL_RESERVATION',
-  'LIST_SCHEDULE',
-  'CREATE_SHIFT',
-  'UPDATE_SHIFT',
-  'ASSIGN_SHIFT',
   'CLEAR_TABLE',
   'UPDATE_TABLE_STATUS',
   'LIST_WAITLIST',
   'ADD_WAITLIST',
-  'FIND_CRM_LEAD',
-  'CREATE_CRM_LEAD',
-  'UPDATE_CRM_LEAD',
   'SEARCH_CHAT',
   'POST_CHAT_ANNOUNCEMENT',
   'LIST_INVENTORY',
@@ -61,19 +54,12 @@ CREATE_RESERVATION: {guestName:string, partySize:number, reservationTime:string 
 UPDATE_RESERVATION: {reservationId?:string, guestName?:string, date?:"YYYY-MM-DD", reservationTime?:string ISO-8601, partySize?:number, notes?:string, status?:"requested"|"confirmed"|"checked_in"|"seated"|"completed"|"no_show"|"cancelled"}
 CANCEL_RESERVATION: {reservationId?:string, guestName?:string, date?:"YYYY-MM-DD"}
 
-LIST_SCHEDULE: {date?:"YYYY-MM-DD", staffName?:string}
-CREATE_SHIFT: {staffName?:string, date:"YYYY-MM-DD", startMinutes:number, endMinutes:number, jobTitle?:string, station?:string}
-UPDATE_SHIFT: {shiftId?:string, staffName?:string, date?:"YYYY-MM-DD", startMinutes?:number, endMinutes?:number, jobTitle?:string, station?:string}
-ASSIGN_SHIFT: {shiftId?:string, staffName:string, date?:"YYYY-MM-DD", jobTitle?:string}
 
 CLEAR_TABLE: {tableLabel:string, status?:"available"|"dirty"|"out_of_service"}
 UPDATE_TABLE_STATUS: {tableLabel:string, status:"available"|"seated"|"dirty"|"reserved"|"held"|"out_of_service"}
 LIST_WAITLIST: {}
 ADD_WAITLIST: {guestName:string, partySize:number, phone?:string, notes?:string}
 
-FIND_CRM_LEAD: {name?:string, status?:string}
-CREATE_CRM_LEAD: {fullName:string, email?:string, phone?:string, company?:string, notes?:string}
-UPDATE_CRM_LEAD: {leadId?:string, name?:string, status?:"new"|"contacted"|"qualified"|"proposal_sent"|"negotiating"|"won"|"lost"|"unqualified"|"on_hold", notes?:string}
 
 SEARCH_CHAT: {query?:string, channelName?:string}
 POST_CHAT_ANNOUNCEMENT: {channelName?:string, text:string}
@@ -190,13 +176,6 @@ export class WranglerOperatorService {
     if (lower.includes('integration') || lower.includes('pos status') || lower.includes('connections')) {
       return { tool: 'LIST_INTEGRATIONS', args: {}, summary: 'Check integration connections.' };
     }
-    if (lower.includes('crm') || lower.includes('lead')) {
-      if (lower.includes('add') || lower.includes('create')) {
-        const name = text.replace(/.*?(?:add|create)\s+(?:lead\s+)?/i, '').trim();
-        return { tool: 'CREATE_CRM_LEAD', args: name ? { fullName: name } : {}, summary: `Create CRM lead ${name}.` };
-      }
-      return { tool: 'FIND_CRM_LEAD', args: {}, summary: 'Search CRM leads.' };
-    }
     if (lower.includes('chat') || lower.includes('announcement') || lower.includes('broadcast')) {
       if (lower.includes('post') || lower.includes('send') || lower.includes('announce')) {
         const textMsg = text.replace(/.*?(?:announce|send|post)\s+/i, '').trim();
@@ -211,11 +190,6 @@ export class WranglerOperatorService {
       }
       return { tool: 'LIST_INVENTORY', args: {}, summary: 'List inventory and 86 items.' };
     }
-    if (lower.includes('add') && lower.includes('schedule')) {
-      const addShiftMatch = lower.match(/(?:add|schedule|create)\s+([a-z\s]+?)\s+(?:to|on)\s+(?:the\s+)?schedule/i);
-      const name = addShiftMatch ? addShiftMatch[1].trim() : '';
-      return { tool: 'CREATE_SHIFT', args: name ? { staffName: name } : {}, summary: `Add shift for ${name || 'staff'}.` };
-    }
     if (lower.includes('reservation') || lower.startsWith('find ')) {
       const findReservation = lower.match(/(?:find|look up|lookup|show)\s+(?:the\s+)?(?:reservation\s+(?:for\s+)?)?(.+)/i);
       return { tool: 'FIND_RESERVATION', args: { guestName: findReservation ? findReservation[1].replace(/\breservation\b/gi, '').trim() : '' }, summary: 'Find reservation.' };
@@ -223,26 +197,25 @@ export class WranglerOperatorService {
     if (lower.includes('clock') || lower.includes('punch')) {
       return { tool: 'LIST_CLOCKS', args: {}, summary: 'Look up clock records.' };
     }
-    if (lower.includes('working') || lower.includes('schedule')) return { tool: 'LIST_SCHEDULE', args: {}, summary: 'Show schedule.' };
     if (lower.includes('staff') || lower.includes('bartender') || lower.includes('server')) return { tool: 'FIND_STAFF', args: {}, summary: 'Search staff roster.' };
     throw new BadRequestException('AI operator requires GEMINI_API_KEY for write commands and complex requests');
   }
 
   private riskFor(tool: OperatorTool): OperatorRisk {
     if ([
-      'FIND_RESERVATION', 'LIST_SCHEDULE', 'FIND_STAFF', 'LIST_CLOCKS',
-      'LIST_WAITLIST', 'FIND_CRM_LEAD', 'SEARCH_CHAT', 'LIST_INVENTORY',
+      'FIND_RESERVATION', 'FIND_STAFF', 'LIST_CLOCKS',
+      'LIST_WAITLIST', 'SEARCH_CHAT', 'LIST_INVENTORY',
       'GET_SALES_PULSE', 'LIST_INTEGRATIONS',
     ].includes(tool)) return 'read';
     
     if ([
-      'ADD_STAFF', 'CREATE_SHIFT', 'CLEAR_TABLE', 'UPDATE_TABLE_STATUS',
-      'ADD_WAITLIST', 'CREATE_CRM_LEAD', 'POST_CHAT_ANNOUNCEMENT',
+      'ADD_STAFF', 'CLEAR_TABLE', 'UPDATE_TABLE_STATUS',
+      'ADD_WAITLIST', 'POST_CHAT_ANNOUNCEMENT',
       'UPDATE_ITEM_86', 'UPDATE_BAR_STOCK', 'CREATE_RESERVATION',
-      'UPDATE_RESERVATION', 'UPDATE_SHIFT', 'ASSIGN_SHIFT',
+      'UPDATE_RESERVATION',
     ].includes(tool)) return 'operational_write';
 
-    if (['REMOVE_STAFF', 'CORRECT_PUNCH', 'CANCEL_RESERVATION', 'UPDATE_CRM_LEAD'].includes(tool)) return 'sensitive_write';
+    if (['REMOVE_STAFF', 'CORRECT_PUNCH', 'CANCEL_RESERVATION'].includes(tool)) return 'sensitive_write';
     return 'operational_write';
   }
 
@@ -263,21 +236,6 @@ export class WranglerOperatorService {
         take: 50,
       });
       return entries.map((entry) => ({ id: entry.id, guestName: entry.guestName, partySize: entry.partySize, requestedAt: entry.requestedAt.getTime(), phone: entry.guestPhone ?? null, notes: entry.notes ?? null }));
-    }
-
-    if (tool === 'FIND_CRM_LEAD') {
-      const name = this.cleanText(args.name);
-      const status = this.cleanText(args.status);
-      const rows = await this.prisma.crmLead.findMany({
-        where: {
-          venueId, deletedAt: null,
-          ...(name ? { fullName: { contains: name, mode: 'insensitive' } } : {}),
-          ...(status ? { status: status as CrmLeadStatus } : {}),
-        },
-        orderBy: { updatedAt: 'desc' },
-        take: 50,
-      });
-      return rows.map((r) => ({ id: r.id, fullName: r.fullName, email: r.email, company: r.company, status: r.status, estimatedValueCents: r.estimatedValueCents }));
     }
 
     if (tool === 'SEARCH_CHAT') {
@@ -348,20 +306,6 @@ export class WranglerOperatorService {
       return rows.map((row) => ({ id: row.id, fullName: row.fullName, email: row.email, role: row.role, jobTitle: row.jobTitle, membershipStatus: row.membershipStatus }));
     }
 
-    if (tool === 'LIST_SCHEDULE') {
-      const date = this.cleanText(args.date) ?? zonedIsoDate(timezone, Date.now());
-      const weekStart = weekStartFor(date);
-      const dayIndex = this.dayIndex(date);
-      const staffName = this.cleanText(args.staffName);
-      let profileIds: string[] | undefined;
-      if (staffName) profileIds = (await this.findProfiles(venueId, staffName)).map((p) => p.id);
-      const shifts = await this.prisma.scheduleShift.findMany({
-        where: { venueId, weekStart, dayIndex, ...(profileIds ? { profileId: { in: profileIds } } : {}) },
-        include: { profile: { select: { id: true, fullName: true } } }, orderBy: { startMinutes: 'asc' }, take: 200,
-      });
-      return shifts.map((shift) => ({ id: shift.id, date, startMinutes: shift.startMinutes, endMinutes: shift.endMinutes, jobTitle: shift.jobTitle, station: shift.station, status: shift.status, profileId: shift.profileId, staffName: shift.profile?.fullName ?? null }));
-    }
-
     if (tool === 'LIST_CLOCKS') {
       const date = this.cleanText(args.date) ?? zonedIsoDate(timezone, Date.now());
       const bounds = this.dateBounds(timezone, date);
@@ -402,26 +346,6 @@ export class WranglerOperatorService {
       preview.push(`Add ${guestName} (party of ${partySize}) to waitlist`);
     }
 
-    if (plan.tool === 'CREATE_CRM_LEAD') {
-      const fullName = this.requiredText(args.fullName, 'Lead name is required');
-      args.fullName = fullName;
-      args.email = this.cleanText(args.email); args.company = this.cleanText(args.company);
-      preview.push(`Create CRM lead for ${fullName}`);
-    }
-
-    if (plan.tool === 'UPDATE_CRM_LEAD') {
-      const name = this.cleanText(args.name);
-      const leadId = this.cleanText(args.leadId);
-      if (!leadId && !name) throw new BadRequestException('Lead name or leadId required');
-      let target: any = null;
-      if (leadId) target = await this.prisma.crmLead.findFirst({ where: { id: leadId, venueId } });
-      else if (name) target = (await this.prisma.crmLead.findMany({ where: { venueId, fullName: { contains: name, mode: 'insensitive' } }, take: 1 }))[0];
-      if (!target) throw new NotFoundException('CRM lead not found');
-      args.leadId = target.id;
-      if (args.status != null) args.status = this.crmLeadStatus(args.status);
-      preview.push(`Update lead ${target.fullName} (${target.status} → ${args.status ?? target.status})`);
-    }
-
     if (plan.tool === 'POST_CHAT_ANNOUNCEMENT') {
       const text = this.requiredText(args.text, 'Announcement text is required');
       args.text = text;
@@ -443,28 +367,6 @@ export class WranglerOperatorService {
       preview.push(`Set bar inventory count for "${itemName}" to ${onHand}`);
     }
 
-    if (plan.tool === 'CREATE_SHIFT') {
-      const date = this.requiredText(args.date, 'Shift date is required (YYYY-MM-DD)');
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new BadRequestException('Date must be YYYY-MM-DD');
-      const startMinutes = this.minuteValue(args.startMinutes, 'startMinutes');
-      const endMinutes = this.minuteValue(args.endMinutes, 'endMinutes');
-      if (endMinutes <= startMinutes) throw new BadRequestException('Shift end must be after shift start');
-      const staffName = this.cleanText(args.staffName);
-      let profile: any = null;
-      if (staffName) {
-        profile = await this.resolveProfile(venueId, staffName);
-        args.profileId = profile.id;
-        args.staffName = profile.fullName;
-      }
-      args.date = date;
-      args.startMinutes = startMinutes;
-      args.endMinutes = endMinutes;
-      args.jobTitle = this.cleanText(args.jobTitle) ?? profile?.jobTitle ?? 'Server';
-      args.station = this.cleanText(args.station);
-      preview.push(`Add ${args.jobTitle} shift on ${date} (${this.minutesLabel(startMinutes)}–${this.minutesLabel(endMinutes)})`);
-      preview.push(profile ? `Assigned to ${profile.fullName}` : 'Shift will be created as open coverage');
-    }
-
     if (['UPDATE_RESERVATION', 'CANCEL_RESERVATION'].includes(plan.tool)) {
       const reservation = await this.resolveReservation(venueId, timezone, args);
       args.reservationId = reservation.id;
@@ -484,21 +386,6 @@ export class WranglerOperatorService {
       args.guestName = guestName; args.partySize = partySize; args.reservationTime = reservationTime.toISOString();
       preview.push(`${guestName}, party of ${partySize}`);
       preview.push(`Reservation time: ${reservationTime.toLocaleString()}`);
-    }
-
-    if (['UPDATE_SHIFT', 'ASSIGN_SHIFT'].includes(plan.tool)) {
-      const shift = await this.resolveShift(venueId, timezone, args);
-      args.shiftId = shift.id;
-      preview.push(`${shift.jobTitle} shift ${this.minutesLabel(shift.startMinutes)}–${this.minutesLabel(shift.endMinutes)}${shift.profile?.fullName ? ` assigned to ${shift.profile.fullName}` : ' currently open'}`);
-      if (plan.tool === 'UPDATE_SHIFT') {
-        if (args.startMinutes != null) preview.push(`New start: ${this.minutesLabel(this.minuteValue(args.startMinutes, 'startMinutes'))}`);
-        if (args.endMinutes != null) preview.push(`New end: ${this.minutesLabel(this.minuteValue(args.endMinutes, 'endMinutes'))}`);
-      } else {
-        const staffName = this.requiredText(args.staffName, 'Tell Wrangler which staff member should take the shift');
-        const profile = await this.resolveProfile(venueId, staffName);
-        args.profileId = profile.id;
-        preview.push(`Assign to ${profile.fullName} (${profile.jobTitle})`);
-      }
     }
 
     if (plan.tool === 'ADD_STAFF') {
@@ -587,34 +474,6 @@ export class WranglerOperatorService {
       return { id: row.id, guestName: row.guestName, partySize: row.partySize, status: row.status };
     }
 
-    if (plan.tool === 'CREATE_CRM_LEAD') {
-      const row = await this.prisma.crmLead.create({
-        data: {
-          venueId,
-          fullName: String(args.fullName),
-          email: this.cleanText(args.email) ?? null,
-          phone: this.cleanText(args.phone) ?? null,
-          company: this.cleanText(args.company) ?? null,
-          status: 'new',
-          source: 'wrangler_operator',
-        },
-      });
-      return { id: row.id, fullName: row.fullName, status: row.status };
-    }
-
-    if (plan.tool === 'UPDATE_CRM_LEAD') {
-      const id = this.requiredText(args.leadId, 'leadId is required');
-      const data: any = {};
-      if (args.status) data.status = String(args.status);
-      const row = await this.prisma.crmLead.update({ where: { id }, data });
-      if (args.notes) {
-        await this.prisma.crmNote.create({
-          data: { venueId, leadId: row.id, authorId: actor.profileId, text: String(args.notes) },
-        });
-      }
-      return { id: row.id, fullName: row.fullName, status: row.status };
-    }
-
     if (plan.tool === 'POST_CHAT_ANNOUNCEMENT') {
       const text = String(args.text);
       let conv = await this.prisma.conversation.findFirst({ where: { venueId, isSystem: true } });
@@ -671,44 +530,6 @@ export class WranglerOperatorService {
       return { id: row.id, name: row.name, onHand: row.onHand, parLevel: row.parLevel };
     }
 
-    if (plan.tool === 'CREATE_SHIFT') {
-      const date = this.requiredText(args.date, 'date is required');
-      const startMinutes = this.minuteValue(args.startMinutes, 'startMinutes');
-      const endMinutes = this.minuteValue(args.endMinutes, 'endMinutes');
-      if (endMinutes <= startMinutes) throw new BadRequestException('Shift end must be after shift start');
-      const weekStart = weekStartFor(date);
-      const dayIndex = this.dayIndex(date);
-      const profileId = this.cleanText(args.profileId);
-      if (profileId) {
-        await this.assertNoShiftOverlap(venueId, profileId, weekStart, dayIndex, startMinutes, endMinutes);
-      }
-      const row = await this.prisma.scheduleShift.create({
-        data: {
-          venueId,
-          weekStart,
-          dayIndex,
-          startMinutes,
-          endMinutes,
-          profileId: profileId ?? null,
-          jobTitle: String(args.jobTitle ?? 'Server'),
-          station: this.cleanText(args.station) ?? 'Floor',
-          status: profileId ? 'scheduled' : 'open',
-        },
-      });
-      await this.markScheduleEdited(venueId);
-      return {
-        id: row.id,
-        date,
-        weekStart,
-        dayIndex,
-        startMinutes: row.startMinutes,
-        endMinutes: row.endMinutes,
-        profileId: row.profileId,
-        staffName: this.cleanText(args.staffName) ?? null,
-        status: row.status,
-      };
-    }
-
     if (plan.tool === 'CREATE_RESERVATION') {
       const row = await this.prisma.reservation.create({
         data: {
@@ -748,38 +569,6 @@ export class WranglerOperatorService {
       return { id: row.id, guestName: row.guestName, status: row.status };
     }
 
-    if (plan.tool === 'UPDATE_SHIFT') {
-      const id = this.requiredText(args.shiftId, 'shiftId is required');
-      const existing = await this.prisma.scheduleShift.findFirst({ where: { id, venueId } });
-      if (!existing) throw new NotFoundException('Shift no longer exists');
-      const startMinutes = args.startMinutes != null ? this.minuteValue(args.startMinutes, 'startMinutes') : existing.startMinutes;
-      const endMinutes = args.endMinutes != null ? this.minuteValue(args.endMinutes, 'endMinutes') : existing.endMinutes;
-      if (endMinutes <= startMinutes) throw new BadRequestException('Shift end must be after shift start');
-      const weekStart = existing.weekStart ?? weekStartFor(zonedIsoDate(timezone, Date.now()));
-      if (existing.profileId) {
-        await this.assertNoShiftOverlap(venueId, existing.profileId, weekStart, existing.dayIndex, startMinutes, endMinutes, existing.id);
-        await this.assertAssignmentAllowed(venueId, existing.profileId, weekStart, existing.dayIndex, startMinutes, endMinutes);
-      }
-      const row = await this.prisma.scheduleShift.update({ where: { id }, data: { startMinutes, endMinutes, ...(args.jobTitle != null ? { jobTitle: this.requiredText(args.jobTitle, 'jobTitle') } : {}), ...(args.station != null ? { station: this.requiredText(args.station, 'station') } : {}) } });
-      await this.markScheduleEdited(venueId);
-      return { id: row.id, startMinutes: row.startMinutes, endMinutes: row.endMinutes, profileId: row.profileId, status: row.status };
-    }
-
-    if (plan.tool === 'ASSIGN_SHIFT') {
-      const id = this.requiredText(args.shiftId, 'shiftId is required');
-      const profileId = this.requiredText(args.profileId, 'profileId is required');
-      const shift = await this.prisma.scheduleShift.findFirst({ where: { id, venueId } });
-      if (!shift) throw new NotFoundException('Shift no longer exists');
-      const profile = await this.prisma.profile.findFirst({ where: { id: profileId, venueId } });
-      if (!profile) throw new NotFoundException('Staff member no longer exists');
-      const weekStart = shift.weekStart ?? weekStartFor(zonedIsoDate(timezone, Date.now()));
-      await this.assertNoShiftOverlap(venueId, profile.id, weekStart, shift.dayIndex, shift.startMinutes, shift.endMinutes, shift.id);
-      await this.assertAssignmentAllowed(venueId, profile.id, weekStart, shift.dayIndex, shift.startMinutes, shift.endMinutes);
-      const row = await this.prisma.scheduleShift.update({ where: { id }, data: { profileId: profile.id, status: 'scheduled' } });
-      await this.markScheduleEdited(venueId);
-      return { id: row.id, profileId: profile.id, staffName: profile.fullName, status: row.status };
-    }
-
     if (plan.tool === 'ADD_STAFF') {
       const email = String(args.email).toLowerCase();
       const existing = await this.prisma.profile.findFirst({ where: { venueId, email } });
@@ -810,10 +599,8 @@ export class WranglerOperatorService {
           });
           if (activeElsewhere === 0) await tx.session.deleteMany({ where: { userId: target.userId } });
         }
-        await tx.scheduleShift.updateMany({ where: { venueId, profileId: target.id, weekStart: { gte: weekStartFor(zonedIsoDate(timezone, Date.now())) } }, data: { profileId: null, status: 'open' } });
         await syncTeamMemberCount(tx, venueId);
       }));
-      await this.markScheduleEdited(venueId);
       return { id: target.id, fullName: target.fullName, membershipStatus: 'revoked' };
     }
 
@@ -878,26 +665,6 @@ export class WranglerOperatorService {
     return rows[0];
   }
 
-  private async resolveShift(venueId: string, timezone: string | null | undefined, args: Record<string, unknown>) {
-    const shiftId = this.cleanText(args.shiftId);
-    if (shiftId) {
-      const row = await this.prisma.scheduleShift.findFirst({ where: { id: shiftId, venueId }, include: { profile: { select: { fullName: true } } } });
-      if (!row) throw new NotFoundException('Shift not found');
-      return row;
-    }
-    const date = this.cleanText(args.date) ?? zonedIsoDate(timezone, Date.now());
-    const weekStart = weekStartFor(date);
-    const dayIndex = this.dayIndex(date);
-    const staffName = this.cleanText(args.staffName);
-    let profileIds: string[] | undefined;
-    if (staffName) profileIds = (await this.findProfiles(venueId, staffName)).map((p) => p.id);
-    const jobTitle = this.cleanText(args.jobTitle);
-    const rows = await this.prisma.scheduleShift.findMany({ where: { venueId, weekStart, dayIndex, ...(profileIds ? { profileId: { in: profileIds } } : {}), ...(jobTitle ? { jobTitle: { contains: jobTitle, mode: 'insensitive' } } : {}) } as any, include: { profile: { select: { fullName: true } } }, orderBy: { startMinutes: 'asc' }, take: 10 });
-    if (rows.length === 0) throw new NotFoundException('No matching shift found');
-    if (rows.length > 1) throw new ConflictException(`I found ${rows.length} matching shifts. Include the staff name, role, or exact shift in your command.`);
-    return rows[0];
-  }
-
   private async resolveProfile(venueId: string, name: string) {
     const rows = await this.findProfiles(venueId, name);
     if (rows.length === 0) throw new NotFoundException(`No staff member found matching ${name}`);
@@ -907,49 +674,6 @@ export class WranglerOperatorService {
 
   private findProfiles(venueId: string, name: string) {
     return this.prisma.profile.findMany({ where: { venueId, OR: [{ membershipStatus: null }, { membershipStatus: 'active' }], fullName: { contains: name, mode: 'insensitive' } } as any, orderBy: { fullName: 'asc' }, take: 10 });
-  }
-
-  private async assertNoShiftOverlap(venueId: string, profileId: string, weekStart: string, dayIndex: number, startMinutes: number, endMinutes: number, excludeShiftId?: string) {
-    const conflict = await this.prisma.scheduleShift.findFirst({ where: { venueId, profileId, weekStart, dayIndex, status: { in: ['scheduled', 'covered'] }, startMinutes: { lt: endMinutes }, endMinutes: { gt: startMinutes }, ...(excludeShiftId ? { id: { not: excludeShiftId } } : {}) } });
-    if (conflict) throw new ConflictException('That staff member already has an overlapping shift');
-  }
-
-  // Mirrors the scheduling module's availability gate: an approved time-off or
-  // sick-leave request blocks assignment for the covered day, so Wrangler
-  // commands cannot schedule someone into a day they are approved to be off.
-  private async assertAssignmentAllowed(venueId: string, profileId: string, weekStart: string, dayIndex: number, startMinutes: number, endMinutes: number) {
-    const weekEnd = this.dateAtOffset(weekStart, 6);
-    const requests = await this.prisma.staffRequest.findMany({
-      where: {
-        venueId,
-        profileId,
-        status: 'approved',
-        kind: { in: ['time_off', 'sick_leave'] },
-        OR: [
-          { requestedRangeStart: { lte: weekEnd }, requestedRangeEnd: { gte: weekStart } },
-          { requestedForDate: { gte: weekStart, lte: weekEnd } },
-        ],
-      },
-      select: { requestedForDate: true, requestedRangeStart: true, requestedRangeEnd: true },
-    });
-    const dayDate = this.dateAtOffset(weekStart, dayIndex);
-    const blocked = requests.some((request) => {
-      const start = request.requestedRangeStart ?? request.requestedForDate;
-      const end = request.requestedRangeEnd ?? request.requestedForDate ?? start;
-      return Boolean(start && end && dayDate >= start && dayDate <= end);
-    });
-    if (blocked) throw new BadRequestException('That staff member has approved time off covering this shift.');
-  }
-
-  private dateAtOffset(weekStart: string, dayIndex: number) {
-    const date = new Date(`${weekStart}T00:00:00.000Z`);
-    date.setUTCDate(date.getUTCDate() + dayIndex);
-    return date.toISOString().slice(0, 10);
-  }
-
-  private async markScheduleEdited(venueId: string) {
-    const venue = await this.prisma.venue.findUnique({ where: { id: venueId }, select: { schedulePublishedAt: true } });
-    if (venue?.schedulePublishedAt) await this.prisma.venue.update({ where: { id: venueId }, data: { scheduleUpdatedAfterPublishAt: new Date() } });
   }
 
   private async writeAudit(venueId: string, actor: Actor, plan: OperatorPlan, result: unknown) {
@@ -979,11 +703,9 @@ export class WranglerOperatorService {
   private positiveInt(value: unknown, field: string) { const n = Number(value); if (!Number.isInteger(n) || n < 1) throw new BadRequestException(`${field} must be a positive whole number`); return n; }
   private minuteValue(value: unknown, field: string) { const n = Number(value); if (!Number.isInteger(n) || n < 0 || n > 1440) throw new BadRequestException(`${field} must be between 0 and 1440`); return n; }
   private tableStatus(value: unknown, fallback: TableStatus) { const status = this.cleanText(value) ?? fallback; if (!['available', 'seated', 'dirty', 'reserved', 'held', 'out_of_service'].includes(status)) throw new BadRequestException('Invalid table status'); return status as TableStatus; }
-  private crmLeadStatus(value: unknown) { const status = this.requiredText(value, 'Invalid CRM lead status'); if (!['new', 'contacted', 'qualified', 'proposal_sent', 'negotiating', 'won', 'lost', 'unqualified', 'on_hold'].includes(status)) throw new BadRequestException('Invalid CRM lead status'); return status as CrmLeadStatus; }
   private requiredDate(value: unknown, message: string) { const date = this.optionalDate(value, message); if (!date) throw new BadRequestException(message); return date; }
   private optionalDate(value: unknown, field: string) { if (value == null || value === '') return undefined; const date = new Date(String(value)); if (Number.isNaN(date.getTime())) throw new BadRequestException(`Invalid ${field}`); return date; }
   private dateBounds(timezone: string | null | undefined, date: string) { if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new BadRequestException('Date must be YYYY-MM-DD'); const bounds = zonedDateBounds(timezone, date); return { start: new Date(bounds.start), end: new Date(bounds.end) }; }
-  private dayIndex(date: string) { if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new BadRequestException('Date must be YYYY-MM-DD'); return new Date(`${date}T12:00:00Z`).getUTCDay(); }
   private minutesLabel(minutes: number) { const hour = Math.floor(minutes / 60); const min = minutes % 60; const h = hour % 12 || 12; return `${h}:${String(min).padStart(2, '0')} ${hour < 12 ? 'AM' : 'PM'}`; }
   private defaultSummary(tool: OperatorTool) { return tool.toLowerCase().replaceAll('_', ' '); }
   private auditArgs(args: Record<string, unknown>) { const safe = { ...args }; delete safe.email; delete safe.notes; delete safe.staffName; delete safe.guestName; return safe; }

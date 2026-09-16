@@ -33,7 +33,6 @@ export function buildDailyBriefProfitabilityPulse(input: {
   laborHours: number;
   openChecks: number;
   activeClocks: number;
-  openShiftCount: number;
   pendingRequestCount: number;
   lowStockCount: number;
   eightySixCount: number;
@@ -43,7 +42,6 @@ export function buildDailyBriefProfitabilityPulse(input: {
     laborHours,
     openChecks,
     activeClocks,
-    openShiftCount,
     pendingRequestCount,
     lowStockCount,
     eightySixCount,
@@ -95,17 +93,6 @@ export function buildDailyBriefProfitabilityPulse(input: {
         route: '/reports',
       });
     }
-  }
-
-  if (openShiftCount > 0) {
-    recoveryActions.push({
-      kind: 'coverage',
-      tone: 'warn',
-      title: `Fill ${pluralize(openShiftCount, 'open shift')}`,
-      body: 'Close the coverage gap before it turns into a slower floor and a noisier service.',
-      cta: 'Open staff',
-      route: '/staff',
-    });
   }
 
   if (pendingRequestCount > 0) {

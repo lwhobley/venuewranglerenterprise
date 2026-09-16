@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildDailyBriefPriorityActions } from './daily-brief-priority-actions';
 
-const ZERO = { openShiftCount: 0, pendingRequestCount: 0, lowStockCount: 0, eightySixCount: 0, events: [] as any[] };
+const ZERO = { pendingRequestCount: 0, lowStockCount: 0, eightySixCount: 0, events: [] as any[] };
 
 describe('buildDailyBriefPriorityActions', () => {
   it('returns a structured steady-state action when nothing needs attention', () => {
@@ -28,7 +28,6 @@ describe('buildDailyBriefPriorityActions', () => {
   it('orders priorities by severity instead of feature order', () => {
     const results = buildDailyBriefPriorityActions({
       ...ZERO,
-      openShiftCount: 3,
       pendingRequestCount: 1,
       lowStockCount: 3,
       events: [{
@@ -41,8 +40,8 @@ describe('buildDailyBriefPriorityActions', () => {
       }],
     });
 
-    expect(results.map((item) => item.kind)).toEqual(['coverage', 'event', 'stock', 'requests']);
-    expect(results.map((item) => item.severity)).toEqual(['critical', 'warning', 'warning', 'watch']);
+    expect(results.map((item) => item.kind)).toEqual(['event', 'stock', 'requests']);
+    expect(results.map((item) => item.severity)).toEqual(['warning', 'warning', 'watch']);
   });
 
   it('includes the operational reason and nested action metadata', () => {

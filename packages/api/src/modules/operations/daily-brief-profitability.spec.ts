@@ -6,7 +6,6 @@ const BASE = {
   laborHours: 0,
   openChecks: 0,
   activeClocks: 0,
-  openShiftCount: 0,
   pendingRequestCount: 0,
   lowStockCount: 0,
   eightySixCount: 0,
@@ -36,7 +35,6 @@ describe('buildDailyBriefProfitabilityPulse', () => {
       laborHours: 3,
       openChecks: 4,
       activeClocks: 6,
-      openShiftCount: 2,
       pendingRequestCount: 1,
       lowStockCount: 1,
       eightySixCount: 2,
@@ -44,7 +42,7 @@ describe('buildDailyBriefProfitabilityPulse', () => {
 
     expect(pulse.tone).toBe('warn');
     expect(pulse.headline).toBe('Labor is outrunning sales');
-    expect(pulse.recoveryActions.map((action) => action.kind)).toEqual(['floor', 'coverage', 'schedule', 'inventory']);
+    expect(pulse.recoveryActions.map((action) => action.kind)).toEqual(['floor', 'schedule', 'inventory']);
   });
 
   it('marks strong sales pace as healthy', () => {

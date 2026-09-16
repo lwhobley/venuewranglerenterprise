@@ -169,29 +169,14 @@ export async function seedSchedulingFixtures(prisma: PrismaClient) {
     }),
   ]);
 
-  const openShift = await prisma.scheduleShift.create({
-    data: {
-      venueId: venue.id,
-      profileId: null,
-      dayIndex: 1,
-      startMinutes: 600,
-      endMinutes: 900,
-      jobTitle: 'Server',
-      station: 'Floor',
-      status: 'open',
-    },
-  });
-
-  return { venue, profileA, profileB, openShift };
+  return { venue, profileA, profileB };
 }
 
 /**
- * Delete all rows from scheduling-related tables in reverse FK order.
+ * Delete all rows from workforce-related tables in reverse FK order.
  */
 export async function cleanSchedulingData(prisma: PrismaClient) {
   try {
-    await prisma.shiftSwap.deleteMany().catch(() => {});
-    await prisma.scheduleShift.deleteMany().catch(() => {});
     await prisma.timeEntry.deleteMany().catch(() => {});
     await prisma.session.deleteMany().catch(() => {});
     await prisma.organizationMembership.deleteMany().catch(() => {});

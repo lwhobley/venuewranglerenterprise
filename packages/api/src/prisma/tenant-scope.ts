@@ -11,14 +11,14 @@
  * tenant root (Venue) are intentionally absent - they are never auto-scoped.
  */
 export const VENUE_SCOPED_MODELS: ReadonlySet<string> = new Set([
-  'AiBudgetReservation', 'AiUsageEvent', 'AuditLog', 'Availability', 'BarInventoryItem', 'BarInventoryMovement', 'BlackoutDate',
+  'AiBudgetReservation', 'AiUsageEvent', 'AuditLog', 'BarInventoryItem', 'BarInventoryMovement',
   'ChatImage', 'ChecklistCompletion', 'ChecklistTemplateItem', 'Conversation', 'ConversationRead',
-  'CrmActivityLog', 'CrmBeo', 'CrmContract', 'CrmLead', 'CrmNote', 'EmailTemplate', 'EventFnbReadiness', 'FloorChair',
-  'FloorPlan', 'FnbOperationUnit', 'FnbPartner', 'Guest', 'Invite', 'Invoice', 'LogbookEntry', 'ManagerGoal', 'Message', 'NotificationEvent',
+  'CrmBeo', 'EventFnbReadiness', 'FloorChair',
+  'FloorPlan', 'FnbOperationUnit', 'FnbPartner', 'Invite', 'Invoice', 'LogbookEntry', 'ManagerGoal', 'Message', 'NotificationEvent',
   'NotificationRead', 'PaymentMethod', 'PayrollExport', 'PosAggregatorChannel', 'PosCheck', 'PosConnection',
   'PosLaborPunch', 'PrepBoardItem', 'Profile', 'PushToken', 'Reservation', 'ReservationConnection',
-  'ReservationHold', 'ReservationSetting', 'ReservationSyncEvent', 'ScheduleEmailEvent',
-  'ScheduleMemoryNote', 'ScheduleShift', 'ScheduleTemplate', 'ShiftSwap', 'StaffOnboardingTask', 'StaffRequest', 'Subscription',
+  'ReservationHold', 'ReservationSetting', 'ReservationSyncEvent',
+  'StaffOnboardingTask', 'StaffRequest', 'Subscription',
   'SubscriptionEvent', 'TableAssignment', 'TableState', 'TableStateHistory', 'Team',
   'TimeEntry', 'VenueDocument', 'VenueEvent', 'VenueRole', 'Waitlist', 'WorkplaceJoinRequest',
   'EventExecutionWorkspace', 'EventExecutionTask', 'EventExecutionTimelineItem', 'EventExecutionVendor', 'EventExecutionIncident',

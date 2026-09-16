@@ -8,7 +8,6 @@ import { apiRequest, useApiQuery } from '../../lib/api-client';
 import { useVenueAuth } from '../../lib/useVenueAuth';
 import { asArray, errorMessage, formatMoney, humanizeLabel } from '../../lib/format';
 import { radius, spacing, useDesignTheme } from '../../lib/theme';
-import { crmBeoRoute, crmEventBeoRoute } from '../../lib/crm-routing';
 import {
   type EventBeoReportDocument,
   type PublishedBeoReport,
@@ -191,27 +190,12 @@ export default function EventBeoReportScreen() {
               </View>
 
               {/* ── SUITE BEO LIST, chronological by delivery window ── */}
-              <View style={styles.beoHeader}>
-                <CommandText palette={palette} variant="title" style={{ flex: 1 }}>Suite BEOs</CommandText>
-                {canManage ? (
-                  <Pressable
-                    onPress={() => router.push(crmEventBeoRoute(document.event.title) as any)}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Edit BEOs for ${document.event.title} in the CRM`}
-                    style={({ pressed }) => [styles.linkBtn, { borderColor: palette.border, opacity: pressed ? 0.7 : 1 }]}
-                  >
-                    <MaterialCommunityIcons name="pencil-outline" size={14} color={String(palette.primary)} />
-                    <CommandText palette={palette} variant="caption" style={{ color: palette.primary, fontWeight: '700' }}>
-                      Edit in CRM
-                    </CommandText>
-                  </Pressable>
-                ) : null}
-              </View>
+              <CommandText palette={palette} variant="title">Suite BEOs</CommandText>
               {/*
                 The report is read-only by design — it is a published snapshot.
-                Editing happens in the CRM, which holds the sales BEO. A suite
-                row linked to its CrmBeo routes to that exact record; the header
-                action stays as the fallback for rows with no link yet.
+                The sales BEO a row is linked to is shown for reference: those
+                records are still kept, but the CRM workspace that edited them
+                has been removed, so there is nowhere to send the reader.
               */}
               {document.suites.rows.length === 0 ? (
                 <CommandText palette={palette} variant="body" style={{ color: palette.muted }}>
@@ -262,17 +246,6 @@ export default function EventBeoReportScreen() {
                             </CommandText>
                           ) : null}
                         </View>
-                        <Pressable
-                          onPress={() => router.push(crmBeoRoute(row.salesBeo!.id) as any)}
-                          accessibilityRole="button"
-                          accessibilityLabel={`Edit the sales BEO for ${row.suiteName} in the CRM`}
-                          style={({ pressed }) => [styles.linkBtn, { borderColor: palette.border, opacity: pressed ? 0.7 : 1 }]}
-                        >
-                          <MaterialCommunityIcons name="pencil-outline" size={14} color={String(palette.primary)} />
-                          <CommandText palette={palette} variant="caption" style={{ color: palette.primary, fontWeight: '700' }}>
-                            Edit in CRM
-                          </CommandText>
-                        </Pressable>
                       </View>
                     ) : (
                       <CommandText palette={palette} variant="caption" style={{ color: palette.muted }}>
@@ -420,16 +393,6 @@ const styles = StyleSheet.create({
   chipRow: { flexDirection: 'row', gap: spacing.sm, paddingVertical: 2 },
   chip: { borderRadius: radius.pill, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 6 },
   beoHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  linkBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    borderWidth: 1,
-    borderRadius: radius.pill,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    minHeight: 32,
-  },
   itemsBox: { borderWidth: 1, borderRadius: 6, padding: spacing.sm, gap: 4 },
   itemRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   lineRow: {

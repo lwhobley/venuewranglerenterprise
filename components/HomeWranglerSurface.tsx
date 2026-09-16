@@ -396,7 +396,6 @@ export function HomeWranglerSurface({ enabled }: Props) {
       <View style={{ flexDirection: 'row', gap: spacing.lg, paddingTop: 2 }}>
         <CommandText palette={palette} variant="caption">{snapshot.summary.lowStockItems ? `${snapshot.summary.lowStockItems} Low-Stock Par` : 'Inventory Par OK'}</CommandText>
         <CommandText palette={palette} variant="caption">{snapshot.summary.vipArrivals ? `${snapshot.summary.vipArrivals} Suite BEOs` : 'Suites Ready'}</CommandText>
-        <CommandText palette={palette} variant="caption">{snapshot.summary.openShifts ? `${snapshot.summary.openShifts} Open Staff Shifts` : 'Roster Full'}</CommandText>
       </View>
     </View>
   );

@@ -1,38 +1,10 @@
-// Translation keys for the shift/labor screen group: app/(tabs)/schedule.tsx,
-// staff.tsx, floor.tsx, schedule.tsx, clock.tsx.
+// Translation keys for the time-clock and floor screen group:
+// staff.tsx, floor.tsx, clock.tsx.
 //
 // Each locale object must define the SAME keys as `en` — this app does not
 // fall back key-by-key within a namespace, so a missing key here renders as
 // the raw key string in es/fr/pseudo.
 export const en = {
-  schedule: {
-    kicker: 'Team',
-    title: 'Schedule',
-    subtitleManager: 'Build the schedule, assign staff, and review requests.',
-    subtitleStaff: 'See your shifts, pick up open ones, and request days you are unavailable.',
-    noVenue: 'No venue assigned to your account yet.',
-    tabCalendar: 'Calendar',
-    tabForecast: 'Forecast',
-    tabRequests: 'Requests',
-    tabBlackouts: 'Blackouts',
-    tabMyShifts: 'My shifts',
-    tabAvailability: 'Availability',
-    swapsTitle: 'Shift swaps',
-    noSwaps: 'No swaps awaiting approval.',
-    giveAway: '(give-away)',
-    approveSwap: 'Approve swap',
-    approve: 'Approve',
-    deny: 'Deny',
-    swapApproved: 'Swap approved.',
-    swapDenied: 'Swap denied.',
-    actionFailed: 'Action failed.',
-    requestQueueTitle: 'Request review queue',
-    noPendingRequests: 'No pending requests.',
-    approveRequest: 'Approve request',
-    requestApproved: 'Request approved.',
-    requestDenied: 'Request denied.',
-    dismiss: 'Dismiss',
-  },
   staff: {
     loading: 'Loading…',
     managementTitle: 'Staff Management',
@@ -159,11 +131,6 @@ export const en = {
     markCleanError: 'Could not mark table clean.',
     splitError: 'Could not split merged tables.',
   },
-  availability: {
-    kicker: 'Schedule',
-    title: 'Availability',
-    subtitle: 'Tell your managers when you can work.',
-  },
   clock: {
     locationNeededTitle: 'Location needed',
     locationUnavailable: 'Unable to get your location.',
@@ -241,34 +208,6 @@ export const en = {
 export type ScheduleOpsDictionary = typeof en;
 
 export const es: ScheduleOpsDictionary = {
-  schedule: {
-    kicker: 'Equipo',
-    title: 'Horario',
-    subtitleManager: 'Crea el horario, asigna personal y revisa solicitudes.',
-    subtitleStaff: 'Consulta tus turnos, toma turnos abiertos y define tu disponibilidad.',
-    noVenue: 'Aún no tienes un local asignado a tu cuenta.',
-    tabCalendar: 'Calendario',
-    tabForecast: 'Previsión',
-    tabRequests: 'Solicitudes',
-    tabBlackouts: 'Bloqueos',
-    tabMyShifts: 'Mis turnos',
-    tabAvailability: 'Disponibilidad',
-    swapsTitle: 'Intercambios de turno',
-    noSwaps: 'No hay intercambios pendientes de aprobación.',
-    giveAway: '(cesión de turno)',
-    approveSwap: 'Aprobar intercambio',
-    approve: 'Aprobar',
-    deny: 'Rechazar',
-    swapApproved: 'Intercambio aprobado.',
-    swapDenied: 'Intercambio rechazado.',
-    actionFailed: 'La acción falló.',
-    requestQueueTitle: 'Cola de revisión de solicitudes',
-    noPendingRequests: 'No hay solicitudes pendientes.',
-    approveRequest: 'Aprobar solicitud',
-    requestApproved: 'Solicitud aprobada.',
-    requestDenied: 'Solicitud rechazada.',
-    dismiss: 'Descartar',
-  },
   staff: {
     loading: 'Cargando…',
     managementTitle: 'Gestión de personal',
@@ -395,11 +334,6 @@ export const es: ScheduleOpsDictionary = {
     markCleanError: 'No se pudo marcar la mesa como limpia.',
     splitError: 'No se pudieron separar las mesas combinadas.',
   },
-  availability: {
-    kicker: 'Horario',
-    title: 'Disponibilidad',
-    subtitle: 'Dile a tus gerentes cuándo puedes trabajar.',
-  },
   clock: {
     locationNeededTitle: 'Se necesita ubicación',
     locationUnavailable: 'No se pudo obtener tu ubicación.',
@@ -475,34 +409,6 @@ export const es: ScheduleOpsDictionary = {
 };
 
 export const fr: ScheduleOpsDictionary = {
-  schedule: {
-    kicker: 'Équipe',
-    title: 'Planning',
-    subtitleManager: 'Créez le planning, affectez le personnel et examinez les demandes.',
-    subtitleStaff: 'Consultez vos services, prenez des services ouverts et définissez votre disponibilité.',
-    noVenue: "Aucun établissement n'est encore affecté à votre compte.",
-    tabCalendar: 'Calendrier',
-    tabForecast: 'Prévision',
-    tabRequests: 'Demandes',
-    tabBlackouts: 'Blocages',
-    tabMyShifts: 'Mes services',
-    tabAvailability: 'Disponibilité',
-    swapsTitle: 'Échanges de service',
-    noSwaps: "Aucun échange en attente d'approbation.",
-    giveAway: '(cession de service)',
-    approveSwap: "Approuver l'échange",
-    approve: 'Approuver',
-    deny: 'Refuser',
-    swapApproved: 'Échange approuvé.',
-    swapDenied: 'Échange refusé.',
-    actionFailed: "L'action a échoué.",
-    requestQueueTitle: 'File de révision des demandes',
-    noPendingRequests: 'Aucune demande en attente.',
-    approveRequest: 'Approuver la demande',
-    requestApproved: 'Demande approuvée.',
-    requestDenied: 'Demande refusée.',
-    dismiss: 'Ignorer',
-  },
   staff: {
     loading: 'Chargement…',
     managementTitle: 'Gestion du personnel',
@@ -628,11 +534,6 @@ export const fr: ScheduleOpsDictionary = {
     markDirtyError: 'Impossible de marquer la table comme sale.',
     markCleanError: 'Impossible de marquer la table comme propre.',
     splitError: 'Impossible de séparer les tables fusionnées.',
-  },
-  availability: {
-    kicker: 'Planning',
-    title: 'Disponibilité',
-    subtitle: 'Indiquez à vos responsables quand vous pouvez travailler.',
   },
   clock: {
     locationNeededTitle: 'Localisation requise',

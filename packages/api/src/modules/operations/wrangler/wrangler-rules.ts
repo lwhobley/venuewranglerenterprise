@@ -11,7 +11,6 @@ export type WranglerReservation = {
 export type WranglerRuleInput = {
   now: number;
   reservations: WranglerReservation[];
-  openShiftCount: number;
   lowStockCount: number;
   eightySixCount: number;
 };
@@ -47,22 +46,6 @@ export function buildWranglerRuleActions(input: WranglerRuleInput): DailyBriefPr
         actions: [navAction(`open-reservation:${reservation.id}`, 'Review arrival', route)],
       });
     }
-  }
-
-  if (input.openShiftCount >= 3) {
-    const route = '/staff' as const;
-    actions.push({
-      id: 'coverage:critical',
-      kind: 'coverage',
-      tone: 'warn',
-      severity: 'critical',
-      title: `${input.openShiftCount} open shifts threaten service coverage`,
-      body: 'Coverage is materially short for today. Resolve staffing before the busiest service window.',
-      reason: 'Three or more open shifts remain unfilled.',
-      cta: 'Open staff',
-      route,
-      actions: [navAction('coverage:open-staff', 'Resolve coverage', route)],
-    });
   }
 
   if (input.lowStockCount > 0 && input.eightySixCount > 0) {

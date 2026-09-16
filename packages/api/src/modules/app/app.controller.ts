@@ -14,12 +14,11 @@ import { getClientIp } from '../../common/http';
 import { hashInviteToken } from '../../common/invite-token';
 import { assertWithinSharedRateLimit } from '../../common/rate-limit';
 import { sanitizeForEmail } from '../../common/sanitize-email-text';
-import { todayInZone, weekStartFor } from '../../common/pay-period';
 import { zonedDateBounds } from '../../common/venue-time';
 import { EmailService } from '../../email/email.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { runWithoutTenant } from '../../prisma/tenant-context';
-import { mapClockEntry, mapProfile, mapShift, mapVenue, toMs, minutesToTime } from './app-mappers';
+import { mapClockEntry, mapProfile, mapVenue, toMs, minutesToTime } from './app-mappers';
 import { ProfileService } from './profile.service';
 import { syncTeamMemberCount } from '../../common/team-sync';
 
@@ -443,22 +442,7 @@ export class AppController {
     const profile = await this.requireVenueProfile(user);
     if (!profile?.venue) return null;
     const canManage = canManageVenue(profile.role, profile.allAccess);
-    const weekStart = weekStartFor(todayInZone(profile.venue.timezone));
-    const shiftWhere = {
-      venueId: profile.venueId!,
-      weekStart,
-      ...(canManage ? {} : { OR: [{ profileId: profile.id }, { status: 'open' as const }] }),
-    };
-    // Counts come from aggregates over all matching rows; the display list is
-    // capped separately so analytics stay correct past the display limit.
-    const [shifts, shiftCounts, teamCount, activeEntries, openClockCount] = await Promise.all([
-      this.prisma.scheduleShift.findMany({
-        where: shiftWhere,
-        include: { profile: true },
-        orderBy: [{ dayIndex: 'asc' }, { startMinutes: 'asc' }],
-        take: 14,
-      }),
-      this.prisma.scheduleShift.groupBy({ by: ['status'], where: shiftWhere, _count: { _all: true } }),
+    const [teamCount, activeEntries, openClockCount] = await Promise.all([
       canManage ? this.prisma.profile.count({ where: { venueId: profile.venueId! } }) : Promise.resolve(0),
       canManage
         ? this.prisma.timeEntry.findMany({
@@ -469,7 +453,6 @@ export class AppController {
         : Promise.resolve([]),
       canManage ? this.prisma.timeEntry.count({ where: { venueId: profile.venueId!, isOpen: true } }) : Promise.resolve(0),
     ]);
-    const countByStatus = (status: string) => shiftCounts.find((c) => c.status === status)?._count._all ?? 0;
 
     const emailVerified = await this.isEmailVerified(user.sub);
     return {
@@ -477,13 +460,9 @@ export class AppController {
       venue: mapVenue(profile.venue),
       analytics: {
         teamCount,
-        scheduledCount: countByStatus('scheduled'),
-        openShiftCount: countByStatus('open'),
-        coveredShiftCount: countByStatus('covered'),
         openClockCount,
         clockedInCount: openClockCount,
       },
-      schedule: shifts.map((shift) => mapShift(shift, canManage ? shift.profile?.fullName ?? null : shift.profileId === profile.id ? 'You' : null)),
       activeClockEntries: activeEntries.map((entry) => mapClockEntry(entry, entry.profile, entry.venue)),
     };
   }
@@ -495,17 +474,14 @@ export class AppController {
     const profile = await this.requireVenueProfile(user);
     if (!profile?.venueId || !canManageVenue(profile.role, profile.allAccess)) return null;
     const venueId = profile.venueId;
-    const weekStart = weekStartFor(todayInZone(profile.venue?.timezone));
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const dayAhead = new Date(Date.now() + 24 * 60 * 60 * 1000);
-    const [completedEntries, scheduledShifts, openShifts, activeClocks, clockAlerts, activeReservations, upcomingReservations, openRequests] =
+    const [completedEntries, activeClocks, clockAlerts, activeReservations, upcomingReservations, openRequests] =
       await Promise.all([
         this.prisma.timeEntry.findMany({
           where: { venueId, isOpen: false, clockOutAt: { gte: weekAgo } },
           select: { clockInAt: true, clockOutAt: true },
         }),
-        this.prisma.scheduleShift.count({ where: { venueId, weekStart, status: 'scheduled' } }),
-        this.prisma.scheduleShift.count({ where: { venueId, weekStart, status: 'open' } }),
         this.prisma.timeEntry.count({ where: { venueId, isOpen: true } }),
         this.prisma.staffRequest.count({ where: { venueId, status: 'pending', kind: 'time_correction' } }),
         this.prisma.reservation.count({
@@ -527,7 +503,7 @@ export class AppController {
       ]);
     const laborMs = completedEntries.reduce((sum, e) => sum + (e.clockOutAt!.getTime() - e.clockInAt.getTime()), 0);
     const laborHours = Math.round((laborMs / 3600000) * 10) / 10;
-    return { laborHours, scheduledShifts, openShifts, activeClocks, lateOrMissedAlerts: clockAlerts, activeReservations, upcomingReservations, pendingRequests: openRequests };
+    return { laborHours, activeClocks, lateOrMissedAlerts: clockAlerts, activeReservations, upcomingReservations, pendingRequests: openRequests };
   }
 
   @UseGuards(AuthGuard)
@@ -946,14 +922,12 @@ export class AppController {
       const profileIds = profiles.map((profile) => profile.id);
       if (profileIds.length) {
         await tx.pushToken.deleteMany({ where: { profileId: { in: profileIds } } });
-        await tx.availability.deleteMany({ where: { profileId: { in: profileIds } } });
         for (const profile of profiles) {
           await tx.timeEntry.updateMany({
             where: { profileId: profile.id },
             data: { profileFullName: profile.fullName, isOpen: false },
           });
         }
-        await tx.scheduleShift.updateMany({ where: { profileId: { in: profileIds } }, data: { profileId: null, status: 'open' } });
       }
       await tx.session.deleteMany({ where: { userId: user.sub } });
       await tx.authAccount.deleteMany({ where: { userId: user.sub } });

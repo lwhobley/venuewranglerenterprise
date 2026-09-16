@@ -6,7 +6,7 @@ import { WranglerOperatorService } from './wrangler-operator.service';
 describe('SafeWranglerOperatorService', () => {
   it('rejects direct write plans from non-manager members', async () => {
     const reservations = { saveReservation: vi.fn() };
-    const service = new SafeWranglerOperatorService({} as never, reservations as never, {} as never);
+    const service = new SafeWranglerOperatorService({} as never, reservations as never);
 
     await expect(service.execute({
       venueId: 'venue-1',
@@ -28,7 +28,7 @@ describe('SafeWranglerOperatorService', () => {
       },
     };
     const reservations = { saveReservation: vi.fn() };
-    const service = new SafeWranglerOperatorService(prisma as never, reservations as never, {} as never);
+    const service = new SafeWranglerOperatorService(prisma as never, reservations as never);
 
     await expect(service.execute({
       venueId: 'venue-1',
@@ -66,79 +66,6 @@ describe('SafeWranglerOperatorService', () => {
     expect(prisma.tableAssignment.updateMany).toHaveBeenCalledWith({
       where: { venueId: 'venue-1', tableId: 'table-3', releasedAt: null },
       data: expect.objectContaining({ releasedAt: expect.any(Date) }),
-    });
-  });
-
-  it('executes CREATE_SHIFT command to add staff to schedule', async () => {
-    const prisma = {
-      profile: {
-        findFirst: vi.fn().mockResolvedValue({ id: 'prof-jose', fullName: 'Jose Santos', jobTitle: 'Server' }),
-        findMany: vi.fn().mockResolvedValue([{ id: 'prof-jose', fullName: 'Jose Santos', jobTitle: 'Server' }]),
-      },
-      scheduleShift: {
-        findFirst: vi.fn().mockResolvedValue(null),
-        create: vi.fn().mockResolvedValue({
-          id: 'shift-100',
-          startMinutes: 900,
-          endMinutes: 1440,
-          profileId: 'prof-jose',
-          status: 'scheduled',
-        }),
-      },
-      venue: { findUnique: vi.fn().mockResolvedValue({ schedulePublishedAt: null }) },
-      auditLog: { create: vi.fn().mockResolvedValue({ id: 'audit-2' }) },
-    };
-    const service = new WranglerOperatorService(prisma as never);
-
-    const result = await service.execute({
-      venueId: 'venue-1',
-      actor: { profileId: 'manager-1', fullName: 'Manager', role: 'manager', allAccess: true },
-      plan: {
-        tool: 'CREATE_SHIFT',
-        args: { date: '2026-08-03', startMinutes: 900, endMinutes: 1440, profileId: 'prof-jose', staffName: 'Jose Santos', jobTitle: 'Server' },
-        summary: 'Add shift for Jose Santos.',
-        risk: 'operational_write',
-      },
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.result).toEqual({
-      id: 'shift-100',
-      date: '2026-08-03',
-      weekStart: '2026-08-02',
-      dayIndex: 1,
-      startMinutes: 900,
-      endMinutes: 1440,
-      profileId: 'prof-jose',
-      staffName: 'Jose Santos',
-      status: 'scheduled',
-    });
-  });
-
-  it('executes CREATE_CRM_LEAD command across CRM domain', async () => {
-    const prisma = {
-      crmLead: {
-        create: vi.fn().mockResolvedValue({ id: 'lead-1', fullName: 'Acme Corp Party', status: 'new' }),
-      },
-      auditLog: { create: vi.fn().mockResolvedValue({ id: 'audit-3' }) },
-    };
-    const service = new WranglerOperatorService(prisma as never);
-
-    const result = await service.execute({
-      venueId: 'venue-1',
-      actor: { profileId: 'manager-1', fullName: 'Manager', role: 'manager', allAccess: true },
-      plan: {
-        tool: 'CREATE_CRM_LEAD',
-        args: { fullName: 'Acme Corp Party', company: 'Acme Corp' },
-        summary: 'Create CRM lead for Acme Corp Party.',
-        risk: 'operational_write',
-      },
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.result).toEqual({ id: 'lead-1', fullName: 'Acme Corp Party', status: 'new' });
-    expect(prisma.crmLead.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({ venueId: 'venue-1', fullName: 'Acme Corp Party', status: 'new' }),
     });
   });
 

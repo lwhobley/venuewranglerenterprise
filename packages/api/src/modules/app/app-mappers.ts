@@ -64,30 +64,6 @@ export function mapProfile(
   };
 }
 
-export function mapShift(shift: { id: string; dayIndex: number; startMinutes: number; endMinutes: number; profileId: string | null; jobTitle: string; station: string; status: string; notes: string | null }, memberName: string | null) {
-  return {
-    _id: shift.id,
-    id: shift.id,
-    dayIndex: shift.dayIndex,
-    day_index: shift.dayIndex,
-    dayLabel: dayLabel(shift.dayIndex),
-    day_label: dayLabel(shift.dayIndex),
-    startMinutes: shift.startMinutes,
-    start_time: minutesToTime(shift.startMinutes),
-    endMinutes: shift.endMinutes,
-    end_time: minutesToTime(shift.endMinutes),
-    memberId: shift.profileId,
-    member_id: shift.profileId,
-    memberName,
-    member_name: memberName,
-    jobTitle: shift.jobTitle,
-    job_title: shift.jobTitle,
-    station: shift.station,
-    status: shift.status,
-    notes: shift.notes ?? undefined,
-  };
-}
-
 export function mapClockEntry(
   entry: {
     id: string;

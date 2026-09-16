@@ -449,7 +449,6 @@ export class ReservationsController {
       reservations: reservations.map((r) => ({
         id: r.id,
         venueId: r.venueId,
-        guestId: r.guestId ?? null,
         guestName: r.guestName,
         partySize: r.partySize,
         reservationTime: r.reservationTime.getTime(),
@@ -591,53 +590,6 @@ export class ReservationsController {
         startsAt: b.startsAt,
         covers: b.covers,
       })),
-    };
-  }
-
-  // ============================================================
-  // Guest preference autofill: lookup by email or phone.
-  // ============================================================
-  @RequireSubscription('active')
-  @Get('guest-autofill')
-  async guestAutofill(
-    @VenueScope() scope: Scope,
-    @Query('email') email?: string,
-    @Query('phone') phone?: string,
-  ) {
-    this.requireManager(scope);
-    const cleanEmail = email?.trim().toLowerCase();
-    const cleanPhone = phone?.replace(/[^\d+]/g, '');
-    if (!cleanEmail && !cleanPhone) return { guest: null };
-    const guest = await this.prisma.guest.findFirst({
-      where: {
-        venueId: scope.venueId,
-        deletedAt: null,
-        OR: [
-          ...(cleanEmail ? [{ email: cleanEmail }] : []),
-          ...(cleanPhone ? [{ phone: cleanPhone }] : []),
-        ],
-      },
-    });
-    if (!guest) return { guest: null };
-    const recent = await this.prisma.reservation.findFirst({
-      where: { venueId: scope.venueId, deletedAt: null, guestId: guest.id, completedAt: { not: null } },
-      orderBy: { completedAt: 'desc' },
-      select: { completedAt: true, partySize: true },
-    });
-    return {
-      guest: {
-        id: guest.id,
-        fullName: guest.fullName,
-        email: guest.email,
-        phone: guest.phone,
-        favoriteTable: guest.favoriteTable,
-        preferredServer: guest.preferredServer,
-        dietaryNotes: guest.dietaryNotes,
-        tags: guest.tags,
-        lifecycleStage: guest.lifecycleStage,
-        lastVisitAt: recent?.completedAt?.getTime() ?? null,
-        lastPartySize: recent?.partySize ?? null,
-      },
     };
   }
 

@@ -2,7 +2,6 @@ import { BadRequestException, ConflictException, ForbiddenException, Injectable,
 import { canManageVenue } from '../../../auth/roles';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { ReservationMutationService } from '../../reservations/reservation-mutation.service';
-import { SchedulingAssignmentService } from '../../scheduling/scheduling-assignment.service';
 import { WranglerOperatorService } from './wrangler-operator.service';
 
 @Injectable()
@@ -13,7 +12,6 @@ export class SafeWranglerOperatorService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly reservations: ReservationMutationService,
-    private readonly scheduling: SchedulingAssignmentService,
   ) {
     this.parser = new WranglerOperatorService(prisma);
   }
@@ -35,7 +33,7 @@ export class SafeWranglerOperatorService {
       throw new ForbiddenException('Manager access required for Wrangler operator actions');
     }
     const tool = String(input.plan?.tool ?? '');
-    if (!['CREATE_RESERVATION', 'UPDATE_RESERVATION', 'UPDATE_SHIFT', 'ASSIGN_SHIFT', 'CORRECT_PUNCH'].includes(tool)) {
+    if (!['CREATE_RESERVATION', 'UPDATE_RESERVATION', 'CORRECT_PUNCH'].includes(tool)) {
       return this.parser.execute(input);
     }
     const args = { ...(input.plan?.args ?? {}) };
@@ -65,21 +63,6 @@ export class SafeWranglerOperatorService {
         tags: old.tags, specialRequests: old.specialRequests ?? undefined, phone: old.guestPhone ?? undefined, email: old.guestEmail ?? undefined,
       });
       result = saved.reservation;
-    } else if (tool === 'UPDATE_SHIFT') {
-      const id = this.text(args.shiftId, 'shiftId is required');
-      const old = await this.prisma.scheduleShift.findFirst({ where: { id, venueId: input.venueId } });
-      if (!old) throw new NotFoundException('Shift no longer exists');
-      const startMinutes = args.startMinutes == null ? old.startMinutes : this.minute(args.startMinutes, 'startMinutes');
-      const endMinutes = args.endMinutes == null ? old.endMinutes : this.minute(args.endMinutes, 'endMinutes');
-      if (endMinutes <= startMinutes) throw new BadRequestException('Shift end must be after shift start');
-      await this.scheduling.updateShift({ venueId: input.venueId, shiftId: old.id, dayIndex: old.dayIndex, startMinutes, endMinutes,
-        jobTitle: args.jobTitle == null ? old.jobTitle : this.text(args.jobTitle, 'jobTitle is required'), station: args.station == null ? old.station : this.text(args.station, 'station is required'), notes: old.notes ?? undefined });
-      result = await this.prisma.scheduleShift.findUniqueOrThrow({ where: { id: old.id } });
-    } else if (tool === 'ASSIGN_SHIFT') {
-      const shiftId = this.text(args.shiftId, 'shiftId is required');
-      const profileId = this.text(args.profileId, 'profileId is required');
-      await this.scheduling.assignShift({ venueId: input.venueId, shiftId, profileId });
-      result = await this.prisma.scheduleShift.findUniqueOrThrow({ where: { id: shiftId } });
     } else if (tool === 'CORRECT_PUNCH') {
       const entryId = this.text(args.entryId, 'entryId is required');
       const expectedUpdatedAt = this.date(args.expectedUpdatedAt, 'Punch changed since preview. Review the latest timecard before correcting it.');

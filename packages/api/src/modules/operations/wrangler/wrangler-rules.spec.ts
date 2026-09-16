@@ -16,7 +16,6 @@ describe('buildWranglerRuleActions', () => {
           tags: ['VIP'],
         },
       ],
-      openShiftCount: 0,
       lowStockCount: 0,
       eightySixCount: 0,
     });
@@ -42,7 +41,6 @@ describe('buildWranglerRuleActions', () => {
           tags: [],
         },
       ],
-      openShiftCount: 0,
       lowStockCount: 0,
       eightySixCount: 0,
     });
@@ -50,28 +48,10 @@ describe('buildWranglerRuleActions', () => {
     expect(results).toEqual([]);
   });
 
-  it('escalates three or more open shifts to critical coverage risk', () => {
-    const results = buildWranglerRuleActions({
-      now: NOW,
-      reservations: [],
-      openShiftCount: 3,
-      lowStockCount: 0,
-      eightySixCount: 0,
-    });
-
-    expect(results[0]).toMatchObject({
-      id: 'coverage:critical',
-      kind: 'coverage',
-      severity: 'critical',
-      route: '/staff',
-    });
-  });
-
   it('flags inventory when low stock and 86 items overlap', () => {
     const results = buildWranglerRuleActions({
       now: NOW,
       reservations: [],
-      openShiftCount: 0,
       lowStockCount: 2,
       eightySixCount: 1,
     });

@@ -95,7 +95,6 @@ export default function EventCommandCenterScreen() {
                     <Text style={{ fontWeight: '700', color: '#1D2420' }}>{blocker.title}</Text>
                     <Text style={{ fontSize: 12, color: '#1D2420' }}>{blocker.detail}</Text>
                     <View style={{ flexDirection: 'row', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
-                      {blocker.code === 'OPEN_SHIFT' ? (<Button compact mode="outlined" textColor="#17643B" onPress={() => router.push('/(tabs)/schedule')}>Open Schedule</Button>) : null}
                       {blocker.code === 'UNASSIGNED_TABLE' ? (<Button compact mode="outlined" textColor="#17643B" onPress={() => router.push('/stadium-map')}>Open Stadium Map</Button>) : null}
                       {blocker.code === 'BEO_NOT_CONFIRMED' ? (<Button compact mode="outlined" textColor="#17643B" onPress={() => router.push(beoReportRoute({ eventId: selectedEventId || undefined }) as any)}>Open Event BEO</Button>) : null}
                     </View>

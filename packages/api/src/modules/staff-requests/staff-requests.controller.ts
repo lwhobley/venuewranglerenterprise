@@ -225,29 +225,6 @@ export class StaffRequestsController {
     // below await a blocking Expo push fetch), so these writes need their own
     // GUC binding rather than relying on the request-scoped interceptor.
     const { profile, request } = await withTenantTransaction(this.prisma, async (tx) => {
-      // Block time-off requests that overlap a manager-defined blackout window.
-      if (body.kind === 'time_off') {
-        const reqStart = body.requestedRangeStart || body.requestedForDate;
-        const reqEnd = body.requestedRangeEnd || body.requestedForDate || reqStart;
-        if (reqStart && reqEnd) {
-          const blackouts = await tx.blackoutDate.findMany({
-            where: { venueId: scope.venueId },
-          });
-          const hit = blackouts.find((b) => {
-            const bStart = b.startDate.toISOString().split('T')[0];
-            const bEnd = b.endDate.toISOString().split('T')[0];
-            return reqStart <= bEnd && bStart <= reqEnd;
-          });
-          if (hit) {
-            const bStartStr = hit.startDate.toISOString().split('T')[0];
-            const bEndStr = hit.endDate.toISOString().split('T')[0];
-            throw new BadRequestException(
-              `Time off is blacked out ${bStartStr}${bEndStr !== bStartStr ? ` – ${bEndStr}` : ''} (${hit.reason}). Please choose other dates.`,
-            );
-          }
-        }
-      }
-
       const profile = await tx.profile.findUniqueOrThrow({ where: { id: scope.profileId } });
       const request = await tx.staffRequest.create({
         data: {
@@ -353,35 +330,6 @@ export class StaffRequestsController {
           WHERE id = ${request.profileId}`;
       }
       
-      // Approved unavailable days are the only availability source. Release any
-      // concrete dated shifts in the approved range so the open-shift board and
-      // staffing totals update immediately.
-      if ((request.kind === 'time_off' || request.kind === 'sick_leave') && tx.scheduleShift?.findMany) {
-        const unavailableStart = request.requestedRangeStart || request.requestedForDate;
-        const unavailableEnd = request.requestedRangeEnd || request.requestedForDate || unavailableStart;
-        if (unavailableStart && unavailableEnd) {
-          const assignedShifts = await tx.scheduleShift.findMany({
-            where: { venueId: request.venueId, profileId: request.profileId },
-            select: { id: true, weekStart: true, dayIndex: true },
-          });
-          const affectedIds = assignedShifts
-            .filter((shift) => {
-              if (!shift.weekStart) return false;
-              const date = new Date(`${shift.weekStart}T00:00:00.000Z`);
-              date.setUTCDate(date.getUTCDate() + shift.dayIndex);
-              const iso = date.toISOString().slice(0, 10);
-              return iso >= unavailableStart && iso <= unavailableEnd;
-            })
-            .map((shift) => shift.id);
-          if (affectedIds.length > 0) {
-            await tx.scheduleShift.updateMany({
-              where: { id: { in: affectedIds } },
-              data: { profileId: null, status: 'open' },
-            });
-          }
-        }
-      }
-
       if (request.kind === 'time_correction') {
         const correction = (request.availability as any) || {};
         const venue = await tx.venue.findUnique({

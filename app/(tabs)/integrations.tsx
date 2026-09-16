@@ -62,14 +62,13 @@ function IntegrationsScreenInner() {
   const upsertConnection = useMutation(api.pos.upsertPosConnection);
   const rotatePosSecret = useMutation(api.pos.rotatePosConnectionSecret);
   const upsertReservationConnection = useMutation(api.reservationIntegrations.upsertReservationConnection);
-  const rotateLeadsSecret = useMutation(api.guests.rotateLeadsWebhookSecret);
 
   const [provider, setProvider] = useState<Provider>('toast');
   const [locationId, setLocationId] = useState('');
   const [reservationProvider, setReservationProvider] = useState<ReservationProvider>('opentable');
   const [externalVenueId, setExternalVenueId] = useState('');
   // Which action is in flight, so only its button spins (not all three).
-  const [pending, setPending] = useState<'pos' | 'reservation' | 'leads' | `pos-rotate:${string}` | null>(null);
+  const [pending, setPending] = useState<'pos' | 'reservation' | `pos-rotate:${string}` | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   // A freshly generated webhook secret, shown once. It cannot be read back, so
   // the manager must copy it now; rotating issues a new one.
@@ -125,21 +124,6 @@ function IntegrationsScreenInner() {
       setMessage(t('integrations.messages.posRotated'));
     } catch (error) {
       setMessage(errorMessage(error, t('integrations.messages.posRotateError')));
-    } finally {
-      setPending(null);
-    }
-  };
-
-  const generateLeadsSecret = async () => {
-    if (!venue?.id) return;
-    setPending('leads');
-    setMessage(null);
-    try {
-      const r = await rotateLeadsSecret({ venueId: venue.id });
-      if (r?.webhookSecret) setNewSecret(r.webhookSecret);
-      setMessage(t('integrations.messages.leadsGenerated'));
-    } catch (e) {
-      setMessage(errorMessage(e, t('integrations.messages.leadsGenerateError')));
     } finally {
       setPending(null);
     }
@@ -250,24 +234,6 @@ function IntegrationsScreenInner() {
             {t('integrations.reservation.save')}
           </Button>
           <Text style={{ color: colors.muted }}>{t('integrations.reservation.webhookInfo')}</Text>
-        </Card.Content>
-      </Card>
-
-      <Card style={{ backgroundColor: colors.surface, borderRadius: radius.sharp }}>
-        <Card.Content style={{ gap: spacing.sm }}>
-          <Text variant="titleMedium" style={{ fontWeight: '700' }}>{t('integrations.leads.title')}</Text>
-          <Text style={{ color: colors.muted }}>
-            {t('integrations.leads.body')}
-          </Text>
-          <Button mode="contained" buttonColor={colors.primary} loading={pending === 'leads'} disabled={pending !== null} onPress={() => void generateLeadsSecret()}>
-            {t('integrations.leads.generate')}
-          </Button>
-          <InlineMessage message={message} />
-          {newSecret ? (
-            <Text selectable style={{ fontFamily: 'monospace', color: colors.charcoal, backgroundColor: colors.surfaceSoft, padding: spacing.sm, borderRadius: radius.sharp }}>
-              {newSecret}
-            </Text>
-          ) : null}
         </Card.Content>
       </Card>
 

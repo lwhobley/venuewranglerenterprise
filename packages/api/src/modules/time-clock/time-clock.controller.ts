@@ -15,9 +15,8 @@ import { isAdminRole } from '../../auth/roles';
 import { RequireSubscription } from '../../billing/require-subscription.decorator';
 import { assertWithinGeofence } from '../../common/geofence';
 import { parseTimeBreaks, unpaidBreakMs } from '../../common/break-duration';
-import { todayInZone, weekStartFor } from '../../common/pay-period';
-import { mapClockEntry, minutesToTime } from '../../common/mappers';
-import { zonedDayOfWeek, zonedMinutesOfDay, zonedDayBounds } from '../../common/venue-time';
+import { mapClockEntry } from '../../common/mappers';
+import { zonedDayBounds } from '../../common/venue-time';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TenantRequestTransactionInterceptor } from '../../prisma/tenant-request-transaction.interceptor';
 import { withTenantTransaction } from '../../prisma/tenant-transaction';
@@ -109,34 +108,6 @@ export class TimeClockController {
 
     if (isAdminRole(scope.role)) {
       const now = Date.now();
-      const tz = venue.timezone ?? null;
-      const today = zonedDayOfWeek(tz, now);
-      const minutesNow = zonedMinutesOfDay(tz, now);
-      const weekStart = weekStartFor(todayInZone(tz));
-      const openByProfile = new Set(
-        entries.filter((entry) => entry.isOpen).map((entry) => entry.profileId),
-      );
-      const shifts = await this.prisma.scheduleShift.findMany({
-        where: { venueId: venue.id, weekStart },
-        include: { profile: true },
-      });
-      for (const shift of shifts) {
-        if (shift.dayIndex !== today || !shift.profileId || shift.status === 'open') continue;
-        if (
-          minutesNow >= shift.startMinutes + 15 &&
-          minutesNow <= shift.endMinutes &&
-          !openByProfile.has(shift.profileId) &&
-          shift.profile
-        ) {
-          managerAlerts.push({
-            kind: 'late_clock_in',
-            severity: 'warning',
-            profileId: shift.profile.id,
-            memberName: shift.profile.fullName,
-            detail: `${shift.jobTitle} was scheduled at ${minutesToTime(shift.startMinutes)} and is not clocked in.`,
-          });
-        }
-      }
       for (const entry of entries) {
         if (!entry.isOpen || now - entry.clockInAt.getTime() < 10 * 60 * 60 * 1000) continue;
         if (entry.profile) {
@@ -240,32 +211,6 @@ export class TimeClockController {
     if (active) throw new BadRequestException('Already clocked in');
 
     const profile = await this.prisma.profile.findUniqueOrThrow({ where: { id: scope.profileId } });
-
-    if (!isAdminRole(scope.role)) {
-      const nowMs = Date.now();
-      const today = zonedDayOfWeek(venue.timezone, nowMs);
-      const minutesNow = zonedMinutesOfDay(venue.timezone, nowMs);
-      const weekStart = weekStartFor(todayInZone(venue.timezone));
-      const shift = await this.prisma.scheduleShift.findFirst({
-        where: {
-          venueId: venue.id,
-          profileId: profile.id,
-          weekStart,
-          dayIndex: today,
-          status: { in: ['scheduled', 'covered'] },
-        },
-        orderBy: { startMinutes: 'asc' },
-      });
-      if (shift) {
-        const earlyWindow = venue.earlyClockInWindowMin ?? 10;
-        if (minutesNow < shift.startMinutes - earlyWindow) {
-          const formattedStart = minutesToTime(shift.startMinutes);
-          throw new BadRequestException(
-            `Too early to clock in. Your shift starts at ${formattedStart}. You can clock in starting ${earlyWindow} minutes prior.`
-          );
-        }
-      }
-    }
 
     if (this.asyncWrites?.isEnabled?.()) {
       const key = (idempotencyKey ?? '').trim();
