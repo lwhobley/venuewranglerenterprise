@@ -34,12 +34,45 @@ value temporarily for diagnosis.
   predicate, so a hostile `where: { venueId: other }` matches nothing instead of
   escaping scope.
 - **Creates force venueId.** A `create`/`createMany` can never write into another tenant.
-- **Unique-keyed ops are pass-through.** `findUnique`/`update`/`delete`/`upsert`
-  require a unique `where`; injecting a non-unique `venueId` is invalid for them,
-  so they are intentionally **not** auto-scoped and still rely on the existing
-  call-site `venueId` checks. This is the main residual gap.
+- **Unique-keyed ops are scoped too.** `findUnique`/`findUniqueOrThrow`/`update`/
+  `delete`/`upsert` keep their unique selector at the top level and gain the tenant
+  column as an extended unique filter (`mergeUniqueScopeWhere`), so a client-supplied
+  id from another tenant matches nothing. Covered by `tenant-scope.spec.ts`. An
+  earlier version of this document described these as pass-through; that is no
+  longer true.
 - **Inert by default.** No tenant context ⇒ no-op. Auth flows, webhooks, and
   system/background tasks (which legitimately cross venues) are unaffected.
+
+### Residual-gap audit (2026-09-16)
+
+The extension cannot help where it does not apply, so every remaining path was
+audited by hand:
+
+1. **Routes with no tenant context** (`@Public()`): enterprise SSO start/callback/
+   exchange, billing webhooks, invite preview, BEO hub ingest, chat image and
+   checklist photo links, leads/POS/reservation ingest, realtime stream, workforce
+   invite check and venue search. Each authenticates with a per-venue secret, a
+   signed media token bound to the record and its venue, a single-use stream ticket,
+   or is disabled. No client-supplied id reaches a tenant model unchecked.
+2. **Background work**: the async-write worker binds tenant context with
+   `runWithTenant`; the kitchen distro and reservation schedulers only act on rows
+   they loaded themselves and apply the row's own tenant settings in the transaction.
+3. **Models outside the scoped sets**: 20 unique-keyed calls on 9 models without a
+   `venueId`/`facilityId` column or on the wildcard list (`OrganizationMembership`,
+   `ScopeAssignment`, `EnterpriseSsoProvider`, `EnterpriseSsoGroupRoleMapping`,
+   `EnterpriseSsoIdentity`, `EnterpriseSsoLoginRequest`, `EnterpriseSsoLoginTicket`,
+   `FloorTable`, `VmsOrderFulfillment`). Each is keyed by organization + user,
+   provider + subject, or a hashed one-time secret, or is preceded by an ownership
+   check on the owning organization, venue floor plan, or facility.
+
+One defect was found and fixed: the SAML request cache looked requests up by
+`samlRequestId` alone, so a request started with one SSO provider validated for
+another. `getAsync` and `removeAsync` now require the cache's `providerId`
+(`enterprise-sso.service.spec.ts`).
+
+Re-run this audit when adding a model without a tenant column, a wildcard model,
+or a `@Public()` route. It is a manual review, not a CI check, so new call sites
+are not caught automatically.
 
 ### Enablement (fail-closed by default)
 

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { EnterpriseSsoService } from './enterprise-sso.service';
+import { DatabaseSamlRequestCache, EnterpriseSsoService } from './enterprise-sso.service';
 
 function provider(overrides: Record<string, unknown> = {}) {
   return {
@@ -66,5 +66,37 @@ describe('EnterpriseSsoService login tickets', () => {
   it('rejects a previously consumed ticket', async () => {
     const prisma = { enterpriseSsoLoginTicket: { findUnique: vi.fn().mockResolvedValue({ id: 'ticket-1', consumedAt: new Date(), expiresAt: new Date(Date.now() + 60_000) }) } };
     await expect(service(prisma).consumeLoginTicket('a'.repeat(43))).rejects.toThrow('invalid or expired');
+  });
+});
+
+describe('DatabaseSamlRequestCache provider binding', () => {
+  const future = new Date(Date.now() + 60_000);
+
+  it('accepts a request started with the same provider', async () => {
+    const prisma: any = {
+      enterpriseSsoLoginRequest: {
+        findUnique: vi.fn().mockResolvedValue({ providerId: 'provider-a', expiresAt: future, consumedAt: null }),
+      },
+    };
+    await expect(new DatabaseSamlRequestCache(prisma, 'provider-a').getAsync('req-1')).resolves.toBe('req-1');
+  });
+
+  it('rejects a request started with a different provider', async () => {
+    const prisma: any = {
+      enterpriseSsoLoginRequest: {
+        findUnique: vi.fn().mockResolvedValue({ providerId: 'provider-a', expiresAt: future, consumedAt: null }),
+      },
+    };
+    await expect(new DatabaseSamlRequestCache(prisma, 'provider-b').getAsync('req-1')).resolves.toBeNull();
+  });
+
+  it('only consumes a request belonging to its own provider', async () => {
+    const prisma: any = {
+      enterpriseSsoLoginRequest: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    };
+    await expect(new DatabaseSamlRequestCache(prisma, 'provider-b').removeAsync('req-1')).resolves.toBeNull();
+    expect(prisma.enterpriseSsoLoginRequest.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { samlRequestId: 'req-1', providerId: 'provider-b', consumedAt: null },
+    }));
   });
 });

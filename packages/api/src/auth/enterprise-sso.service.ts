@@ -26,7 +26,7 @@ export type EnterprisePrincipal = {
   emailVerified: boolean;
 };
 
-class DatabaseSamlRequestCache implements CacheProvider {
+export class DatabaseSamlRequestCache implements CacheProvider {
   constructor(private readonly prisma: PrismaService, private readonly providerId: string) {}
 
   async saveAsync(key: string, value: string) {
@@ -46,16 +46,18 @@ class DatabaseSamlRequestCache implements CacheProvider {
   async getAsync(key: string) {
     const request = await this.prisma.enterpriseSsoLoginRequest.findUnique({
       where: { samlRequestId: key },
-      select: { expiresAt: true, consumedAt: true },
+      select: { providerId: true, expiresAt: true, consumedAt: true },
     });
-    if (!request || request.consumedAt || request.expiresAt <= new Date()) return null;
+    // The request id is globally unique, so bind it to this cache's provider:
+    // a request started with one provider must not validate another's response.
+    if (!request || request.providerId !== this.providerId || request.consumedAt || request.expiresAt <= new Date()) return null;
     return key;
   }
 
   async removeAsync(key: string | null) {
     if (!key) return null;
     const updated = await this.prisma.enterpriseSsoLoginRequest.updateMany({
-      where: { samlRequestId: key, consumedAt: null },
+      where: { samlRequestId: key, providerId: this.providerId, consumedAt: null },
       data: { consumedAt: new Date() },
     });
     return updated.count ? key : null;

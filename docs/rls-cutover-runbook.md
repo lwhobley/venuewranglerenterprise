@@ -28,6 +28,16 @@ Do **not** run the full policy set in production until every checklist item belo
 | Prod migration parity confirmed | **Unconfirmed** — run `prisma migrate status` against prod (owner) |
 | Full test suite against local PG 18 | **910 unit + 26 integration, all green** — re-verified after every change in this session |
 
+### Staging evidence status (2026-09-16)
+
+**Not yet executed against a hosted staging database.** Production
+(`stadiumwrangler`) still connects as `postgres` (BYPASSRLS) and has no
+`stadium_migrator` role. No staging database exists: Supabase branching requires
+the Pro plan, and the organization is at its limit of two active free projects.
+Until a staging target exists, cross-tenant evidence remains the local PostgreSQL
+runs recorded below, which do not satisfy the Phase 2 exit bar
+("cross-tenant read fails" on hosted infrastructure).
+
 ### What changed on 2026-09-03 (this session)
 
 Two blocking defects were found by applying the real migration chain to a throwaway

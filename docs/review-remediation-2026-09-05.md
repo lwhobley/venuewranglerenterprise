@@ -76,3 +76,12 @@ The database test helper uses `prisma db push --accept-data-loss`; its target mu
 5. Deploy matching API/worker versions together; verify delayed retry queue declaration, confirmed republish, terminal cache results, restart after broker loss, and DLQ recovery. Do not claim sub-50ms load latency without measurement.
 6. On physical iPhone and Android: cold launch, model load offline, rotate/pinch/pan/reset, all supported zone selections, directory/modal handoff, missing/corrupt model, renderer failure, retry, 2D fallback, route switching, background/foreground, reduced motion, large text, narrow layout, and low-memory behavior.
 7. Rehearse event setup through closeout using a controlled venue/event. Keep the Operations Map as the operational default and fallback. Static 3D/demo data is not a live event command center.
+
+## Release gate status — 2026-09-16
+
+| Gate | Status | Evidence |
+| --- | --- | --- |
+| 1. Dependency/lockfile synchronization | **Done** | `npm install --ignore-scripts` (lockfile current) and non-breaking `npm audit fix`. 0 critical; production 9 high / 3 moderate, all build-toolchain or major-upgrade-only. Tests and typechecks green. See `security-dependency-exceptions.md`. |
+| 2. Historical SSO identity links | **Closed — nothing to review** | Production (`stadiumwrangler`) has 0 `EnterpriseSsoProvider` rows and 0 `EnterpriseSsoIdentity` links (1 `User`, 1 `OrganizationMembership`). No link predates the fail-closed fix. Re-check if a provider is configured before rollout. |
+| 4 (partial). RLS cutover verification against staging | **Blocked** | No staging database: branching needs Pro and the org is at its free-project limit. See `rls-cutover-runbook.md`. |
+| Tenant isolation residual gap | **Audited, one fix** | Unique-keyed operations are extension-scoped; all public, background and unscoped-model call sites reviewed; SAML request cache bound to its provider. See `tenant-isolation.md`. |
