@@ -82,7 +82,7 @@ export default function CentralCommissaryDashboard() {
   const hawkerSessions = asArray<HawkerSession>(hawkersQuery.data);
   const loading = transfersQuery.isLoading || hawkersQuery.isLoading;
 
-  const handleUpdateTransfer = async (id: string, nextStatus: 'approved' | 'completed') => {
+  const handleUpdateTransfer = async (id: string, nextStatus: 'approved' | 'in_transit' | 'completed') => {
     try {
       await apiRequest(`/v1/stadium/concourse/transfers/${id}/status`, {
         method: 'PATCH',
@@ -93,7 +93,10 @@ export default function CentralCommissaryDashboard() {
       return;
     }
     await queryClient.invalidateQueries({ queryKey: TRANSFERS_KEY });
-    Alert.alert('Transfer Dispatched', `Restock Transfer marked ${nextStatus.toUpperCase()}. Restock items appended to Stand Sheet.`);
+    const message = nextStatus === 'completed'
+      ? 'Restock Transfer marked COMPLETED. Restock items appended to Stand Sheet.'
+      : `Restock Transfer marked ${nextStatus.toUpperCase()}.`;
+    Alert.alert('Transfer Updated', message);
   };
 
   const handleSettleHawker = async (session: HawkerSession, body: Settlement) => {
@@ -149,10 +152,15 @@ export default function CentralCommissaryDashboard() {
               <View style={styles.actionRow}>
                 {t.status === 'pending' && (
                   <TouchableOpacity style={styles.approveBtn} onPress={() => handleUpdateTransfer(t.id, 'approved')}>
-                    <Text style={styles.btnText}>APPROVE & DISPATCH 🚚</Text>
+                    <Text style={styles.btnText}>APPROVE REQUEST 📋</Text>
                   </TouchableOpacity>
                 )}
                 {t.status === 'approved' && (
+                  <TouchableOpacity style={styles.approveBtn} onPress={() => handleUpdateTransfer(t.id, 'in_transit')}>
+                    <Text style={styles.btnText}>DISPATCH / IN TRANSIT 🚚</Text>
+                  </TouchableOpacity>
+                )}
+                {t.status === 'in_transit' && (
                   <TouchableOpacity style={styles.completeBtn} onPress={() => handleUpdateTransfer(t.id, 'completed')}>
                     <Text style={styles.btnText}>CONFIRM DELIVERED TO STAND ✅</Text>
                   </TouchableOpacity>
