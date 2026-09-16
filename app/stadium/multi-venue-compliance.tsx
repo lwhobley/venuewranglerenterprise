@@ -17,11 +17,13 @@ export default function MultiVenueComplianceScreen() {
   const overview = useQuery(api.unionCompliance.getMultiVenueOverview, isReady && canManage && venue?.id ? { venueId: venue.id } : 'skip') as any;
   const crossConflicts = useQuery(api.unionCompliance.getCrossVenueConflicts, isReady && canManage && venue?.id ? { venueId: venue.id } : 'skip') as any;
   const certs = useQuery(api.unionCompliance.getCertifications, isReady && canManage && venue?.id ? { venueId: venue.id } : 'skip') as any;
+  const rollup = useQuery(api.stadium.getMultiVenueRollup, isReady && canManage ? {} : 'skip') as any;
 
-  const [activeTab, setActiveTab] = useState<'facilities' | 'conflicts' | 'certifications' | 'cba_rules'>('facilities');
+  const [activeTab, setActiveTab] = useState<'operations' | 'facilities' | 'conflicts' | 'certifications' | 'cba_rules'>('operations');
   const venuesList = overview?.venueSummaries ?? [];
   const conflictsList = crossConflicts?.conflicts ?? [];
   const certCategories = certs?.categories ?? [];
+  const rollupVenues = rollup?.venues ?? [];
 
   return (
     <ScrollView
@@ -95,6 +97,16 @@ export default function MultiVenueComplianceScreen() {
           contentContainerStyle={[styles.tabBar, { borderBottomColor: palette.divider, paddingHorizontal: spacing.md }]}
         >
           <Pressable
+            onPress={() => setActiveTab('operations')}
+            style={[styles.tabItem, activeTab === 'operations' && { borderBottomColor: '#17643B', borderBottomWidth: 2 }]}
+          >
+            <MaterialCommunityIcons name="view-dashboard-outline" size={16} color={activeTab === 'operations' ? '#17643B' : '#68706A'} />
+            <CommandText palette={palette} variant="caption" style={{ color: activeTab === 'operations' ? '#17643B' : '#68706A', fontWeight: activeTab === 'operations' ? '700' : '500' }}>
+              Operations Roll-Up ({rollupVenues.length})
+            </CommandText>
+          </Pressable>
+
+          <Pressable
             onPress={() => setActiveTab('facilities')}
             style={[styles.tabItem, activeTab === 'facilities' && { borderBottomColor: '#17643B', borderBottomWidth: 2 }]}
           >
@@ -138,6 +150,72 @@ export default function MultiVenueComplianceScreen() {
 
       {/* Main Tab Content */}
       <View style={{ padding: spacing.md, gap: spacing.md }}>
+        {/* TAB 0: OPERATIONS ROLL-UP */}
+        {activeTab === 'operations' ? (
+          <View style={{ gap: spacing.sm }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 4 }}>
+              <CommandText palette={palette} variant="label" style={{ color: '#17643B', fontWeight: '800', flexShrink: 1 }}>
+                MULTI-VENUE LIVE OPERATIONS ROLL-UP
+              </CommandText>
+              <CommandText palette={palette} variant="caption" style={{ color: '#68706A', flexShrink: 1 }}>
+                {rollup?.activeEventsCount ?? 0} active live events across {rollupVenues.length} properties
+              </CommandText>
+            </View>
+
+            {!rollupVenues.length ? <CommandText palette={palette}>No multi-venue operations telemetry available.</CommandText> : null}
+            {rollupVenues.map((v: any) => (
+              <View key={v.venueId} style={[styles.facilityCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+                <View style={styles.splitHeader}>
+                  <View style={styles.titleCluster}>
+                    <CommandText palette={palette} variant="title" style={[styles.shrinkText, { fontSize: 16 }]}>
+                      {v.venueName}
+                    </CommandText>
+                    <CommandText palette={palette} variant="caption" style={{ color: palette.muted }}>
+                      {v.homeTeam ?? 'Multipurpose'} · Cap: {v.capacity ? v.capacity.toLocaleString() : 'N/A'}
+                    </CommandText>
+                  </View>
+                  <StatusPill palette={palette} tone={v.operationalHealth === 'optimal' ? 'good' : v.operationalHealth === 'watch' ? 'warn' : 'danger'}>
+                    {v.operationalHealth?.toUpperCase()}
+                  </StatusPill>
+                </View>
+
+                {v.activeEvent ? (
+                  <View style={{ backgroundColor: `${palette.primary}12`, borderRadius: 6, padding: spacing.xs, marginVertical: 4 }}>
+                    <CommandText palette={palette} variant="caption" style={{ color: palette.primary, fontWeight: '700' }}>
+                      Active Event: {v.activeEvent.title} ({v.activeEvent.operationalState?.toUpperCase()})
+                    </CommandText>
+                  </View>
+                ) : (
+                  <CommandText palette={palette} variant="caption" style={{ color: palette.muted, marginVertical: 4 }}>
+                    No live event in progress
+                  </CommandText>
+                )}
+
+                <View style={styles.facilityMetricsGrid}>
+                  <View style={styles.metricCol}>
+                    <CommandText palette={palette} variant="caption">Critical Issues</CommandText>
+                    <CommandText palette={palette} variant="body" style={{ fontWeight: '800', color: v.openCriticalOrHighIssues > 0 ? '#D32F2F' : '#17643B' }}>
+                      {v.openCriticalOrHighIssues}
+                    </CommandText>
+                  </View>
+                  <View style={styles.metricCol}>
+                    <CommandText palette={palette} variant="caption">Dark Stands</CommandText>
+                    <CommandText palette={palette} variant="body" style={{ fontWeight: '700', color: v.darkStandsCount > 0 ? '#A86514' : palette.charcoal }}>
+                      {v.darkStandsCount}
+                    </CommandText>
+                  </View>
+                  <View style={styles.metricCol}>
+                    <CommandText palette={palette} variant="caption">Total Outlets</CommandText>
+                    <CommandText palette={palette} variant="body" style={{ fontWeight: '700' }}>
+                      {v.totalOutlets}
+                    </CommandText>
+                  </View>
+                </View>
+              </View>
+            ))}
+          </View>
+        ) : null}
+
         {/* TAB 1: VENUES & COMPLIANCE POSTURE */}
         {activeTab === 'facilities' ? (
           <View style={{ gap: spacing.sm }}>

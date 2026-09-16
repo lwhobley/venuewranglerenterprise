@@ -13,6 +13,7 @@ import type { VenueScopedRequest } from '../../venue/venue-scope.interceptor';
 import { assertEventTransition, EVENT_OPERATIONAL_STATES, legacyStatusForState, type EventOperationalState } from './event-state';
 import { organizationIdForPairedVenue } from '../../common/venue-facility';
 import { SuiteHospitalityGateway } from './suite-hospitality.gateway';
+import { filterDualOrgEventPayload } from '../../auth/dual-org-access';
 
 
 type Scope = NonNullable<VenueScopedRequest['venueScope']>;
@@ -262,6 +263,70 @@ export class StadiumController {
       this.prisma.barInventoryItem.count({ where: { venueId: scope.venueId } }),
     ]);
     return { pos, reservations, last30Days: { posChecks }, canonicalInventoryItems: inventoryItems, manualCsvImportAvailable: true, providerIntegrations: 'Authenticated provider adapters remain venue-configured; CSV/manual entry is the approved fallback.', generatedAt: new Date().toISOString() };
+  }
+
+  @Get('multi-venue-rollup')
+  async getMultiVenueRollup(@VenueScope() scope: Scope) {
+    if (!canViewPilotHealth(scope.role, scope.allAccess)) {
+      throw new ForbiddenException('Executive multi-venue roll-up requires administrative access.');
+    }
+
+    const venues = await this.prisma.venue.findMany({
+      select: { id: true, name: true, stadiumCapacity: true, homeTeam: true },
+      take: 20,
+    });
+
+    const now = new Date();
+    const venueSummaries = await Promise.all(
+      venues.map(async (v) => {
+        const [liveEvent, openIssuesCount, darkStandsCount, totalOutlets] = await Promise.all([
+          this.prisma.venueEvent.findFirst({
+            where: {
+              venueId: v.id,
+              OR: [
+                { startsAt: { gte: now } },
+                { operationalState: { in: ['pre_open', 'live', 'closing'] } },
+              ],
+            },
+            select: { id: true, title: true, operationalState: true, startsAt: true },
+            orderBy: { startsAt: 'asc' },
+          }),
+          this.prisma.eventIssue.count({
+            where: { venueId: v.id, status: { in: ['open', 'acknowledged'] }, severity: { in: ['critical', 'high'] } },
+          }),
+          this.prisma.fnbOperationUnit.count({
+            where: { venueId: v.id, status: 'closed' },
+          }),
+          this.prisma.fnbOperationUnit.count({
+            where: { venueId: v.id },
+          }),
+        ]);
+
+        return {
+          venueId: v.id,
+          venueName: v.name,
+          homeTeam: v.homeTeam,
+          capacity: v.stadiumCapacity,
+          activeEvent: liveEvent ? {
+            id: liveEvent.id,
+            title: liveEvent.title,
+            operationalState: liveEvent.operationalState,
+            startsAt: liveEvent.startsAt.toISOString(),
+          } : null,
+          openCriticalOrHighIssues: openIssuesCount,
+          totalOutlets,
+          darkStandsCount,
+          operationalHealth: openIssuesCount === 0 ? 'optimal' : openIssuesCount <= 2 ? 'watch' : 'critical',
+        };
+      })
+    );
+
+    return {
+      totalVenues: venueSummaries.length,
+      activeEventsCount: venueSummaries.filter((v) => Boolean(v.activeEvent)).length,
+      venues: venueSummaries,
+      generatedAt: new Date().toISOString(),
+    };
   }
 
   @Get('events/:id/nfl-brief')
@@ -705,6 +770,147 @@ export class StadiumController {
       where: { eventId },
       include: { revisions: { orderBy: { version: 'desc' } } },
     });
+  }
+
+  @Get('events/:id/variance-pack')
+  async getEventVariancePack(@VenueScope() scope: Scope, @Param('id') eventId: string) {
+    this.assertOperational(scope);
+    const event = await this.prisma.venueEvent.findFirst({
+      where: { id: eventId, venueId: scope.venueId },
+      select: {
+        id: true,
+        title: true,
+        startsAt: true,
+        endsAt: true,
+        expectedGuests: true,
+        operationalState: true,
+        organizationId: true,
+      },
+    });
+    if (!event) throw new NotFoundException('Stadium event not found.');
+
+    const [closeout, issues, readiness, units, transfers] = await Promise.all([
+      this.prisma.eventCloseout.findUnique({
+        where: { eventId },
+        include: { revisions: { orderBy: { version: 'desc' }, take: 1 } },
+      }),
+      this.prisma.eventIssue.findMany({
+        where: { venueId: scope.venueId, eventId },
+        select: {
+          id: true,
+          issueType: true,
+          severity: true,
+          status: true,
+          title: true,
+          openedAt: true,
+          resolvedAt: true,
+          outletId: true,
+        },
+      }),
+      this.prisma.eventFnbReadiness.findMany({
+        where: { venueId: scope.venueId, eventId },
+        select: { zoneId: true, status: true },
+      }),
+      this.prisma.fnbOperationUnit.findMany({
+        where: { venueId: scope.venueId, status: { in: ['open', 'restricted'] } },
+        select: { id: true, name: true, department: true, type: true, stadiumZone: true },
+      }),
+      this.prisma.inventoryTransferRequest.findMany({
+        where: { facilityId: scope.venueId, eventId },
+        select: { id: true, status: true, items: true },
+      }),
+    ]);
+
+    // 1. Labor Variance
+    const laborBudgetHours = closeout?.laborHours ?? 0;
+    const laborBudgetCostCents = closeout?.laborCostCents ?? 0;
+    const actualSalesCents = closeout?.actualSalesCents ?? 0;
+    const forecastSalesCents = closeout?.forecastSalesCents ?? 0;
+
+    // 2. 86s & Outages
+    const stockoutIssues = issues.filter((i: { issueType: string; title: string }) => i.issueType === 'stockout' || i.title.toLowerCase().includes('86') || i.title.toLowerCase().includes('out of'));
+    const stockoutTimeline = stockoutIssues.map((i: { id: string; title: string; severity: string; status: string; openedAt: Date; resolvedAt: Date | null; outletId: string | null }) => {
+      const durationMin = i.resolvedAt
+        ? Math.max(1, Math.round((i.resolvedAt.getTime() - i.openedAt.getTime()) / 60000))
+        : Math.max(1, Math.round((Date.now() - i.openedAt.getTime()) / 60000));
+      return {
+        id: i.id,
+        title: i.title,
+        severity: i.severity,
+        status: i.status,
+        durationMinutes: durationMin,
+        outletId: i.outletId,
+      };
+    });
+
+    // 3. Dark Stands Detection: Active units with readiness 'blocked' or 'not_started' or no readiness entry
+    const darkStands = units.filter((unit: { id: string; name: string; department: string; type: string; stadiumZone: string | null }) => {
+      const row = readiness.find((r: { zoneId: string; status: string }) => r.zoneId === unit.id);
+      return !row || row.status === 'not_started' || row.status === 'blocked';
+    }).map((unit: { id: string; name: string; department: string; stadiumZone: string | null }) => ({
+      id: unit.id,
+      name: unit.name,
+      department: unit.department,
+      zone: unit.stadiumZone ?? 'concourse',
+      readinessStatus: readiness.find((r: { zoneId: string; status: string }) => r.zoneId === unit.id)?.status ?? 'unopened',
+    }));
+
+    // 4. Commissary Transfers Variance
+    let totalRequestedQty = 0;
+    let totalIssuedQty = 0;
+    let totalReceivedQty = 0;
+    let totalReturnedQty = 0;
+
+    for (const t of transfers) {
+      const items = Array.isArray(t.items) ? (t.items as any[]) : [];
+      for (const item of items) {
+        const req = Number(item.requestedQty ?? item.quantity ?? 0);
+        const iss = Number(item.issuedQty ?? item.quantity ?? 0);
+        const rec = Number(item.receivedQty ?? (t.status === 'completed' ? iss : 0));
+        const ret = Number(item.returnedQty ?? 0);
+        totalRequestedQty += req;
+        totalIssuedQty += iss;
+        totalReceivedQty += rec;
+        totalReturnedQty += ret;
+      }
+    }
+
+    const transferSummary = {
+      totalTransfers: transfers.length,
+      requestedQty: totalRequestedQty,
+      issuedQty: totalIssuedQty,
+      receivedQty: totalReceivedQty,
+      returnedQty: totalReturnedQty,
+      discrepancyQty: Math.max(0, totalIssuedQty - totalReceivedQty),
+    };
+
+    const variancePack = {
+      eventId,
+      eventTitle: event.title,
+      operationalState: event.operationalState,
+      labor: {
+        budgetHours: laborBudgetHours,
+        budgetCostCents: laborBudgetCostCents,
+        forecastSalesCents,
+        actualSalesCents,
+        salesVarianceCents: actualSalesCents - forecastSalesCents,
+      },
+      stockouts: {
+        totalStockouts: stockoutIssues.length,
+        unresolvedCount: stockoutIssues.filter((i: { status: string }) => i.status !== 'resolved').length,
+        timeline: stockoutTimeline,
+      },
+      darkStands: {
+        totalDarkStands: darkStands.length,
+        totalScheduledStands: units.length,
+        standCompliancePercent: units.length ? Math.round(((units.length - darkStands.length) / units.length) * 100) : 100,
+        stands: darkStands,
+      },
+      transfers: transferSummary,
+      generatedAt: new Date().toISOString(),
+    };
+
+    return filterDualOrgEventPayload(scope as any, event, variancePack);
   }
 
   @Post('events/:id/closeout')

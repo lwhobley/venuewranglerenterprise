@@ -2,8 +2,8 @@ import { useLocalSearchParams, router } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { ScrollView, View } from 'react-native';
 import { Button, TextInput } from 'react-native-paper';
-import { CommandSurface, CommandText } from '../components/FutureUI';
-import { asArray, errorMessage } from '../lib/format';
+import { CommandSurface, CommandText, StatusPill } from '../components/FutureUI';
+import { asArray, errorMessage, formatMoney } from '../lib/format';
 import { api } from '../lib/railway-api';
 import { useMutation, useQueryState } from '../lib/railway-hooks';
 import { spacing, useDesignTheme } from '../lib/theme';
@@ -37,6 +37,8 @@ export default function EventCloseoutScreen() {
   const { eventId } = useLocalSearchParams<{ eventId?: string }>();
   const palette = useDesignTheme();
   const query = useQueryState<Closeout>(api.stadium.getEventCloseout, eventId ? { eventId } : 'skip');
+  const varianceQuery = useQueryState<any>(api.stadium.getEventVariancePack, eventId ? { eventId } : 'skip');
+  const variance = varianceQuery.data;
   const save = useMutation(api.stadium.upsertEventCloseout);
   const submitRevision = useMutation(api.stadium.submitEventCloseoutRevision);
   const [attendance, setAttendance] = useState('');
@@ -145,6 +147,59 @@ export default function EventCloseoutScreen() {
           )}
         </View>
       </CommandSurface>
+      {/* Event Variance Pack */}
+      {variance ? (
+        <CommandSurface palette={palette} style={{ gap: spacing.sm }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+            <CommandText palette={palette} variant="title">Event Variance Pack</CommandText>
+            <StatusPill palette={palette} tone={variance.darkStands?.totalDarkStands === 0 ? 'good' : 'warn'}>
+              {variance.darkStands?.standCompliancePercent ?? 100}% Stand Compliance
+            </StatusPill>
+          </View>
+
+          {/* Variance KPIs */}
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm }}>
+            <View style={{ flex: 1, minWidth: 140, padding: spacing.sm, backgroundColor: palette.surfaceSoft, borderRadius: 8 }}>
+              <CommandText palette={palette} variant="caption">Sales Variance</CommandText>
+              <CommandText palette={palette} variant="body" style={{ fontWeight: '800', color: (variance.labor?.salesVarianceCents ?? 0) >= 0 ? palette.success : palette.danger }}>
+                {formatMoney((variance.labor?.salesVarianceCents ?? 0) / 100)}
+              </CommandText>
+              <CommandText palette={palette} variant="caption">Actual vs Forecast</CommandText>
+            </View>
+
+            <View style={{ flex: 1, minWidth: 140, padding: spacing.sm, backgroundColor: palette.surfaceSoft, borderRadius: 8 }}>
+              <CommandText palette={palette} variant="caption">Stockout Incidents</CommandText>
+              <CommandText palette={palette} variant="body" style={{ fontWeight: '800' }}>
+                {variance.stockouts?.totalStockouts ?? 0} ({variance.stockouts?.unresolvedCount ?? 0} active)
+              </CommandText>
+              <CommandText palette={palette} variant="caption">Concourse outages</CommandText>
+            </View>
+
+            <View style={{ flex: 1, minWidth: 140, padding: spacing.sm, backgroundColor: palette.surfaceSoft, borderRadius: 8 }}>
+              <CommandText palette={palette} variant="caption">Transfer Shrink</CommandText>
+              <CommandText palette={palette} variant="body" style={{ fontWeight: '800', color: (variance.transfers?.discrepancyQty ?? 0) > 0 ? palette.warning : palette.charcoal }}>
+                {variance.transfers?.discrepancyQty ?? 0} units
+              </CommandText>
+              <CommandText palette={palette} variant="caption">Dispatched vs received</CommandText>
+            </View>
+          </View>
+
+          {/* Dark Stands Alert */}
+          {(variance.darkStands?.stands?.length ?? 0) > 0 ? (
+            <View style={{ gap: 4, marginTop: spacing.xs, padding: spacing.sm, backgroundColor: `${palette.danger}12`, borderRadius: 8 }}>
+              <CommandText palette={palette} variant="caption" style={{ color: palette.danger, fontWeight: '700' }}>
+                Dark Stands Detected ({variance.darkStands.stands.length} unopened):
+              </CommandText>
+              {variance.darkStands.stands.map((stand: any) => (
+                <CommandText key={stand.id} palette={palette} variant="caption">
+                  • {stand.name} ({stand.department} · {stand.zone}) — {stand.readinessStatus}
+                </CommandText>
+              ))}
+            </View>
+          ) : null}
+        </CommandSurface>
+      ) : null}
+
       {revisions.length > 0 ? (
         <CommandSurface palette={palette} style={{ gap: spacing.sm }}>
           <CommandText palette={palette} variant="title">Revision history</CommandText>

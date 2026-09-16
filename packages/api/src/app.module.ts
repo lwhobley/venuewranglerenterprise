@@ -48,6 +48,7 @@ import { AsyncWriteModule } from './async-write/async-write.module';
 import { DepartmentsModule } from './modules/departments/departments.module';
 import { VmsModule } from './modules/vms/vms.module';
 import { BeoHubModule } from './modules/beo-hub/beo-hub.module';
+import { ScimModule } from './modules/scim/scim.module';
 
 @Module({
   imports: [
@@ -88,6 +89,7 @@ import { BeoHubModule } from './modules/beo-hub/beo-hub.module';
     DepartmentsModule,
     VmsModule,
     BeoHubModule,
+    ScimModule,
   ],
   controllers: [
     HealthController,

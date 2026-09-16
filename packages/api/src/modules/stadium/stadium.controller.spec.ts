@@ -157,4 +157,95 @@ describe('StadiumController Phase 3 - Live Operations', () => {
     expect(auditLogRecord.metadata.phase).toBe('q4_alcohol_cutoff');
     expect(auditLogRecord.metadata.alcoholCutoffEnforced).toBe(true);
   });
+
+  it('calculates comprehensive operational variance pack including dark stands and transfer shrink', async () => {
+    const mockEvent = {
+      id: 'event-1',
+      title: 'Playoff Game',
+      startsAt: new Date(),
+      operationalState: 'closing',
+      organizationId: 'org-1',
+    };
+
+    const mockCloseout = {
+      laborHours: 400,
+      laborCostCents: 1200000,
+      actualSalesCents: 8500000,
+      forecastSalesCents: 8000000,
+    };
+
+    const mockIssues = [
+      {
+        id: 'issue-86',
+        issueType: 'stockout',
+        severity: 'high',
+        status: 'open',
+        title: '86 Draft Beer Stand 104',
+        openedAt: new Date(Date.now() - 45 * 60 * 1000),
+        resolvedAt: null,
+        outletId: 'unit-1',
+      },
+    ];
+
+    const mockUnits = [
+      { id: 'unit-1', name: 'Stand 104', department: 'concessions', stadiumZone: '100 Level' },
+      { id: 'unit-2', name: 'Stand 105', department: 'concessions', stadiumZone: '100 Level' },
+    ];
+
+    // Stand 105 has no readiness entry, meaning it is a dark stand
+    const mockReadiness = [{ zoneId: 'unit-1', status: 'ready' }];
+
+    const mockTransfers = [
+      { id: 't-1', status: 'completed', items: [{ requestedQty: 100, issuedQty: 100, receivedQty: 95, returnedQty: 0 }] },
+    ];
+
+    const tx: any = {
+      venueEvent: { findFirst: vi.fn().mockResolvedValue(mockEvent) },
+      eventCloseout: { findUnique: vi.fn().mockResolvedValue(mockCloseout) },
+      eventIssue: { findMany: vi.fn().mockResolvedValue(mockIssues) },
+      eventFnbReadiness: { findMany: vi.fn().mockResolvedValue(mockReadiness) },
+      fnbOperationUnit: { findMany: vi.fn().mockResolvedValue(mockUnits) },
+      inventoryTransferRequest: { findMany: vi.fn().mockResolvedValue(mockTransfers) },
+    };
+
+    const controller = new StadiumController(tx);
+    const variance = await controller.getEventVariancePack(scope, 'event-1');
+
+    expect(variance.eventId).toBe('event-1');
+    expect(variance.labor.actualSalesCents).toBe(8500000);
+    expect(variance.labor.salesVarianceCents).toBe(500000); // 8500000 - 8000000
+    expect(variance.stockouts.totalStockouts).toBe(1);
+    expect(variance.stockouts.unresolvedCount).toBe(1);
+    expect(variance.darkStands.totalDarkStands).toBe(1); // Stand 105 unopened
+    expect(variance.darkStands.stands[0].name).toBe('Stand 105');
+    expect(variance.transfers.discrepancyQty).toBe(5); // 100 issued - 95 received
+  });
+
+  it('aggregates multi-venue operational roll-up across accessible venues', async () => {
+    const mockVenues = [
+      { id: 'v-1', name: 'Metro Arena', stadiumCapacity: 20000, homeTeam: 'Wolves' },
+      { id: 'v-2', name: 'State Stadium', stadiumCapacity: 70000, homeTeam: 'Titans' },
+    ];
+
+    const tx: any = {
+      venue: { findMany: vi.fn().mockResolvedValue(mockVenues) },
+      venueEvent: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: 'ev-active',
+          title: 'Live Championship',
+          operationalState: 'live',
+          startsAt: new Date(),
+        }),
+      },
+      eventIssue: { count: vi.fn().mockResolvedValue(1) },
+      fnbOperationUnit: { count: vi.fn().mockResolvedValue(10) },
+    };
+
+    const controller = new StadiumController(tx);
+    const rollup = await controller.getMultiVenueRollup(scope);
+
+    expect(rollup.totalVenues).toBe(2);
+    expect(rollup.activeEventsCount).toBe(2);
+    expect(rollup.venues[0].operationalHealth).toBe('watch'); // 1 issue
+  });
 });

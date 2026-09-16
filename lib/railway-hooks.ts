@@ -75,6 +75,8 @@ const queryRoutes: Record<string, Route> = {
   'stadium.listEventIssues': { path: (args) => `/v1/stadium/events/${args.eventId}/issues` },
   'stadium.listEventAudit': { path: (args) => `/v1/stadium/events/${args.eventId}/audit` },
   'stadium.getEventCloseout': { path: (args) => `/v1/stadium/events/${args.eventId}/closeout` },
+  'stadium.getEventVariancePack': { path: (args) => `/v1/stadium/events/${args.eventId}/variance-pack` },
+  'stadium.getMultiVenueRollup': { path: '/v1/stadium/multi-venue-rollup' },
   'stadium.getPilotHealth': { path: '/v1/stadium/pilot-health' },
   'stadium.getIntegrationReadiness': { path: '/v1/stadium/integration-readiness' },
   'stadium.getNflBrief': { path: (args) => `/v1/stadium/events/${args.eventId}/nfl-brief` },
