@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { crmBeoRoute, crmEventBeoRoute, READINESS_ROW_ROUTES } from '../../lib/crm-routing';
+import { crmBeoRoute, crmEventBeoRoute, READINESS_ROW_ROUTES } from './crm-routing';
 
 describe('Stadium BEO Deep-Link Contract (Phase A Extract)', () => {
   it('routes specific BEO records to /stadium/beo-hub?beoId=...', () => {
@@ -27,7 +27,7 @@ describe('Stadium BEO Deep-Link Contract (Phase A Extract)', () => {
   });
 
   it('guarantees zero occurrences of (tabs)/guests or crmView in app/stadium screens', () => {
-    const stadiumDir = join(__dirname);
+    const stadiumDir = join(__dirname, '../app/stadium');
     const files = readdirSync(stadiumDir).filter(
       (f) => (f.endsWith('.tsx') || f.endsWith('.ts')) && !f.includes('.spec.') && !f.includes('.test.')
     );

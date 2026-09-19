@@ -9,6 +9,8 @@ const apiPath = path.join(__dirname, 'packages/api').replace(/[-/\\^$*+?.()|[\]{
 config.resolver.blockList = [
   /(?:^|[\\/])packages[\\/]api[\\/].*/,
   new RegExp(`${apiPath}/.*`),
+  /.*\.spec\.[jt]sx?$/,
+  /.*\.test\.[jt]sx?$/,
 ];
 
 if (!config.resolver.assetExts.includes('wasm')) {
