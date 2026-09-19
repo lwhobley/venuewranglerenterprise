@@ -53,6 +53,40 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO stadium_api;
 GRANT USAGE ON SCHEMA app_private TO stadium_api;
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA app_private TO stadium_api;
 
+-- The blanket GRANT above is convenient but it does not know about the
+-- append-only ledgers, so on its own it re-grants UPDATE/DELETE that earlier
+-- migrations deliberately revoked -- most pointedly VmsAuditLog, whose
+-- immutability is enforced "via grants" by
+-- 20260904180000_vms_audit_log_append_only_via_grants. Narrow those back here
+-- so running this script at cutover cannot quietly undo an audit-integrity
+-- guarantee. Migration 20260917130000 asserts the same end state, because the
+-- script and the migration may be run in either order.
+DO $$
+DECLARE
+  t text;
+  append_only text[] := ARRAY[
+    'EventAuditLog',
+    'EventCloseoutRevision',
+    'InventoryTransaction',
+    'VmsAuditLog'
+  ];
+BEGIN
+  FOREACH t IN ARRAY append_only LOOP
+    IF EXISTS (
+      SELECT 1 FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_name = t
+    ) THEN
+      EXECUTE format('REVOKE UPDATE, DELETE ON public.%I FROM stadium_api', t);
+    END IF;
+  END LOOP;
+END
+$$;
+
+-- Same hazard for tables created after this script runs: the default
+-- privileges below hand the runtime role full CRUD on every future table.
+-- That is the right default for ordinary tenant tables, but a new append-only
+-- ledger must revoke UPDATE/DELETE in its own migration -- see 20260917130000.
+
 -- app_private was explicitly locked down to PUBLIC (REVOKE ALL ... FROM
 -- PUBLIC, see migration 20260903120000) when it was created, and that
 -- REVOKE predates stadium_migrator existing. Once the ownership reassignment
@@ -73,8 +107,8 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
 
 -- Reassign ownership of every EXISTING table/sequence/function to
 -- stadium_migrator. This is not optional: PostgreSQL exempts a table's OWNER
--- from RLS whenever the table isn't FORCE ROW LEVEL SECURITY (none of ours
--- are — see docs/rls-cutover-runbook.md), and the auth-bootstrap SECURITY
+-- from RLS whenever the table isn't FORCE ROW LEVEL SECURITY, and the
+-- auth-bootstrap SECURITY
 -- DEFINER functions (migration 20260903140000) rely on exactly that exemption
 -- to read Session/User/Profile/Venue before any tenant GUC can exist. On a
 -- database whose tables predate this script (i.e. every real deploy so far,
@@ -84,6 +118,17 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
 -- Verified locally: this failed exactly this way until ownership was
 -- reassigned. Idempotent — reassigning an already-stadium_migrator-owned
 -- object is a no-op.
+--
+-- IMPORTANT: owner-exemption is therefore a load-bearing part of the bootstrap,
+-- which means FORCE ROW LEVEL SECURITY must never be applied to a table that an
+-- app_private SECURITY DEFINER helper reads. Some tables ARE forced (the
+-- stadium/VMS/enterprise set), and that is fine because no helper touches them.
+-- The tables that must stay un-forced are Profile, Venue, Role, Session,
+-- OrganizationMembership, ScopeAssignment, DepartmentAreaRule,
+-- DepartmentMembership and UserAreaOverride — "Profile" above all, since
+-- app_private.venue_matches() reads it and roughly 88 tenant policies call
+-- venue_matches(). Migration 20260917130000 encodes this carve-out and asserts
+-- it, so the invariant is checked rather than remembered.
 DO $$
 DECLARE r record;
 BEGIN
