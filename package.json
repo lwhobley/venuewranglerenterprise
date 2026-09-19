@@ -28,7 +28,8 @@
     "test": "npm run api:prisma:generate && vitest run",
     "test:ui": "vitest run --exclude \"packages/api/**\" --exclude \"**/*.integration.spec.ts\"",
     "test:watch": "npm run api:prisma:generate && vitest",
-    "eas-build-post-install": "npm run api:prisma:generate"
+    "eas-build-post-install": "npm run api:prisma:generate",
+    "compress:glb": "gltf-pipeline -i ./assets/nrg-stadium.glb -o ./assets/nrg-stadium-draco.glb -d --draco.compressionLevel 10 --draco.quantizePositionBits 14 --draco.quantizeTexcoordBits 12 --draco.quantizeNormalBits 10 --draco.unified"
   },
   "dependencies": {
     "@expo-google-fonts/fraunces": "^0.4.1",
@@ -77,6 +78,7 @@
     "@types/three": "^0.170.0",
     "@vitest/coverage-v8": "^4.1.9",
     "expo-doctor": "1.20.1",
+    "gltf-pipeline": "^4.3.1",
     "jsdom": "^30.0.1",
     "typescript": "~6.0.3",
     "vitest": "^4.1.9"
