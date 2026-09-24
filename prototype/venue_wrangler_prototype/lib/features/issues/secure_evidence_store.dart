@@ -45,7 +45,12 @@ class LocalIssueEvidence {
       );
 }
 
-class SecureEvidenceStore {
+abstract interface class IssueEvidenceStore {
+  Future<List<int>> decrypt(LocalIssueEvidence evidence);
+  Future<void> delete(LocalIssueEvidence evidence);
+}
+
+class SecureEvidenceStore implements IssueEvidenceStore {
   SecureEvidenceStore(this._secureStorage, [ImagePicker? picker])
       : _picker = picker ?? ImagePicker();
 
@@ -105,6 +110,7 @@ class SecureEvidenceStore {
     );
   }
 
+  @override
   Future<List<int>> decrypt(LocalIssueEvidence evidence) async {
     final bytes = await File(evidence.encryptedPath).readAsBytes();
     if (bytes.length < 30) {
@@ -136,6 +142,7 @@ class SecureEvidenceStore {
     return cleartext;
   }
 
+  @override
   Future<void> delete(LocalIssueEvidence evidence) async {
     final file = File(evidence.encryptedPath);
     if (await file.exists()) await file.delete();

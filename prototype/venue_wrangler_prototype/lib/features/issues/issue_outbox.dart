@@ -261,13 +261,13 @@ final issueSyncProvider =
 
 class IssueSyncController extends StateNotifier<List<PendingIssueReport>> {
   IssueSyncController(this._outbox, this._api,
-      [SecureEvidenceStore? evidenceStore])
+      [IssueEvidenceStore? evidenceStore])
       : _evidenceStore =
             evidenceStore ?? SecureEvidenceStore(const FlutterSecureStorage()),
         super(const []);
   final IssueOutbox _outbox;
   final IssueApi _api;
-  final SecureEvidenceStore _evidenceStore;
+  final IssueEvidenceStore _evidenceStore;
   StreamSubscription<bool>? _connectivitySubscription;
   Future<void>? _syncInFlight;
   bool _wasOnline = false;
@@ -320,13 +320,24 @@ class IssueSyncController extends StateNotifier<List<PendingIssueReport>> {
         for (final evidence in command.evidence) {
           await _api.uploadEvidence(command.eventId, issueId, evidence,
               await _evidenceStore.decrypt(evidence));
-          await _evidenceStore.delete(evidence);
         }
+        // Keep every encrypted source file until all uploads and the durable
+        // outbox acknowledgement succeed. A later photo may fail, and retries
+        // need to replay earlier uploads using their stable client IDs.
+        await _outbox.markAccepted(command.idempotencyKey);
+        for (final evidence in command.evidence) {
+          try {
+            await _evidenceStore.delete(evidence);
+          } catch (_) {
+            // The report is already accepted. A local cleanup failure must not
+            // requeue it with evidence files that may already be deleted.
+          }
+        }
+        continue;
       } catch (_) {
         await _outbox.markFailed(command.idempotencyKey);
         continue;
       }
-      await _outbox.markAccepted(command.idempotencyKey);
     }
     await restore();
   }
