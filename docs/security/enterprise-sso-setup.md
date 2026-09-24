@@ -6,6 +6,8 @@ Venue Wrangler mobile sign-in uses OpenID Connect Authorization Code with PKCE i
 
 Configure `SSO_PROVIDERS_JSON` on the API with one entry per organization/provider pair. The example in `services/api/.env.example` is a template; replace every placeholder with values approved by that organization's identity team. The `tenantId` must be the existing `organizations.id` value. Provider entries contain public issuer, native client ID, API audience, and requested scopes; do not put client secrets in the app or this configuration.
 
+When both Okta and Entra are enabled for one organization, both entries must use the same `organizationSlug` and `tenantId`. Each tenant UUID can map to only one organization slug. The API rejects conflicting mappings at startup so choosing another IdP cannot silently sign staff into a separate tenant.
+
 The issuer must be the exact HTTPS issuer configured for the provider's authorization server. Use a tenant-specific Microsoft Entra v2 issuer and an Okta custom authorization-server issuer. The API discovers the issuer's OIDC metadata, requires the advertised JWKS URI to share the issuer's HTTPS origin, and verifies RS256 signature, exact issuer, audience, authorized client, issue time, and a maximum one-hour token age. Production startup fails if no provider is configured. HS256 local development tokens remain restricted to non-production.
 
 The API access token must include these claims, issued only by the configured IdP for its protected API audience:
