@@ -1,0 +1,25 @@
+name: venue_wrangler_prototype
+description: Interactive Phase 5 product prototype for Venue Wrangler Enterprise.
+publish_to: none
+version: 0.1.0+1
+
+environment:
+  sdk: '>=3.5.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_riverpod: ^2.6.1
+  dio: ^5.8.0+1
+  flutter_secure_storage: ^9.2.4
+  uuid: ^4.5.1
+  connectivity_plus: 7.3.1
+  flutter_appauth: 12.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true

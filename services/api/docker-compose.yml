@@ -1,0 +1,54 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: venue_wrangler
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: local-admin-change-me
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./prisma/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d venue_wrangler"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build:
+      context: .
+      target: build
+    working_dir: /app
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./prisma:/app/prisma:ro
+    command: ["sh", "-c", "npx prisma migrate deploy --schema prisma/schema.prisma && npx prisma db execute --schema prisma/schema.prisma --file prisma/seed-development.sql"]
+    environment:
+      DATABASE_URL: postgresql://venue_migrator:local-migrator-change-me@db:5432/venue_wrangler
+
+  api:
+    build: .
+    environment:
+      PORT: 3000
+      JWT_HS256_SECRET: local-development-secret-that-is-not-for-deployment
+      CORS_ORIGINS: http://localhost:8080
+      DATABASE_URL: postgresql://venue_app:local-app-change-me@db:5432/venue_wrangler
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./test:/app/test:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  postgres-data:

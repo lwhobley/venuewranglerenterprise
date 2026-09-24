@@ -1,0 +1,144 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum IssueState {
+  REPORTED
+  TRIAGED
+  ASSIGNED
+  IN_PROGRESS
+  RESOLVED
+  VERIFIED
+  CLOSED
+  ESCALATED
+
+  @@map("issue_state")
+}
+
+enum IssueSeverity {
+  LOW
+  MODERATE
+  HIGH
+  CRITICAL
+
+  @@map("issue_severity")
+}
+
+model Organization {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+  venues    Venue[]
+
+  @@map("organizations")
+}
+
+model Venue {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  name           String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  events         Event[]
+  locations      Location[]
+
+  @@index([organizationId])
+  @@map("venues")
+}
+
+model Event {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  venueId        String   @map("venue_id") @db.Uuid
+  name           String
+  startsAt       DateTime @map("starts_at")
+  venue          Venue    @relation(fields: [venueId], references: [id])
+  issues         Issue[]
+
+  @@index([organizationId, venueId])
+  @@map("events")
+}
+
+model Location {
+  id             String  @id @default(uuid()) @db.Uuid
+  organizationId String  @map("organization_id") @db.Uuid
+  venueId        String  @map("venue_id") @db.Uuid
+  name           String
+  venue          Venue   @relation(fields: [venueId], references: [id])
+  issues         Issue[]
+
+  @@index([organizationId, venueId])
+  @@map("locations")
+}
+
+model Issue {
+  id             String            @id @default(uuid()) @db.Uuid
+  organizationId String            @map("organization_id") @db.Uuid
+  eventId        String            @map("event_id") @db.Uuid
+  venueId        String            @map("venue_id") @db.Uuid
+  locationId     String?           @map("location_id") @db.Uuid
+  title          String
+  description    String
+  category       String
+  severity       IssueSeverity
+  state          IssueState        @default(REPORTED)
+  reporterId     String            @map("reporter_id")
+  ownerId        String?           @map("owner_id")
+  escalationNote String?           @map("escalation_note")
+  resolutionNote String?           @map("resolution_note")
+  createdAt      DateTime          @default(now()) @map("created_at")
+  updatedAt      DateTime          @updatedAt @map("updated_at")
+  event          Event             @relation(fields: [eventId], references: [id])
+  location       Location?         @relation(fields: [locationId], references: [id])
+  auditEvents    IssueAuditEvent[]
+
+  @@index([organizationId, eventId, state])
+  @@index([organizationId, ownerId])
+  @@map("issues")
+}
+
+model IssueAuditEvent {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  issueId        String   @map("issue_id") @db.Uuid
+  actorId        String   @map("actor_id")
+  action         String
+  before         Json?
+  after          Json?
+  reason         String?
+  createdAt      DateTime @default(now()) @map("created_at")
+  issue          Issue    @relation(fields: [issueId], references: [id])
+
+  @@index([organizationId, issueId, createdAt])
+  @@map("issue_audit_events")
+}
+
+model CommandReceipt {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  key            String
+  fingerprint    String
+  action         String
+  response       Json
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@unique([organizationId, key])
+  @@map("command_receipts")
+}
+
+model IssueDomainEvent {
+  id             BigInt   @id @default(autoincrement())
+  organizationId String   @map("organization_id") @db.Uuid
+  eventId        String   @map("event_id") @db.Uuid
+  issueId        String   @map("issue_id") @db.Uuid
+  action         String
+  payload        Json
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([organizationId, eventId, id])
+  @@map("issue_events")
+}
