@@ -1,0 +1,16 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /services/api
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: pub
+    directory: /prototype/venue_wrangler_prototype
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

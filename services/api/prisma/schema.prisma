@@ -65,6 +65,7 @@ model Organization {
   taskAuditEvents OperationalTaskAudit[]
   notifications   UserNotification[]
   attachments     IssueAttachment[]
+  integrationEvents ExternalIntegrationEvent[]
 
   @@map("organizations")
 }
@@ -93,6 +94,7 @@ model Event {
   tasks          OperationalTask[]
   notifications  UserNotification[]
   attachments    IssueAttachment[]
+  integrationEvents ExternalIntegrationEvent[]
 
   @@index([organizationId, venueId])
   @@map("events")
@@ -120,12 +122,29 @@ model Person {
   displayName     String       @map("display_name")
   active          Boolean      @default(true)
   createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
+  auditEvents     PersonAuditEvent[]
   organization    Organization @relation(fields: [organizationId], references: [id])
 
   @@unique([organizationId, externalSubject])
   @@unique([organizationId, email])
+  @@unique([id, organizationId])
   @@index([organizationId, active])
   @@map("people")
+}
+
+model PersonAuditEvent {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  personId       String   @map("person_id") @db.Uuid
+  actorId        String   @map("actor_id")
+  action         String
+  changedFields  String[] @map("changed_fields")
+  createdAt      DateTime @default(now()) @map("created_at")
+  person         Person   @relation(fields: [personId, organizationId], references: [id, organizationId], map: "person_audit_events_person_tenant_fk")
+
+  @@index([organizationId, personId, createdAt])
+  @@map("person_audit_events")
 }
 
 model Issue {
@@ -287,4 +306,23 @@ model IssueAttachment {
   @@unique([issueId, clientId])
   @@index([organizationId, eventId, issueId, createdAt])
   @@map("issue_attachments")
+}
+
+model ExternalIntegrationEvent {
+  id               String       @id @default(uuid()) @db.Uuid
+  organizationId   String       @map("organization_id") @db.Uuid
+  eventId          String       @map("event_id") @db.Uuid
+  source           String
+  externalId       String       @map("external_id")
+  eventType        String       @map("event_type")
+  occurredAt       DateTime     @map("occurred_at")
+  payload          Json         @db.JsonB
+  bodySha256       String       @map("body_sha256")
+  receivedAt       DateTime     @default(now()) @map("received_at")
+  organization     Organization @relation(fields: [organizationId], references: [id])
+  event            Event        @relation(fields: [eventId], references: [id])
+
+  @@unique([organizationId, source, externalId])
+  @@index([organizationId, eventId, occurredAt(sort: Desc)])
+  @@map("external_integration_events")
 }

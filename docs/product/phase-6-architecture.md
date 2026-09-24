@@ -64,7 +64,7 @@ The server never accepts a tenant identifier from a request body. It derives ten
 
 | Operation | Policy | Recovery |
 |---|---|---|
-| Read cached permitted issues | Planned | The current slice does not cache server read models. |
+| Read previously loaded permitted data | Offline-capable | The app keeps a short-lived encrypted cache of the organization bootstrap and event issue/task lists, scoped to the signed-in identity and capability scope. |
 | Report issue | Offline-writable | Encrypt/store command and idempotency key in secure storage; show pending state; retry on startup and when connectivity returns. Failed API requests remain queued and can be retried manually. |
 | Attach evidence | Offline-writable | Queue upload separately; preserve report even if upload fails. |
 | Assign/escalate/resolve/verify | Online-only initially | Present current state requirement, retain draft update, and retry only after refresh. |
@@ -93,12 +93,16 @@ Health checks fail closed for missing JWT verification configuration, database c
 | `prototype/venue_wrangler_prototype/lib/features/issues` | Encrypted outbox, connectivity-triggered retry, REST client, and Riverpod controller |
 | `prototype/venue_wrangler_prototype/lib/features/operations` | API client and live organization, event, issue, and task data providers |
 | `services/api/src/operations.*` | Tenant bootstrap, administrator onboarding, operational task CRUD, and audit records |
+| `services/api/src/scim.*` | Tenant-bound SCIM 2.0 user lifecycle and immediate API denial for deactivated provisioned users |
+| `services/api/src/integration.*` | HMAC-authenticated, idempotent normalized event ingestion for vendor-specific adapters |
 | `services/api/prisma/migrations/20260926000000_operations_admin` | Tenant people and operational-task tables with RLS and consistency constraints |
+| `docs/integrations/signed-event-ingestion.md` | Canonical adapter event envelope, signature format, retry contract, and data-minimization guidance |
 | `docs/product/phase-6-architecture.md` | Architecture decisions and operation boundaries |
 
 ## Verification status
 
 - Verified locally: API type-check/build and state-machine unit tests; Docker Compose migrations and health gate; runtime-role two-tenant isolation across all eight protected tables; same-tenant wrong-venue and cross-tenant location rejection; full issue lifecycle and SSE replay through a second API instance; Flutter controller/widget tests, analyzer, and web build.
+- SCIM, append-only roster audit, provisioning deactivation checks, and signed integration ingestion were added after that earlier verification. The API Prisma schema and Nest build pass locally; migrations and tenant-isolation checks for these new paths still require staging database execution.
 - Automated Flutter coverage checks report-form labels, keyboard focus from title to location, live-region issue status, and a 200% text scale layout.
 - Android device verification: on a FOXXD HTH C67 running Android 14, an issue report was saved while Wi-Fi and mobile data were disabled, survived force-stop/relaunch in encrypted storage, and remained queued after mobile data returned. The app now has organization-scoped Okta/Entra OIDC discovery and native PKCE sign-in, but no customer provider registration has been supplied; real login and server acceptance remain unverified. The header shows the queued/blocked count, and the mobile Event Command issue detail scrolls without a flex-layout assertion.
 - Automated Flutter coverage checks report-form labels, keyboard focus from title to location, live-region issue status, and a 200% text scale layout. Android UI hierarchy exposed the location control and submit action. Database polling is the current event transport, with broker-backed fan-out a future scale-up option.

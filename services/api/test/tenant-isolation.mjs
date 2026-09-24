@@ -16,8 +16,9 @@ const annexLocationA = '30000000-0000-4000-8000-000000000004';
 const locationB = '30000000-0000-4000-8000-000000000010';
 const rollback = new Error('rollback tenant isolation fixtures');
 
-async function setTenant(tx, tenantId) {
+async function setTenant(tx, tenantId, actorId = 'tenant-isolation-test') {
   await tx.$queryRaw`SELECT set_config('app.tenant_id', ${tenantId}, true)`;
+  await tx.$queryRaw`SELECT set_config('app.actor_id', ${actorId}, true)`;
 }
 
 async function makeIssue(tx, { organizationId, eventId, venueId, locationId, title }) {
@@ -60,6 +61,11 @@ try {
       await tx.issueAuditEvent.create({ data: { organizationId: tenantA, issueId: issueA.id, actorId: 'tenant-isolation-test', action: 'reported' } });
       await tx.commandReceipt.create({ data: { organizationId: tenantA, key: `tenant-a-${randomUUID()}`, fingerprint: 'a', action: 'test', response: {} } });
       await tx.issueDomainEvent.create({ data: { organizationId: tenantA, eventId: eventA, issueId: issueA.id, action: 'reported', payload: { issueId: issueA.id } } });
+      await tx.person.create({ data: { organizationId: tenantA, externalSubject: `tenant-a-${randomUUID()}`, email: `${randomUUID()}@example.invalid`, displayName: 'Tenant A' } });
+      const taskA = await tx.operationalTask.create({ data: { organizationId: tenantA, venueId: venueA, eventId: eventA, locationId: locationA, kind: 'SERVICE', title: `Tenant A ${randomUUID()}`, createdBy: 'tenant-isolation-test', updatedBy: 'tenant-isolation-test' } });
+      await tx.operationalTaskAudit.create({ data: { organizationId: tenantA, taskId: taskA.id, actorId: 'tenant-isolation-test', action: 'created' } });
+      await tx.userNotification.create({ data: { organizationId: tenantA, eventId: eventA, issueId: issueA.id, recipientSubject: 'tenant-isolation-test', kind: 'issue.assigned', title: 'Tenant A', body: 'Tenant A' } });
+      await tx.issueAttachment.create({ data: { organizationId: tenantA, eventId: eventA, issueId: issueA.id, clientId: randomUUID(), uploadedBy: 'tenant-isolation-test', fileName: 'fixture.jpg', contentType: 'image/jpeg', sizeBytes: 1, sha256: 'a'.repeat(64), storageObjectKey: `tenant-a/${randomUUID()}` } });
 
       await setTenant(tx, tenantB);
       const issueB = await makeIssue(tx, {
@@ -72,16 +78,25 @@ try {
       await tx.issueAuditEvent.create({ data: { organizationId: tenantB, issueId: issueB.id, actorId: 'tenant-isolation-test', action: 'reported' } });
       await tx.commandReceipt.create({ data: { organizationId: tenantB, key: `tenant-b-${randomUUID()}`, fingerprint: 'b', action: 'test', response: {} } });
       await tx.issueDomainEvent.create({ data: { organizationId: tenantB, eventId: eventB, issueId: issueB.id, action: 'reported', payload: { issueId: issueB.id } } });
+      await tx.person.create({ data: { organizationId: tenantB, externalSubject: `tenant-b-${randomUUID()}`, email: `${randomUUID()}@example.invalid`, displayName: 'Tenant B' } });
+      const taskB = await tx.operationalTask.create({ data: { organizationId: tenantB, venueId: venueB, eventId: eventB, locationId: locationB, kind: 'SERVICE', title: `Tenant B ${randomUUID()}`, createdBy: 'tenant-isolation-test', updatedBy: 'tenant-isolation-test' } });
+      await tx.operationalTaskAudit.create({ data: { organizationId: tenantB, taskId: taskB.id, actorId: 'tenant-isolation-test', action: 'created' } });
+      await tx.userNotification.create({ data: { organizationId: tenantB, eventId: eventB, issueId: issueB.id, recipientSubject: 'tenant-isolation-test', kind: 'issue.assigned', title: 'Tenant B', body: 'Tenant B' } });
+      await tx.issueAttachment.create({ data: { organizationId: tenantB, eventId: eventB, issueId: issueB.id, clientId: randomUUID(), uploadedBy: 'tenant-isolation-test', fileName: 'fixture.jpg', contentType: 'image/jpeg', sizeBytes: 1, sha256: 'b'.repeat(64), storageObjectKey: `tenant-b/${randomUUID()}` } });
 
       await setTenant(tx, tenantA);
-      await assertTenantCannotRead(tx, tenantA, tenantB, issueB.id);
+      await assertTenantCannotRead(tx, tenantA, tenantB, issueB.id, taskB.id);
       const updated = await tx.issue.updateMany({ where: { id: issueB.id }, data: { title: 'forbidden update' } });
       const deleted = await tx.issue.deleteMany({ where: { id: issueB.id } });
+      const updatedTask = await tx.operationalTask.updateMany({ where: { id: taskB.id }, data: { title: 'forbidden update' } });
       assert.equal(updated.count, 0, 'tenant A must not update tenant B issues');
       assert.equal(deleted.count, 0, 'tenant A must not delete tenant B issues');
+      assert.equal(updatedTask.count, 0, 'tenant A must not update tenant B operational tasks');
 
       await setTenant(tx, tenantB);
-      await assertTenantCannotRead(tx, tenantB, tenantA, issueA.id);
+      await assertTenantCannotRead(tx, tenantB, tenantA, issueA.id, taskA.id);
+      await setTenant(tx, tenantB, 'unrelated-recipient');
+      assert.equal(await tx.userNotification.count({ where: { organizationId: tenantB } }), 0, 'notifications must only be visible to their recipient subject');
       throw rollback;
     });
     assert.fail('The fixture transaction should roll back.');
@@ -112,7 +127,7 @@ try {
   await prisma.$disconnect();
 }
 
-async function assertTenantCannotRead(tx, visibleTenant, hiddenTenant, hiddenIssueId) {
+async function assertTenantCannotRead(tx, visibleTenant, hiddenTenant, hiddenIssueId, hiddenTaskId) {
   assert.equal(await tx.organization.count({ where: { id: hiddenTenant } }), 0, `${visibleTenant} organization isolation`);
   assert.equal(await tx.venue.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} venue isolation`);
   assert.equal(await tx.event.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} event isolation`);
@@ -121,4 +136,9 @@ async function assertTenantCannotRead(tx, visibleTenant, hiddenTenant, hiddenIss
   assert.equal(await tx.issueAuditEvent.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} audit isolation`);
   assert.equal(await tx.commandReceipt.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} command receipt isolation`);
   assert.equal(await tx.issueDomainEvent.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} event outbox isolation`);
+  assert.equal(await tx.person.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} people isolation`);
+  assert.equal(await tx.operationalTask.count({ where: { id: hiddenTaskId } }), 0, `${visibleTenant} operational task isolation`);
+  assert.equal(await tx.operationalTaskAudit.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} task audit isolation`);
+  assert.equal(await tx.userNotification.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} notification isolation`);
+  assert.equal(await tx.issueAttachment.count({ where: { issueId: hiddenIssueId } }), 0, `${visibleTenant} issue evidence isolation`);
 }

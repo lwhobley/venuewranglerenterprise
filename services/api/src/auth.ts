@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Request } from 'express';
 import { createRemoteJWKSet, decodeJwt, jwtVerify, type JWTVerifyGetKey } from 'jose';
 import { AuthProvidersService, type SsoProviderConfig } from './auth-providers';
+import { PrismaService } from './prisma.service';
 
 export type Capability = 'issue:report' | 'issue:read' | 'issue:evidence' | 'issue:triage' | 'issue:escalate' | 'issue:resolve' | 'issue:verify' | 'issue:close' | 'operations:read' | 'operations:write' | 'notification:read' | 'tenant:admin';
 const capabilities = new Set<Capability>(['issue:report', 'issue:read', 'issue:evidence', 'issue:triage', 'issue:escalate', 'issue:resolve', 'issue:verify', 'issue:close', 'operations:read', 'operations:write', 'notification:read', 'tenant:admin']);
@@ -28,7 +29,7 @@ declare module 'express-serve-static-core' {
 export class JwtIdentityGuard implements CanActivate {
   private readonly jwks = new Map<string, Promise<JWTVerifyGetKey>>();
 
-  constructor(private readonly config: ConfigService, private readonly providers: AuthProvidersService) {}
+  constructor(private readonly config: ConfigService, private readonly providers: AuthProvidersService, private readonly prisma: PrismaService) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request>();
@@ -62,8 +63,13 @@ export class JwtIdentityGuard implements CanActivate {
       const tenantId = provider?.tenantId ?? (typeof payload.tenant_id === 'string' ? payload.tenant_id : undefined);
       if (typeof payload.sub !== 'string' || !tenantId || !Array.isArray(payload.capabilities) || payload.capabilities.some((capability) => typeof capability !== 'string' || !capabilities.has(capability as Capability)) || !Array.isArray(payload.event_ids) || !Array.isArray(payload.venue_ids) || !Array.isArray(payload.location_ids) || !Array.isArray(payload.assignable_user_ids) || [...payload.event_ids, ...payload.venue_ids, ...payload.location_ids, ...payload.assignable_user_ids].some((claim) => typeof claim !== 'string')) throw new UnauthorizedException('The access token is missing required scope.');
       request.identity = { subject: `${subjectPrefix}${payload.sub}`, tenantId, organizationSlug: provider?.organizationSlug, email: typeof payload.email === 'string' ? payload.email : typeof payload.preferred_username === 'string' ? payload.preferred_username : undefined, displayName: typeof payload.name === 'string' ? payload.name : undefined, capabilities: payload.capabilities as Capability[], eventIds: payload.event_ids as string[], venueIds: payload.venue_ids as string[], locationIds: payload.location_ids as string[], assignableUserIds: payload.assignable_user_ids as string[] };
-      return true;
     } catch { throw new UnauthorizedException('The access token is invalid.'); }
+    const provisionedUser = await this.prisma.withTenant(request.identity, (tx) => tx.person.findFirst({
+      where: { organizationId: request.identity.tenantId, externalSubject: request.identity.subject },
+      select: { active: true },
+    }));
+    if (provisionedUser?.active === false) throw new UnauthorizedException('This account is deactivated. Contact your identity administrator.');
+    return true;
   }
 
   private async keysFor(provider: SsoProviderConfig): Promise<JWTVerifyGetKey> {

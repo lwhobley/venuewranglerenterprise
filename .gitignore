@@ -6,6 +6,7 @@
 **/.flutter-plugins-dependencies
 **/.pub-cache/
 **/coverage/
+gha-creds-*.json
 
 # Local configuration and credentials
 **/.env

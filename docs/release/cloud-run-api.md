@@ -1,0 +1,44 @@
+# Cloud Run API deployment
+
+`.github/workflows/deploy-api.yml` is a manual production deployment. It builds the API image, deploys a tagged Cloud Run candidate with no customer traffic, requires `/api/health` to report an active database connection and all 15 RLS-protected tables enforced, then promotes the candidate. It never applies database migrations; run the approved migrator process first.
+
+## GitHub configuration
+
+Create the `production` GitHub Actions environment and configure these repository variables:
+
+| Variable | Meaning |
+| --- | --- |
+| `GCP_PROJECT_ID` | Google Cloud project that owns Artifact Registry, Secret Manager, Cloud Run, and the runtime service account |
+| `GCP_REGION` | Cloud Run and Artifact Registry region |
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | Full Workload Identity Federation provider resource name |
+| `GCP_DEPLOYER_SERVICE_ACCOUNT` | Service account the GitHub workflow may impersonate |
+| `GCP_RUNTIME_SERVICE_ACCOUNT` | Dedicated least-privilege identity assigned to the Cloud Run service |
+| `ARTIFACT_REGISTRY_REPOSITORY` | Artifact Registry Docker repository ID in `GCP_REGION` |
+| `CLOUD_RUN_SERVICE` | Cloud Run service name |
+| `DATABASE_URL_SECRET` / `DATABASE_URL_SECRET_VERSION` | Secret Manager secret ID and pinned version for the `venue_app` runtime connection string |
+| `SSO_PROVIDERS_JSON_SECRET` / `SSO_PROVIDERS_JSON_SECRET_VERSION` | Secret Manager secret ID and pinned version for the issuer-to-tenant/provider configuration |
+| `SCIM_PROVIDERS_JSON_SECRET` / `SCIM_PROVIDERS_JSON_SECRET_VERSION` | Secret Manager secret ID and pinned version for tenant-specific SCIM bearer tokens; use `[]` to disable provisioning |
+| `INTEGRATION_PROVIDERS_JSON_SECRET` / `INTEGRATION_PROVIDERS_JSON_SECRET_VERSION` | Secret Manager secret ID and pinned version for inbound integration HMAC secrets; use `[]` until a source is configured |
+| `EVIDENCE_BUCKET` | Private Cloud Storage bucket name for issue evidence |
+| `CORS_ORIGINS` | Comma-separated allowlist of approved browser origins; set only origins actually used by approved clients |
+
+The workflow uses GitHub OIDC through Workload Identity Federation; it does not need a service-account JSON key or secret values in GitHub. Restrict the identity provider condition to repository `lwhobley/venuewranglerenterprise`, branch `main`, and this deployment workflow. Grant the deployer only Artifact Registry write, Cloud Run deployment, and service-account act-as permissions. Give the Cloud Run runtime identity access to the named secret versions and only the necessary Cloud Storage object operations and IAM signing permission. Do not grant project-wide Editor or use a long-lived JSON key.
+
+The Cloud Run service must allow unauthenticated network invocation so the native mobile client can reach it; API routes remain protected by verified OIDC bearer tokens and server-side capability/scope checks. Do not expose database credentials through GitHub variables, build arguments, image layers, or workflow output.
+
+## Database and first deployment order
+
+1. Create the private bucket with uniform bucket-level access and public access prevention. Configure a dedicated runtime service identity and verify it can sign constrained upload policies and read/write only within the evidence bucket.
+2. Provision PostgreSQL `venue_app` and `venue_migrator` as separate non-superuser, `NOBYPASSRLS` roles. Use TLS and keep the application `DATABASE_URL` on `venue_app`.
+3. Apply these ordered migrations through the authorized migration process: `20260926000000_operations_admin`, `20260927000000_notifications`, `20260928000000_issue_evidence`, `20260929000000_scim_user_lifecycle`, and `20260930000000_signed_integration_events`. Confirm all preceding issue-slice migrations are present too.
+4. Store `DATABASE_URL`, `SSO_PROVIDERS_JSON`, `SCIM_PROVIDERS_JSON`, and `INTEGRATION_PROVIDERS_JSON` in Secret Manager, then record exact enabled version numbers in the GitHub variables above. Use `[]` for SCIM and integrations until configured. Never use a moving `latest` selector for production deployment.
+5. Run **Actions → Deploy API to Cloud Run** from `main`. The workflow shifts traffic only if the tagged revision passes the RLS health gate. Record the promoted revision and service URL.
+6. Set `VENUE_API_BASE_URL` in GitHub Actions variables to the verified HTTPS service origin. Run the iOS TestFlight workflow only after customer SSO and issue/evidence acceptance checks pass.
+
+## Recovery
+
+The workflow deploys by commit SHA and retains prior Cloud Run revisions. If candidate health fails, no customer traffic is promoted. If the promoted revision causes an incident, the named Cloud Run operator routes traffic to the last known healthy revision and verifies `/api/health` before restoring the event workflow. Database migration rollback is a separate operation and must follow the approved backup/restore plan; do not assume an application rollback reverses a schema migration.
+
+## External setup still required
+
+This repository does not create the Google project, Workload Identity Federation pool/provider, IAM bindings, database roles, Secret Manager versions, bucket, backups, monitoring, or Cloud Run service. These must be created and verified by the customer/product cloud administrator before the workflow can deploy.

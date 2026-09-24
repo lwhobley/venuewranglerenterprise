@@ -12,6 +12,10 @@ import { OperationsService } from './operations.service';
 import { NotificationsController } from './notifications.controller';
 import { NotificationsService } from './notifications.service';
 import { EvidenceService } from './evidence.service';
+import { ScimController } from './scim.controller';
+import { ScimService } from './scim.service';
+import { IntegrationController } from './integration.controller';
+import { IntegrationService } from './integration.service';
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true, validate: (env) => {
@@ -24,7 +28,7 @@ import { EvidenceService } from './evidence.service';
     }
     return env;
   } })],
-  controllers: [AuthController, HealthController, IssuesController, OperationsController, NotificationsController],
-  providers: [AuthProvidersService, PrismaService, JwtIdentityGuard, IssuesService, OperationsService, NotificationsService, EvidenceService],
+  controllers: [AuthController, HealthController, IssuesController, OperationsController, NotificationsController, ScimController, IntegrationController],
+  providers: [AuthProvidersService, PrismaService, JwtIdentityGuard, IssuesService, OperationsService, NotificationsService, EvidenceService, ScimService, IntegrationService],
 })
 export class AppModule {}

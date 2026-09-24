@@ -1,0 +1,117 @@
+name: Deploy API to Cloud Run
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-api-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: production
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_DEPLOYER_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+      GCP_RUNTIME_SERVICE_ACCOUNT: ${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}
+      ARTIFACT_REGISTRY_REPOSITORY: ${{ vars.ARTIFACT_REGISTRY_REPOSITORY }}
+      CLOUD_RUN_SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+      DATABASE_URL_SECRET: ${{ vars.DATABASE_URL_SECRET }}
+      DATABASE_URL_SECRET_VERSION: ${{ vars.DATABASE_URL_SECRET_VERSION }}
+      SSO_PROVIDERS_JSON_SECRET: ${{ vars.SSO_PROVIDERS_JSON_SECRET }}
+      SSO_PROVIDERS_JSON_SECRET_VERSION: ${{ vars.SSO_PROVIDERS_JSON_SECRET_VERSION }}
+      SCIM_PROVIDERS_JSON_SECRET: ${{ vars.SCIM_PROVIDERS_JSON_SECRET }}
+      SCIM_PROVIDERS_JSON_SECRET_VERSION: ${{ vars.SCIM_PROVIDERS_JSON_SECRET_VERSION }}
+      INTEGRATION_PROVIDERS_JSON_SECRET: ${{ vars.INTEGRATION_PROVIDERS_JSON_SECRET }}
+      INTEGRATION_PROVIDERS_JSON_SECRET_VERSION: ${{ vars.INTEGRATION_PROVIDERS_JSON_SECRET_VERSION }}
+      EVIDENCE_BUCKET: ${{ vars.EVIDENCE_BUCKET }}
+      CORS_ORIGINS: ${{ vars.CORS_ORIGINS }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7.0.1
+
+      - name: Check deployment configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in GCP_PROJECT_ID GCP_REGION GCP_WORKLOAD_IDENTITY_PROVIDER GCP_DEPLOYER_SERVICE_ACCOUNT GCP_RUNTIME_SERVICE_ACCOUNT ARTIFACT_REGISTRY_REPOSITORY CLOUD_RUN_SERVICE DATABASE_URL_SECRET DATABASE_URL_SECRET_VERSION SSO_PROVIDERS_JSON_SECRET SSO_PROVIDERS_JSON_SECRET_VERSION SCIM_PROVIDERS_JSON_SECRET SCIM_PROVIDERS_JSON_SECRET_VERSION INTEGRATION_PROVIDERS_JSON_SECRET INTEGRATION_PROVIDERS_JSON_SECRET_VERSION EVIDENCE_BUCKET CORS_ORIGINS; do
+            if [[ -z "${!name}" ]]; then
+              echo "Missing required production repository variable: ${name}"
+              exit 1
+            fi
+          done
+
+      - name: Authenticate to Google Cloud with workload identity federation
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v3.0.1
+
+      - name: Build and publish immutable API image
+        shell: bash
+        run: |
+          set -euo pipefail
+          registry_host="${GCP_REGION}-docker.pkg.dev"
+          image="${registry_host}/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPOSITORY}/venue-wrangler-api:${GITHUB_SHA}"
+          gcloud auth configure-docker "${registry_host}" --quiet
+          docker build --pull --tag "${image}" services/api
+          docker push "${image}"
+          echo "IMAGE=${image}" >> "${GITHUB_ENV}"
+
+      - name: Deploy candidate revision without customer traffic
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="candidate-${GITHUB_RUN_ID}"
+          gcloud run deploy "${CLOUD_RUN_SERVICE}" \
+            --project "${GCP_PROJECT_ID}" \
+            --region "${GCP_REGION}" \
+            --image "${IMAGE}" \
+            --service-account "${GCP_RUNTIME_SERVICE_ACCOUNT}" \
+            --port 3000 \
+            --allow-unauthenticated \
+            --no-traffic \
+            --tag "${tag}" \
+            --set-env-vars "^@^NODE_ENV=production@EVIDENCE_BUCKET=${EVIDENCE_BUCKET}@CORS_ORIGINS=${CORS_ORIGINS}" \
+            --set-secrets "DATABASE_URL=${DATABASE_URL_SECRET}:${DATABASE_URL_SECRET_VERSION},SSO_PROVIDERS_JSON=${SSO_PROVIDERS_JSON_SECRET}:${SSO_PROVIDERS_JSON_SECRET_VERSION},SCIM_PROVIDERS_JSON=${SCIM_PROVIDERS_JSON_SECRET}:${SCIM_PROVIDERS_JSON_SECRET_VERSION},INTEGRATION_PROVIDERS_JSON=${INTEGRATION_PROVIDERS_JSON_SECRET}:${INTEGRATION_PROVIDERS_JSON_SECRET_VERSION}"
+          candidate_url="$(gcloud run services describe "${CLOUD_RUN_SERVICE}" \
+            --project "${GCP_PROJECT_ID}" --region "${GCP_REGION}" --format=json \
+            | jq -r --arg tag "${tag}" '.status.traffic[] | select(.tag == $tag) | .url')"
+          if [[ -z "${candidate_url}" || "${candidate_url}" == "null" ]]; then
+            echo "Cloud Run did not return the tagged candidate URL."
+            exit 1
+          fi
+          health="$(curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-connrefused "${candidate_url}/api/health")"
+          jq -e '.ok == true and .rlsEnforced == true and .databaseConnected == true' <<< "${health}"
+          echo "CANDIDATE_TAG=${tag}" >> "${GITHUB_ENV}"
+
+      - name: Promote healthy candidate to production traffic
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run services update-traffic "${CLOUD_RUN_SERVICE}" \
+            --project "${GCP_PROJECT_ID}" \
+            --region "${GCP_REGION}" \
+            --to-tags "${CANDIDATE_TAG}=100"
+          service_url="$(gcloud run services describe "${CLOUD_RUN_SERVICE}" \
+            --project "${GCP_PROJECT_ID}" --region "${GCP_REGION}" \
+            --format='value(status.url)')"
+          {
+            echo '## Cloud Run API deployment'
+            echo "Promoted the health-checked revision for commit \`${GITHUB_SHA}\`."
+            echo "Service URL: ${service_url}"
+            echo 'Confirm this exact HTTPS origin is set as the GitHub Actions variable `VENUE_API_BASE_URL` before starting the TestFlight workflow.'
+          } >> "${GITHUB_STEP_SUMMARY}"
