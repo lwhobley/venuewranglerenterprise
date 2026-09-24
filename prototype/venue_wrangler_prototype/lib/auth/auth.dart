@@ -225,9 +225,19 @@ class AuthRepository {
     // Disable local delivery before attempting network cleanup. The server
     // token can be revoked after reconnect, but this device must stop treating
     // the previous account's push registration as active immediately.
-    await _storage.write(key: _pushEnabledKey, value: 'false');
-    final installationId = await _storage.read(key: _pushInstallationKey);
-    final accessToken = await _storage.read(key: _accessTokenKey);
+    try {
+      await _storage.write(key: _pushEnabledKey, value: 'false');
+    } catch (_) {
+      // Push cleanup must never prevent the user session from being cleared.
+    }
+    String? installationId;
+    String? accessToken;
+    try {
+      installationId = await _storage.read(key: _pushInstallationKey);
+      accessToken = await _storage.read(key: _accessTokenKey);
+    } catch (_) {
+      // Continue with Firebase token deletion when secure storage is unavailable.
+    }
     if (installationId != null && accessToken != null) {
       try {
         await _dio.delete<void>(
@@ -243,7 +253,11 @@ class AuthRepository {
     } catch (_) {
       // Firebase may be unconfigured or offline; the local session still ends.
     }
-    await _storage.delete(key: _pushInstallationKey);
+    try {
+      await _storage.delete(key: _pushInstallationKey);
+    } catch (_) {
+      // The next sign-in still proceeds; server revocation is best-effort.
+    }
   }
 
   Future<void> clear() async {
