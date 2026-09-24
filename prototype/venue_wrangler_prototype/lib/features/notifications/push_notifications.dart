@@ -95,7 +95,7 @@ class PushNotifications {
       registrationToken: token,
     );
     await _storage.write(key: _enabledKey, value: 'true');
-    _listenForRefresh(api, installationId);
+    _listenForRefresh(api);
     return true;
   }
 
@@ -110,7 +110,7 @@ class PushNotifications {
           platform: defaultTargetPlatform == TargetPlatform.iOS ? 'ios' : 'android',
           registrationToken: token,
         );
-        _listenForRefresh(api, installationId);
+        _listenForRefresh(api);
       }
     } catch (_) {
       // The durable in-app inbox remains available when push registration is offline.
@@ -138,13 +138,25 @@ class PushNotifications {
     return created;
   }
 
-  static void _listenForRefresh(OperationsApi api, String installationId) {
+  static void _listenForRefresh(OperationsApi api) {
     _tokenRefresh ??= FirebaseMessaging.instance.onTokenRefresh.listen((token) {
-      api.registerPushDevice(
-        installationId: installationId,
-        platform: defaultTargetPlatform == TargetPlatform.iOS ? 'ios' : 'android',
-        registrationToken: token,
-      ).catchError((Object _) {});
+      _registerRefreshedToken(api, token);
     });
+  }
+
+  static Future<void> _registerRefreshedToken(
+      OperationsApi api, String token) async {
+    if (!await isEnabled()) return;
+    final installationId = await _installationId();
+    try {
+      await api.registerPushDevice(
+        installationId: installationId,
+        platform:
+            defaultTargetPlatform == TargetPlatform.iOS ? 'ios' : 'android',
+        registrationToken: token,
+      );
+    } catch (_) {
+      // Registration is retried by syncIfEnabled on the next signed-in launch.
+    }
   }
 }

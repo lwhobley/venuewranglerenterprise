@@ -85,6 +85,7 @@ class AuthRepository {
   static const _idTokenKey = 'venue.session.id-token';
   static const _expiresAtKey = 'venue.session.expires-at';
   static const _pushInstallationKey = 'venue.push.installation-id';
+  static const _pushEnabledKey = 'venue.push.enabled';
 
   Future<String?> offlineCacheScope() async {
     final organization = await _storage.read(key: _organizationKey);
@@ -221,6 +222,10 @@ class AuthRepository {
   }
 
   Future<void> _revokePushDevice() async {
+    // Disable local delivery before attempting network cleanup. The server
+    // token can be revoked after reconnect, but this device must stop treating
+    // the previous account's push registration as active immediately.
+    await _storage.write(key: _pushEnabledKey, value: 'false');
     final installationId = await _storage.read(key: _pushInstallationKey);
     final accessToken = await _storage.read(key: _accessTokenKey);
     if (installationId != null && accessToken != null) {
@@ -238,6 +243,7 @@ class AuthRepository {
     } catch (_) {
       // Firebase may be unconfigured or offline; the local session still ends.
     }
+    await _storage.delete(key: _pushInstallationKey);
   }
 
   Future<void> clear() async {
