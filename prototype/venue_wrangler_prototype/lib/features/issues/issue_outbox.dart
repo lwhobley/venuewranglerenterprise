@@ -6,6 +6,8 @@ import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../../auth/auth.dart';
+import '../../config/api_configuration.dart';
+import 'secure_evidence_store.dart';
 
 enum SyncState { pending, accepted, failed }
 
@@ -15,22 +17,41 @@ class PendingIssueReport {
       required this.eventId,
       required this.venueId,
       this.locationId,
+      this.sessionScope,
       required this.title,
       required this.description,
       required this.category,
       required this.severity,
       required this.createdAt,
+      this.evidence = const [],
       this.state = SyncState.pending});
   final String idempotencyKey;
   final String eventId;
   final String venueId;
   final String? locationId;
+  final String? sessionScope;
   final String title;
   final String description;
   final String category;
   final String severity;
   final DateTime createdAt;
+  final List<LocalIssueEvidence> evidence;
   final SyncState state;
+
+  PendingIssueReport scopedTo(String? value) => PendingIssueReport(
+        idempotencyKey: idempotencyKey,
+        eventId: eventId,
+        venueId: venueId,
+        locationId: locationId,
+        sessionScope: value,
+        title: title,
+        description: description,
+        category: category,
+        severity: severity,
+        createdAt: createdAt,
+        evidence: evidence,
+        state: state,
+      );
 }
 
 abstract interface class IssueOutbox {
@@ -41,7 +62,10 @@ abstract interface class IssueOutbox {
 }
 
 abstract interface class IssueApi {
-  Future<void> create(PendingIssueReport command);
+  Future<String?> currentScope();
+  Future<String> create(PendingIssueReport command);
+  Future<void> uploadEvidence(String eventId, String issueId,
+      LocalIssueEvidence evidence, List<int> bytes);
 }
 
 abstract interface class ConnectivityMonitor {
@@ -107,11 +131,13 @@ class SecureIssueOutbox implements IssueOutbox {
         'eventId': item.eventId,
         'venueId': item.venueId,
         'locationId': item.locationId,
+        'sessionScope': item.sessionScope,
         'title': item.title,
         'description': item.description,
         'category': item.category,
         'severity': item.severity,
         'createdAt': item.createdAt.toUtc().toIso8601String(),
+        'evidence': item.evidence.map((item) => item.toJson()).toList(),
         'state': (state ?? item.state).name,
       };
 
@@ -121,11 +147,16 @@ class SecureIssueOutbox implements IssueOutbox {
         eventId: value['eventId'] as String,
         venueId: value['venueId'] as String,
         locationId: value['locationId'] as String?,
+        sessionScope: value['sessionScope'] as String?,
         title: value['title'] as String,
         description: value['description'] as String,
         category: value['category'] as String,
         severity: value['severity'] as String,
         createdAt: DateTime.parse(value['createdAt'] as String),
+        evidence: ((value['evidence'] as List<dynamic>?) ?? const [])
+            .map((row) =>
+                LocalIssueEvidence.fromJson(row as Map<String, dynamic>))
+            .toList(),
         state: SyncState.values.byName(value['state'] as String),
       );
 }
@@ -136,12 +167,15 @@ class DioIssueApi implements IssueApi {
   final AuthRepository _auth;
 
   @override
-  Future<void> create(PendingIssueReport command) async {
+  Future<String?> currentScope() => _auth.offlineCacheScope();
+
+  @override
+  Future<String> create(PendingIssueReport command) async {
     final token = await _auth.validAccessToken();
     if (token == null || token.isEmpty) {
       throw StateError('Sign in before synchronizing issue reports.');
     }
-    await _dio.post<void>(
+    final response = await _dio.post<Map<String, dynamic>>(
       '/api/v1/events/${command.eventId}/issues',
       data: {
         'title': command.title,
@@ -156,6 +190,52 @@ class DioIssueApi implements IssueApi {
         'Idempotency-Key': command.idempotencyKey
       }),
     );
+    final issue = response.data?['issue'];
+    if (issue is! Map || issue['id'] is! String) {
+      throw StateError('Issue API omitted the created issue ID.');
+    }
+    return issue['id'] as String;
+  }
+
+  @override
+  Future<void> uploadEvidence(String eventId, String issueId,
+      LocalIssueEvidence evidence, List<int> bytes) async {
+    final token = await _auth.validAccessToken();
+    if (token == null || token.isEmpty) {
+      throw StateError('Sign in before uploading issue evidence.');
+    }
+    final headers = {'Authorization': 'Bearer $token'};
+    final response = await _dio.post<Map<String, dynamic>>(
+      '/api/v1/events/$eventId/issues/$issueId/evidence',
+      data: {
+        'clientId': evidence.clientId,
+        'fileName': evidence.fileName,
+        'contentType': evidence.contentType,
+        'sizeBytes': evidence.sizeBytes,
+        'sha256': evidence.sha256
+      },
+      options: Options(headers: headers),
+    );
+    final data = response.data;
+    final attachment = data?['attachment'];
+    if (attachment is! Map || attachment['id'] is! String) {
+      throw StateError('Evidence API omitted the attachment ID.');
+    }
+    final url = data?['uploadUrl'];
+    if (url is String && url.isNotEmpty) {
+      final fields =
+          Map<String, dynamic>.from(data?['uploadFields'] as Map? ?? const {});
+      final form = FormData.fromMap({
+        ...fields,
+        'file': MultipartFile.fromBytes(bytes,
+            filename: evidence.fileName,
+            contentType: DioMediaType.parse(evidence.contentType)),
+      });
+      await Dio().post<void>(url, data: form);
+    }
+    await _dio.post<void>(
+        '/api/v1/events/$eventId/issues/$issueId/evidence/${attachment['id']}/complete',
+        options: Options(headers: headers));
   }
 }
 
@@ -165,24 +245,29 @@ final issueOutboxProvider = Provider<IssueOutbox>(
 final connectivityMonitorProvider = Provider<ConnectivityMonitor>(
     (ref) => PluginConnectivityMonitor(Connectivity()));
 final issueApiProvider = Provider<IssueApi>((ref) => DioIssueApi(
-      Dio(BaseOptions(
-          baseUrl: const String.fromEnvironment('VENUE_API_BASE_URL',
-              defaultValue: 'http://localhost:3000'))),
+      Dio(BaseOptions(baseUrl: ApiConfiguration.baseUrl)),
       ref.watch(authRepositoryProvider),
     ));
+final secureEvidenceStoreProvider =
+    Provider((ref) => SecureEvidenceStore(ref.watch(_secureStorageProvider)));
 final issueSyncProvider =
     StateNotifierProvider<IssueSyncController, List<PendingIssueReport>>((ref) {
-  final controller = IssueSyncController(
-      ref.watch(issueOutboxProvider), ref.watch(issueApiProvider));
+  final controller = IssueSyncController(ref.watch(issueOutboxProvider),
+      ref.watch(issueApiProvider), ref.watch(secureEvidenceStoreProvider));
   unawaited(controller.restore());
   controller.watchConnectivity(ref.watch(connectivityMonitorProvider));
   return controller;
 });
 
 class IssueSyncController extends StateNotifier<List<PendingIssueReport>> {
-  IssueSyncController(this._outbox, this._api) : super(const []);
+  IssueSyncController(this._outbox, this._api,
+      [SecureEvidenceStore? evidenceStore])
+      : _evidenceStore =
+            evidenceStore ?? SecureEvidenceStore(const FlutterSecureStorage()),
+        super(const []);
   final IssueOutbox _outbox;
   final IssueApi _api;
+  final SecureEvidenceStore _evidenceStore;
   StreamSubscription<bool>? _connectivitySubscription;
   Future<void>? _syncInFlight;
   bool _wasOnline = false;
@@ -203,8 +288,9 @@ class IssueSyncController extends StateNotifier<List<PendingIssueReport>> {
   }
 
   Future<void> submit(PendingIssueReport command) async {
-    await _outbox.enqueue(command);
-    state = [...state, command];
+    final scoped = command.scopedTo(await _api.currentScope());
+    await _outbox.enqueue(scoped);
+    state = [...state, scoped];
   }
 
   Future<void> synchronize() async {
@@ -225,7 +311,17 @@ class IssueSyncController extends StateNotifier<List<PendingIssueReport>> {
   Future<void> _synchronizePending() async {
     for (final command in await _outbox.pending()) {
       try {
-        await _api.create(command);
+        if (command.sessionScope == null ||
+            command.sessionScope != await _api.currentScope()) {
+          await _outbox.markFailed(command.idempotencyKey);
+          continue;
+        }
+        final issueId = await _api.create(command);
+        for (final evidence in command.evidence) {
+          await _api.uploadEvidence(command.eventId, issueId, evidence,
+              await _evidenceStore.decrypt(evidence));
+          await _evidenceStore.delete(evidence);
+        }
       } catch (_) {
         await _outbox.markFailed(command.idempotencyKey);
         continue;

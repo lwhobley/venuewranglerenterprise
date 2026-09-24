@@ -26,16 +26,21 @@ jobs:
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
           APPSTORE_ISSUER_ID: ${{ vars.APPSTORE_ISSUER_ID }}
           APPSTORE_API_KEY_ID: ${{ vars.APPSTORE_API_KEY_ID }}
+          VENUE_API_BASE_URL: ${{ vars.VENUE_API_BASE_URL }}
           APPSTORE_API_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
           APPSTORE_CERTIFICATES_FILE_BASE64: ${{ secrets.APPSTORE_CERTIFICATES_FILE_BASE64 }}
           APPSTORE_CERTIFICATES_PASSWORD: ${{ secrets.APPSTORE_CERTIFICATES_PASSWORD }}
         run: |
-          for name in APPLE_TEAM_ID APPSTORE_ISSUER_ID APPSTORE_API_KEY_ID APPSTORE_API_PRIVATE_KEY APPSTORE_CERTIFICATES_FILE_BASE64 APPSTORE_CERTIFICATES_PASSWORD; do
+          for name in APPLE_TEAM_ID APPSTORE_ISSUER_ID APPSTORE_API_KEY_ID VENUE_API_BASE_URL APPSTORE_API_PRIVATE_KEY APPSTORE_CERTIFICATES_FILE_BASE64 APPSTORE_CERTIFICATES_PASSWORD; do
             if [[ -z "${!name}" ]]; then
               echo "Missing required GitHub Actions variable or secret: ${name}"
               exit 1
             fi
           done
+          if [[ "${VENUE_API_BASE_URL}" != https://* ]]; then
+            echo "VENUE_API_BASE_URL must be an HTTPS origin for release builds."
+            exit 1
+          fi
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -88,24 +93,24 @@ jobs:
               plistlib.dump(options, output)
           PY
 
-      - name: Archive and export signed IPA
-        uses: Apple-Actions/xcodebuild@v1
+      - name: Build and export signed IPA
         id: archive
-        with:
-          workspace: prototype/venue_wrangler_prototype/ios/Runner.xcworkspace
-          scheme: Runner
-          sdk: iphoneos
-          action: archive
-          archive-path: build/ios/archive/VenueWrangler.xcarchive
-          export-path: build/ios/ipa
-          export-options-plist: prototype/venue_wrangler_prototype/ios/ExportOptions.plist
-          build-number: ${{ github.run_number }}
-          build-settings: |
-            DEVELOPMENT_TEAM=${{ vars.APPLE_TEAM_ID }}
-            PRODUCT_BUNDLE_IDENTIFIER=com.venuewrangler.enterprise
-            CODE_SIGN_STYLE=Manual
-            CODE_SIGN_IDENTITY=Apple Distribution
-            PROVISIONING_PROFILE_SPECIFIER=AppStore com.venuewrangler.enterprise
+        working-directory: prototype/venue_wrangler_prototype
+        env:
+          VENUE_API_BASE_URL: ${{ vars.VENUE_API_BASE_URL }}
+        run: |
+          set -euo pipefail
+          flutter build ipa \
+            --release \
+            --build-number "${GITHUB_RUN_NUMBER}" \
+            --export-options-plist ios/ExportOptions.plist \
+            --dart-define="VENUE_API_BASE_URL=${VENUE_API_BASE_URL}"
+          ipa_path="$(find build/ios/ipa -maxdepth 1 -type f -name '*.ipa' -print -quit)"
+          if [[ -z "${ipa_path}" ]]; then
+            echo "Flutter did not produce an IPA."
+            exit 1
+          fi
+          echo "ipa-path=prototype/venue_wrangler_prototype/${ipa_path}" >> "${GITHUB_OUTPUT}"
 
       - name: Save IPA artifact
         if: success()

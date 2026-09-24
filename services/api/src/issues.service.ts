@@ -28,11 +28,22 @@ export class IssuesService {
   stream(identity: Identity, eventId: string, lastEventId = '0'): Observable<StreamIssueEvent> {
     let cursor = BigInt(lastEventId);
     return timer(0, 1000).pipe(
-      exhaustMap(() => this.prisma.withTenant(identity, (tx) => tx.issueDomainEvent.findMany({
-        where: { eventId, id: { gt: cursor } },
-        orderBy: { id: 'asc' },
-        take: 100,
-      }))),
+      exhaustMap(() => this.prisma.withTenant(identity, async (tx) => {
+        const visibleIssues = await tx.issue.findMany({
+          where: {
+            eventId,
+            organizationId: identity.tenantId,
+            venueId: { in: identity.venueIds },
+            OR: [{ locationId: null }, { locationId: { in: identity.locationIds } }],
+          },
+          select: { id: true },
+        });
+        return tx.issueDomainEvent.findMany({
+          where: { eventId, issueId: { in: visibleIssues.map((issue) => issue.id) }, id: { gt: cursor } },
+          orderBy: { id: 'asc' },
+          take: 100,
+        });
+      })),
       concatMap((events) => from(events)),
       map((event) => {
         cursor = event.id;
@@ -47,7 +58,16 @@ export class IssuesService {
 
   async list(identity: Identity, eventId: string) {
     assertScope(identity, 'issue:read', eventId);
-    return this.prisma.withTenant(identity, (tx) => tx.issue.findMany({ where: { eventId }, orderBy: [{ severity: 'desc' }, { updatedAt: 'desc' }], include: { auditEvents: { orderBy: { createdAt: 'desc' }, take: 10 } } }));
+    return this.prisma.withTenant(identity, (tx) => tx.issue.findMany({
+      where: {
+        eventId,
+        organizationId: identity.tenantId,
+        venueId: { in: identity.venueIds },
+        OR: [{ locationId: null }, { locationId: { in: identity.locationIds } }],
+      },
+      orderBy: [{ severity: 'desc' }, { updatedAt: 'desc' }],
+      include: { auditEvents: { orderBy: { createdAt: 'desc' }, take: 10 } },
+    }));
   }
 
   async create(identity: Identity, eventId: string, dto: CreateIssueDto, key: string) {
@@ -76,30 +96,30 @@ export class IssuesService {
   async assign(identity: Identity, eventId: string, issueId: string, dto: AssignIssueDto, key: string) {
     assertScope(identity, 'issue:triage', eventId);
     assertAssignable(identity, dto.ownerId);
-    return this.command(identity, eventId, issueId, key, 'assigned', IssueState.ASSIGNED, dto.reason, { ownerId: dto.ownerId });
+    return this.command(identity, eventId, issueId, key, 'issue:triage', 'assigned', IssueState.ASSIGNED, dto.reason, { ownerId: dto.ownerId });
   }
   async triage(identity: Identity, eventId: string, issueId: string, dto: IssueNoteDto, key: string) {
     assertScope(identity, 'issue:triage', eventId);
-    return this.command(identity, eventId, issueId, key, 'triaged', IssueState.TRIAGED, dto.reason, {});
+    return this.command(identity, eventId, issueId, key, 'issue:triage', 'triaged', IssueState.TRIAGED, dto.reason, {});
   }
   async escalate(identity: Identity, eventId: string, issueId: string, dto: IssueNoteDto, key: string) {
     assertScope(identity, 'issue:escalate', eventId);
-    return this.command(identity, eventId, issueId, key, 'escalated', IssueState.ESCALATED, dto.reason, { escalationNote: dto.reason });
+    return this.command(identity, eventId, issueId, key, 'issue:escalate', 'escalated', IssueState.ESCALATED, dto.reason, { escalationNote: dto.reason });
   }
   async resolve(identity: Identity, eventId: string, issueId: string, dto: IssueNoteDto, key: string) {
     assertScope(identity, 'issue:resolve', eventId);
-    return this.command(identity, eventId, issueId, key, 'resolved', IssueState.RESOLVED, dto.reason, { resolutionNote: dto.reason });
+    return this.command(identity, eventId, issueId, key, 'issue:resolve', 'resolved', IssueState.RESOLVED, dto.reason, { resolutionNote: dto.reason });
   }
   async verify(identity: Identity, eventId: string, issueId: string, dto: IssueNoteDto, key: string) {
     assertScope(identity, 'issue:verify', eventId);
-    return this.command(identity, eventId, issueId, key, 'verified', IssueState.VERIFIED, dto.reason, {});
+    return this.command(identity, eventId, issueId, key, 'issue:verify', 'verified', IssueState.VERIFIED, dto.reason, {});
   }
   async close(identity: Identity, eventId: string, issueId: string, dto: IssueNoteDto, key: string) {
     assertScope(identity, 'issue:close', eventId);
-    return this.command(identity, eventId, issueId, key, 'closed', IssueState.CLOSED, dto.reason, {});
+    return this.command(identity, eventId, issueId, key, 'issue:close', 'closed', IssueState.CLOSED, dto.reason, {});
   }
 
-  private async command(identity: Identity, eventId: string, issueId: string, key: string, action: string, state: IssueState, reason: string | undefined, patch: Record<string, string>) {
+  private async command(identity: Identity, eventId: string, issueId: string, key: string, capability: 'issue:triage' | 'issue:escalate' | 'issue:resolve' | 'issue:verify' | 'issue:close', action: string, state: IssueState, reason: string | undefined, patch: Record<string, string>) {
     const fingerprint = this.fingerprint(action, { actorId: identity.subject, eventId, issueId, reason, patch });
     const response = await this.prisma.withTenant(identity, async (tx) => {
       await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${identity.tenantId + key}, 0))`;
@@ -107,9 +127,22 @@ export class IssuesService {
       if (replay) return this.replay(replay.fingerprint, fingerprint, replay.response);
       const issue = await tx.issue.findFirst({ where: { id: issueId, eventId } });
       if (!issue) throw new NotFoundException('Issue not found.');
+      assertScope(identity, capability, eventId, issue.venueId, issue.locationId ?? undefined);
       if (!(issueTransitions[state] ?? []).includes(issue.state)) throw new ConflictException(`Cannot ${action} an issue in ${issue.state}. Refresh and review its current state.`);
       const updated = await tx.issue.update({ where: { id: issueId }, data: { ...patch, state } });
       await tx.issueAuditEvent.create({ data: { organizationId: identity.tenantId, issueId, actorId: identity.subject, action, reason, before: issue as unknown as Prisma.InputJsonValue, after: updated as unknown as Prisma.InputJsonValue } });
+      const recipientSubject = action === 'assigned' ? updated.ownerId : action === 'resolved' ? issue.reporterId : null;
+      if (recipientSubject && recipientSubject !== identity.subject) {
+        await tx.userNotification.create({ data: {
+          organizationId: identity.tenantId,
+          eventId,
+          issueId,
+          recipientSubject,
+          kind: `issue.${action}`,
+          title: action === 'assigned' ? 'Issue assigned to you' : 'Your issue was resolved',
+          body: updated.title,
+        } });
+      }
       const result = { issue: updated, replayed: false };
       await tx.commandReceipt.create({ data: { organizationId: identity.tenantId, key, fingerprint, action, response: result as unknown as Prisma.InputJsonValue } });
       await tx.issueDomainEvent.create({ data: { organizationId: identity.tenantId, eventId, issueId, action, payload: updated as unknown as Prisma.InputJsonValue } });

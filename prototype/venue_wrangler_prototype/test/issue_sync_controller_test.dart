@@ -69,6 +69,7 @@ PendingIssueReport _pendingReport({SyncState state = SyncState.pending}) =>
       category: 'Service',
       severity: 'MODERATE',
       createdAt: DateTime.utc(2026, 9, 23),
+      sessionScope: 'test-scope',
       state: state,
     );
 
@@ -99,13 +100,21 @@ class _FakeIssueApi implements IssueApi {
   int failuresRemaining = 0;
 
   @override
-  Future<void> create(PendingIssueReport command) async {
+  Future<String?> currentScope() async => 'test-scope';
+
+  @override
+  Future<String> create(PendingIssueReport command) async {
     attempts++;
     if (failuresRemaining > 0) {
       failuresRemaining--;
       throw StateError('Temporary network failure');
     }
+    return 'fake-issue';
   }
+
+  @override
+  Future<void> uploadEvidence(
+      String eventId, String issueId, evidence, List<int> bytes) async {}
 }
 
 class _FakeConnectivity implements ConnectivityMonitor {

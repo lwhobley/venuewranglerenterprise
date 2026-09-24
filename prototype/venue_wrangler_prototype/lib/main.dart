@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
+import 'config/api_configuration.dart';
 import 'auth/auth.dart';
 import 'auth/sign_in_page.dart';
 import 'features/issues/issue_outbox.dart';
+import 'features/issues/secure_evidence_store.dart';
+import 'features/operations/operations_api.dart';
 
 void main() {
   runApp(const ProviderScope(child: VenueWranglerPrototype()));
@@ -13,45 +16,8 @@ const _ink = Color(0xFF16261F);
 const _canvas = Color(0xFFF6F4EF);
 const _paper = Color(0xFFFFFDF9);
 const _pine = Color(0xFF1D5A43);
-const _mint = Color(0xFFB9E7CC);
 const _brass = Color(0xFFC88A2B);
 const _coral = Color(0xFFC74B37);
-const _blue = Color(0xFF245F9D);
-
-final _roleProvider = StateProvider<Role>((_) => Role.eventManager);
-final _pageProvider = StateProvider<AppPage>((_) => AppPage.today);
-final _shiftAcknowledgedProvider = StateProvider<bool>((_) => false);
-final _readyProvider = StateProvider<bool>((_) => false);
-final _packedProvider = StateProvider<bool>((_) => false);
-final _countSavedProvider = StateProvider<bool>((_) => false);
-
-enum Role {
-  frontline('Frontline worker', Icons.badge_outlined),
-  supervisor('Supervisor', Icons.groups_2_outlined),
-  eventManager('Event operations manager', Icons.radar_outlined),
-  scheduler('Workforce scheduler', Icons.calendar_month_outlined),
-  kitchen('Kitchen operator', Icons.room_service_outlined),
-  inventory('Inventory manager', Icons.inventory_2_outlined),
-  executive('Regional operator', Icons.insights_outlined);
-
-  const Role(this.label, this.icon);
-  final String label;
-  final IconData icon;
-}
-
-enum AppPage {
-  today('Today', Icons.today_outlined),
-  command('Command', Icons.radar_outlined),
-  plan('Plan', Icons.route_outlined),
-  staffing('Staffing', Icons.groups_outlined),
-  service('Service', Icons.room_service_outlined),
-  stock('Stock', Icons.inventory_2_outlined),
-  insights('Insights', Icons.insights_outlined);
-
-  const AppPage(this.label, this.icon);
-  final String label;
-  final IconData icon;
-}
 
 class VenueWranglerPrototype extends StatelessWidget {
   const VenueWranglerPrototype({super.key});
@@ -114,6 +80,10 @@ class AuthGate extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final configurationError = ApiConfiguration.error;
+    if (configurationError != null) {
+      return _BuildConfigurationPage(message: configurationError);
+    }
     final auth = ref.watch(authSessionProvider);
     if (auth.loading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
@@ -122,1352 +92,1199 @@ class AuthGate extends ConsumerWidget {
   }
 }
 
+class _BuildConfigurationPage extends StatelessWidget {
+  const _BuildConfigurationPage({required this.message});
+  final String message;
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        body: SafeArea(
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 480),
+              child: Padding(
+                padding: const EdgeInsets.all(28),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.cloud_off_outlined, size: 48),
+                    const SizedBox(height: 16),
+                    Text('App setup required',
+                        style: Theme.of(context).textTheme.headlineSmall),
+                    const SizedBox(height: 8),
+                    Text(message, textAlign: TextAlign.center),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+}
+
 class PrototypeShell extends ConsumerWidget {
   const PrototypeShell({super.key});
 
   @override
+  Widget build(BuildContext context, WidgetRef ref) => const _LiveVenueShell();
+}
+
+final _selectedLiveEventProvider = StateProvider<String?>((_) => null);
+final _liveTabProvider = StateProvider<int>((_) => 0);
+
+class _LiveVenueShell extends ConsumerWidget {
+  const _LiveVenueShell();
+
+  @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final role = ref.watch(_roleProvider);
-    final page = ref.watch(_pageProvider);
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final desktop = constraints.maxWidth >= 1024;
-        final tablet = constraints.maxWidth >= 600;
-        final pages = _pagesFor(role);
-        final selectedPage = pages.contains(page) ? page : pages.first;
-        if (page != selectedPage) {
-          WidgetsBinding.instance.addPostFrameCallback(
-            (_) => ref.read(_pageProvider.notifier).state = selectedPage,
-          );
-        }
-        return Scaffold(
-          body: SafeArea(
-            child: Row(
+    final bootstrap = ref.watch(operationsBootstrapProvider);
+    return bootstrap.when(
+      loading: () =>
+          const Scaffold(body: Center(child: CircularProgressIndicator())),
+      error: (error, _) => Scaffold(
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                if (desktop)
-                  _NavigationRail(
-                    pages: pages,
-                    selected: selectedPage,
-                    onSelected: (value) =>
-                        ref.read(_pageProvider.notifier).state = value,
-                  ),
-                Expanded(
-                  child: Column(
-                    children: [
-                      _ContextHeader(role: role, compact: !desktop),
-                      Expanded(
-                        child: Padding(
-                          padding: EdgeInsets.fromLTRB(
-                              tablet ? 24 : 16, 8, tablet ? 24 : 16, 16),
-                          child: _PageView(
-                              page: selectedPage,
-                              tablet: tablet,
-                              desktop: desktop),
-                        ),
-                      ),
-                    ],
-                  ),
+                const Icon(Icons.cloud_off_outlined, size: 42),
+                const SizedBox(height: 12),
+                const Text('Could not load your organization data'),
+                const SizedBox(height: 8),
+                Text(error.toString(), textAlign: TextAlign.center),
+                const SizedBox(height: 16),
+                FilledButton(
+                  onPressed: () => ref.invalidate(operationsBootstrapProvider),
+                  child: const Text('Retry'),
+                ),
+                TextButton(
+                  onPressed: () =>
+                      ref.read(authSessionProvider.notifier).signOut(),
+                  child: const Text('Sign out'),
                 ),
               ],
             ),
           ),
-          bottomNavigationBar: desktop
-              ? null
-              : NavigationBar(
-                  selectedIndex: pages.indexOf(selectedPage),
-                  onDestinationSelected: (index) =>
-                      ref.read(_pageProvider.notifier).state = pages[index],
-                  destinations: pages
-                      .map((item) => NavigationDestination(
-                          icon: Icon(item.icon), label: item.label))
-                      .toList(),
-                ),
-          floatingActionButton: !desktop && selectedPage != AppPage.stock
-              ? FloatingActionButton.extended(
-                  onPressed: () => _reportIssue(context, ref),
-                  backgroundColor: _coral,
-                  foregroundColor: Colors.white,
-                  icon: const Icon(Icons.add_alert_outlined),
-                  label: const Text('Report issue'),
-                )
-              : null,
-        );
-      },
+        ),
+      ),
+      data: (data) => _LiveOperationsHome(data: data),
     );
   }
 }
 
-List<AppPage> _pagesFor(Role role) => switch (role) {
-      Role.frontline => [AppPage.today, AppPage.staffing, AppPage.command],
-      Role.supervisor => [
-          AppPage.today,
-          AppPage.command,
-          AppPage.staffing,
-          AppPage.service
-        ],
-      Role.eventManager => [
-          AppPage.today,
-          AppPage.command,
-          AppPage.plan,
-          AppPage.staffing,
-          AppPage.insights
-        ],
-      Role.scheduler => [
-          AppPage.today,
-          AppPage.staffing,
-          AppPage.command,
-          AppPage.insights
-        ],
-      Role.kitchen => [
-          AppPage.today,
-          AppPage.service,
-          AppPage.stock,
-          AppPage.command
-        ],
-      Role.inventory => [
-          AppPage.today,
-          AppPage.stock,
-          AppPage.command,
-          AppPage.insights
-        ],
-      Role.executive => [AppPage.today, AppPage.insights, AppPage.command],
-    };
-
-class _NavigationRail extends StatelessWidget {
-  const _NavigationRail(
-      {required this.pages, required this.selected, required this.onSelected});
-  final List<AppPage> pages;
-  final AppPage selected;
-  final ValueChanged<AppPage> onSelected;
-
-  @override
-  Widget build(BuildContext context) => Container(
-        width: 238,
-        padding: const EdgeInsets.all(16),
-        color: _ink,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(12, 12, 12, 30),
-              child: Row(children: [
-                Icon(Icons.stadium_outlined, color: _mint),
-                SizedBox(width: 10),
-                Text('VENUE\nWRANGLER',
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: 1.4,
-                        height: 1.05)),
-              ]),
-            ),
-            ...pages.map((page) => Padding(
-                  padding: const EdgeInsets.only(bottom: 4),
-                  child: ListTile(
-                    selected: page == selected,
-                    selectedTileColor: const Color(0xFF315F4B),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12)),
-                    leading: Icon(page.icon,
-                        color:
-                            page == selected ? _mint : const Color(0xFFCAD5CD)),
-                    title: Text(page.label,
-                        style: TextStyle(
-                            color: page == selected
-                                ? Colors.white
-                                : const Color(0xFFCAD5CD),
-                            fontWeight: page == selected
-                                ? FontWeight.w700
-                                : FontWeight.w500)),
-                    onTap: () => onSelected(page),
-                  ),
-                )),
-            const Spacer(),
-            const ListTile(
-              leading: CircleAvatar(
-                  radius: 16, backgroundColor: _brass, child: Text('MO')),
-              title: Text('Morgan Ortiz',
-                  style: TextStyle(
-                      color: Colors.white, fontWeight: FontWeight.w700)),
-              subtitle: Text('Operations',
-                  style: TextStyle(color: Color(0xFFCAD5CD))),
-            ),
-          ],
-        ),
-      );
-}
-
-class _ContextHeader extends ConsumerWidget {
-  const _ContextHeader({required this.role, required this.compact});
-  final Role role;
-  final bool compact;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) => Padding(
-        padding:
-            EdgeInsets.fromLTRB(compact ? 16 : 24, 16, compact ? 16 : 24, 0),
-        child: Wrap(
-          alignment: WrapAlignment.spaceBetween,
-          crossAxisAlignment: WrapCrossAlignment.center,
-          runSpacing: 12,
-          children: [
-            const Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('HARBOR CITY ARENA',
-                      style: TextStyle(
-                          fontSize: 12,
-                          letterSpacing: 1.4,
-                          fontWeight: FontWeight.w800,
-                          color: _pine)),
-                  SizedBox(height: 3),
-                  Text('Storm vs. Comets',
-                      style:
-                          TextStyle(fontSize: 23, fontWeight: FontWeight.w800)),
-                  Text('Doors in 42 min · Friday, Sep 25',
-                      style: TextStyle(color: Color(0xFF59645D))),
-                ]),
-            Wrap(
-                spacing: 8,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  _SyncChip(),
-                  IconButton(
-                    tooltip: 'Sign out',
-                    onPressed: () =>
-                        ref.read(authSessionProvider.notifier).signOut(),
-                    icon: const Icon(Icons.logout_outlined),
-                  ),
-                  PopupMenuButton<Role>(
-                    tooltip: 'Change prototype role',
-                    onSelected: (value) =>
-                        ref.read(_roleProvider.notifier).state = value,
-                    itemBuilder: (context) => Role.values
-                        .map((item) => PopupMenuItem(
-                            value: item,
-                            child: Row(children: [
-                              Icon(item.icon),
-                              const SizedBox(width: 10),
-                              Text(item.label)
-                            ])))
-                        .toList(),
-                    child: Chip(
-                      avatar: Icon(role.icon, size: 18),
-                      label: Text(role.label),
-                      backgroundColor: const Color(0xFFE4EEE6),
-                    ),
-                  ),
-                ]),
-          ],
-        ),
-      );
-}
-
-class _SyncChip extends ConsumerWidget {
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final reports = ref.watch(issueSyncProvider);
-    final failed = reports.any((report) => report.state == SyncState.failed);
-    final label = reports.isEmpty
-        ? 'Current'
-        : failed
-            ? 'Sync blocked · ${reports.length}'
-            : 'Pending sync · ${reports.length}';
-    final color = failed ? _coral : _pine;
-    return Semantics(
-      container: true,
-      liveRegion: true,
-      label: 'Sync status: $label',
-      child: ExcludeSemantics(
-        child: Chip(
-          avatar: Icon(
-            failed
-                ? Icons.cloud_off_outlined
-                : reports.isEmpty
-                    ? Icons.cloud_done_outlined
-                    : Icons.cloud_upload_outlined,
-            color: color,
-            size: 18,
-          ),
-          label: Text(label),
-          backgroundColor:
-              failed ? const Color(0xFFF6E1DD) : const Color(0xFFE4EEE6),
-        ),
-      ),
-    );
-  }
-}
-
-class _PageView extends StatelessWidget {
-  const _PageView(
-      {required this.page, required this.tablet, required this.desktop});
-  final AppPage page;
-  final bool tablet;
-  final bool desktop;
-
-  @override
-  Widget build(BuildContext context) => switch (page) {
-        AppPage.today => _TodayPage(tablet: tablet, desktop: desktop),
-        AppPage.command => _CommandPage(tablet: tablet, desktop: desktop),
-        AppPage.plan => _PlanPage(desktop: desktop),
-        AppPage.staffing => _StaffingPage(tablet: tablet, desktop: desktop),
-        AppPage.service => _ServicePage(tablet: tablet, desktop: desktop),
-        AppPage.stock => _StockPage(tablet: tablet, desktop: desktop),
-        AppPage.insights => _InsightsPage(tablet: tablet, desktop: desktop),
-      };
-}
-
-class _TodayPage extends ConsumerWidget {
-  const _TodayPage({required this.tablet, required this.desktop});
-  final bool tablet;
-  final bool desktop;
+class _LiveOperationsHome extends ConsumerWidget {
+  const _LiveOperationsHome({required this.data});
+  final Map<String, dynamic> data;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final role = ref.watch(_roleProvider);
-    final acknowledged = ref.watch(_shiftAcknowledgedProvider);
-    final pendingIssues = ref.watch(issueSyncProvider);
-    final title = role == Role.frontline
-        ? 'Your event-day work'
-        : 'What needs your attention';
-    return ListView(children: [
-      _PageTitle(
-          title: title,
-          subtitle: role == Role.frontline
-              ? 'Suite 14 service · 5:45–10:30 PM'
-              : 'Live priorities across your current scope'),
-      const SizedBox(height: 18),
-      _HeroAction(
-        eyebrow: acknowledged ? 'NEXT ACTION' : 'SHIFT ACTION REQUIRED',
-        title: acknowledged
-            ? 'Check in opens in 5 minutes'
-            : 'Acknowledge Suite 14 service shift',
-        description: acknowledged
-            ? 'East service corridor · report to Eli'
-            : 'Location changed 18 minutes ago. Review the current instruction.',
-        actionLabel: acknowledged ? 'View check-in' : 'Review shift',
-        icon: acknowledged
-            ? Icons.login_outlined
-            : Icons.assignment_turned_in_outlined,
-        onPressed: () =>
-            acknowledged ? _showCheckIn(context) : _showShift(context, ref),
-      ),
-      const SizedBox(height: 24),
-      Text('Priority queue',
-          style: Theme.of(context)
-              .textTheme
-              .titleLarge
-              ?.copyWith(fontWeight: FontWeight.w800)),
-      const SizedBox(height: 10),
-      if (tablet)
-        Wrap(spacing: 14, runSpacing: 14, children: _todayCards(context))
-      else
-        ..._todayCards(context).map((card) =>
-            Padding(padding: const EdgeInsets.only(bottom: 12), child: card)),
-      if (pendingIssues.isNotEmpty) ...[
-        const SizedBox(height: 18),
-        Text('Your issue reports',
-            style: Theme.of(context)
-                .textTheme
-                .titleLarge
-                ?.copyWith(fontWeight: FontWeight.w800)),
-        const SizedBox(height: 10),
-        ...pendingIssues.map((issue) => _WorkCard(
-              state: issue.state == SyncState.failed
-                  ? 'SYNC FAILED'
-                  : 'PENDING SYNC',
-              stateColor: issue.state == SyncState.failed ? _coral : _blue,
-              title: issue.title,
-              meta: 'Reported ${issue.createdAt.toLocal()} · ${issue.category}',
-              detail: issue.description,
-              action: issue.state == SyncState.failed
-                  ? 'Retry sync'
-                  : 'Saved on this device',
-              liveStatus: true,
-              onPressed: issue.state == SyncState.failed
-                  ? () => ref.read(issueSyncProvider.notifier).synchronize()
-                  : null,
-            )),
-      ],
-    ]);
-  }
-}
-
-List<Widget> _todayCards(BuildContext context) => [
-      const SizedBox(
-          width: 350,
-          child: _WorkCard(
-              state: 'BLOCKED',
-              stateColor: _coral,
-              title: 'Suite 14 refrigeration',
-              meta: 'No owner · due in 12 min',
-              detail: 'Vendor repair ETA needed',
-              action: 'Assign owner')),
-      const SizedBox(
-          width: 350,
-          child: _WorkCard(
-              state: 'ATTENTION',
-              stateColor: _brass,
-              title: '2 shifts need acknowledgement',
-              meta: 'West Gate · staffing',
-              detail: 'One lead position remains open',
-              action: 'Review coverage')),
-      const SizedBox(
-          width: 350,
-          child: _WorkCard(
-              state: 'READY',
-              stateColor: _pine,
-              title: 'Concourse readiness checks',
-              meta: '7 of 9 complete',
-              detail: 'Last check due at 6:20 PM',
-              action: 'Open command')),
-    ];
-
-class _CommandPage extends StatelessWidget {
-  const _CommandPage({required this.tablet, required this.desktop});
-  final bool tablet;
-  final bool desktop;
-
-  @override
-  Widget build(BuildContext context) {
-    final queue = const _CommandQueue();
-    final detail = const _IssueDetail();
-    if (!tablet) {
-      return ListView(children: [
-        _PageTitle(
-            title: 'Event Command', subtitle: 'Doors in 42 min · 2 blockers'),
-        const SizedBox(height: 16),
-        queue,
-        const SizedBox(height: 16),
-        detail
-      ]);
+    final org = data['organization'] as Map<String, dynamic>? ?? const {};
+    final identity = data['identity'] as Map<String, dynamic>? ?? const {};
+    final caps = (identity['capabilities'] as List? ?? const [])
+        .whereType<String>()
+        .toSet();
+    final events = (data['events'] as List? ?? const [])
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
+    final venues = (data['venues'] as List? ?? const [])
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
+    final locations = (data['locations'] as List? ?? const [])
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
+    final selectedId = ref.watch(_selectedLiveEventProvider);
+    final matchingEvents = events.where((e) => e['id'] == selectedId);
+    final event = matchingEvents.isNotEmpty
+        ? matchingEvents.first
+        : events.isNotEmpty
+            ? events.first
+            : null;
+    if (event != null && selectedId != event['id']) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => ref
+          .read(_selectedLiveEventProvider.notifier)
+          .state = event['id'] as String);
     }
-    return Column(children: [
-      _PageTitle(
-          title: 'Event Command',
-          subtitle: 'Doors in 42 min · Readiness at risk',
-          trailing: const _StatusPill(label: '2 blockers', color: _coral)),
-      const SizedBox(height: 16),
-      Expanded(
-          child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        Expanded(flex: 5, child: queue),
-        const SizedBox(width: 16),
-        Expanded(flex: 4, child: detail)
-      ])),
-    ]);
-  }
-}
-
-class _CommandQueue extends StatelessWidget {
-  const _CommandQueue();
-  @override
-  Widget build(BuildContext context) => _Panel(
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(children: [
-            Text('Operational queue',
-                style: Theme.of(context)
-                    .textTheme
-                    .titleLarge
-                    ?.copyWith(fontWeight: FontWeight.w800)),
-            const Spacer(),
-            const Icon(Icons.tune_outlined)
-          ]),
-          const SizedBox(height: 16),
-          const _SectionLabel('BLOCKED'),
-          const _CompactWork(
-              title: 'Suite 14 refrigeration',
-              meta: 'Unassigned · due 6:15 PM',
-              color: _coral),
-          const SizedBox(height: 14),
-          const _SectionLabel('ATTENTION'),
-          const _CompactWork(
-              title: 'West Gate lead coverage',
-              meta: 'Open slot · due 5:30 PM',
-              color: _brass),
-          const _CompactWork(
-              title: 'Two shifts unacknowledged',
-              meta: 'Staffing · response due now',
-              color: _brass),
-          const SizedBox(height: 14),
-          const _SectionLabel('READY'),
-          const _CompactWork(
-              title: 'Concourse POS verification',
-              meta: 'Complete · owned by Priya',
-              color: _pine),
+    final isAdmin = caps.contains('tenant:admin');
+    final tabs = <String>[
+      'Today',
+      if (caps.contains('issue:read') || caps.contains('issue:report'))
+        'Issues',
+      if (caps.contains('operations:read')) 'Operations',
+      if (isAdmin) 'Setup'
+    ];
+    final selectedTab =
+        ref.watch(_liveTabProvider).clamp(0, tabs.length - 1).toInt();
+    final title = (org['name'] as String?) ?? 'Venue operations';
+    final eventName = event?['name'] as String?;
+    final notificationState = caps.contains('notification:read')
+        ? ref.watch(userNotificationsProvider)
+        : null;
+    final unreadNotifications = notificationState?.valueOrNull
+            ?.where((row) => (row as Map)['readAt'] == null)
+            .length ??
+        0;
+    final page = tabs[selectedTab] == 'Setup' && isAdmin
+        ? _TenantSetupPage(
+            venues: venues,
+            people: (data['people'] as List? ?? const [])
+                .whereType<Map>()
+                .map((e) => Map<String, dynamic>.from(e))
+                .toList(),
+            api: ref.read(operationsApiProvider),
+            onSaved: () => ref.invalidate(operationsBootstrapProvider))
+        : event == null
+            ? _NoEventsPage(
+                isAdmin: isAdmin,
+                onSetup: () => ref.read(_liveTabProvider.notifier).state =
+                    tabs.indexOf('Setup'))
+            : switch (tabs[selectedTab]) {
+                'Issues' => _LiveIssuesPage(
+                    event: event,
+                    canRead: caps.contains('issue:read'),
+                    capabilities: caps,
+                    assignableUserIds:
+                        (identity['assignableUserIds'] as List? ?? const [])
+                            .whereType<String>()
+                            .toList(),
+                    people: (data['people'] as List? ?? const [])
+                        .whereType<Map>()
+                        .map((e) => Map<String, dynamic>.from(e))
+                        .toList()),
+                'Operations' => _LiveTasksPage(
+                    event: event, canWrite: caps.contains('operations:write')),
+                'Setup' => _TenantSetupPage(
+                    venues: venues,
+                    people: (data['people'] as List? ?? const [])
+                        .whereType<Map>()
+                        .map((e) => Map<String, dynamic>.from(e))
+                        .toList(),
+                    api: ref.read(operationsApiProvider),
+                    onSaved: () => ref.invalidate(operationsBootstrapProvider)),
+                _ => _LiveTodayPage(
+                    event: event,
+                    venueCount: venues.length,
+                    locationCount: locations.length,
+                    capabilities: caps),
+              };
+    return Scaffold(
+      appBar: AppBar(
+        title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(title,
+              style:
+                  const TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+          Text(eventName ?? 'Select an event',
+              style: const TextStyle(fontSize: 12, color: Color(0xFF59645D)))
         ]),
-      );
-}
-
-class _IssueDetail extends StatelessWidget {
-  const _IssueDetail();
-  @override
-  Widget build(BuildContext context) => _Panel(
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const _StatusPill(label: 'SERVICE IMPACT', color: _coral),
-          const SizedBox(height: 14),
-          Text('Suite 14 refrigeration',
-              style: Theme.of(context)
-                  .textTheme
-                  .headlineSmall
-                  ?.copyWith(fontWeight: FontWeight.w800)),
-          const SizedBox(height: 5),
-          const Text('Pantry · reported 6:02 PM by Maya'),
-          const Divider(height: 30),
-          const Text('Owner', style: TextStyle(fontWeight: FontWeight.w800)),
-          const SizedBox(height: 6),
-          Row(children: [
-            const CircleAvatar(child: Icon(Icons.person_outline)),
-            const SizedBox(width: 10),
-            const Expanded(
-                child: Text('Unassigned\nNo accountable response yet')),
-            OutlinedButton(onPressed: () {}, child: const Text('Assign'))
-          ]),
-          const SizedBox(height: 18),
-          const Text('Activity', style: TextStyle(fontWeight: FontWeight.w800)),
-          const SizedBox(height: 8),
-          const Text('6:05 PM · Priya requested vendor repair ETA'),
-          const SizedBox(height: 8),
-          const Text('6:02 PM · Maya reported temperature warning'),
-          const SizedBox(height: 18),
-          Row(children: [
-            Expanded(
-                child: OutlinedButton(
-                    onPressed: () {}, child: const Text('Escalate'))),
-            const SizedBox(width: 10),
-            Expanded(
-                child: FilledButton(
-                    onPressed: () {}, child: const Text('Add update')))
-          ]),
-        ]),
-      );
-}
-
-class _PlanPage extends ConsumerWidget {
-  const _PlanPage({required this.desktop});
-  final bool desktop;
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final ready = ref.watch(_readyProvider);
-    return ListView(children: [
-      _PageTitle(
-          title: 'Event plan',
-          subtitle: ready
-              ? 'Plan ready for event day'
-              : '2 required checks need attention',
-          trailing: _StatusPill(
-              label: ready ? 'READY' : 'AT RISK',
-              color: ready ? _pine : _coral)),
-      const SizedBox(height: 16),
-      if (desktop)
-        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Expanded(child: _MilestonePanel()),
-          const SizedBox(width: 16),
-          Expanded(
-              flex: 2,
-              child: _ReadinessPanel(
-                  onReady: () =>
-                      ref.read(_readyProvider.notifier).state = true))
-        ])
-      else ...[
-        _MilestonePanel(),
-        const SizedBox(height: 16),
-        _ReadinessPanel(
-            onReady: () => ref.read(_readyProvider.notifier).state = true)
-      ],
-    ]);
-  }
-}
-
-class _MilestonePanel extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) => _Panel(
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text('Run of show',
-            style: Theme.of(context)
-                .textTheme
-                .titleLarge
-                ?.copyWith(fontWeight: FontWeight.w800)),
-        const SizedBox(height: 16),
-        ...const [
-          _Milestone(time: '2:00 PM', label: 'Plan lock', state: 'complete'),
-          _Milestone(time: '5:30 PM', label: 'Staff arrival', state: 'current'),
-          _Milestone(time: '6:30 PM', label: 'Doors', state: 'next'),
-          _Milestone(time: '7:30 PM', label: 'Event start', state: 'next'),
-          _Milestone(time: '10:00 PM', label: 'Closeout', state: 'next'),
-        ]
-      ]));
-}
-
-class _ReadinessPanel extends StatelessWidget {
-  const _ReadinessPanel({required this.onReady});
-  final VoidCallback onReady;
-  @override
-  Widget build(BuildContext context) => _Panel(
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          Text('Readiness work',
-              style: Theme.of(context)
-                  .textTheme
-                  .titleLarge
-                  ?.copyWith(fontWeight: FontWeight.w800)),
-          const Spacer(),
-          TextButton(onPressed: onReady, child: const Text('Mark ready'))
-        ]),
-        const SizedBox(height: 12),
-        const _CompactWork(
-            title: 'Suite 14 refrigeration',
-            meta: 'Blocked · no owner',
-            color: _coral),
-        const _CompactWork(
-            title: 'West Gate equipment check',
-            meta: 'Due in 12 min · Eli',
-            color: _brass),
-        const _CompactWork(
-            title: 'Concourse POS verification',
-            meta: 'Complete · Priya',
-            color: _pine),
-      ]));
-}
-
-class _StaffingPage extends StatelessWidget {
-  const _StaffingPage({required this.tablet, required this.desktop});
-  final bool tablet;
-  final bool desktop;
-  @override
-  Widget build(BuildContext context) => ListView(children: [
-        _PageTitle(
-            title: 'Staffing coverage',
-            subtitle: '94% filled · 3 exceptions',
-            trailing: FilledButton.icon(
-                onPressed: () => _published(context),
-                icon: const Icon(Icons.send_outlined),
-                label: const Text('Publish 12 changes'))),
-        const SizedBox(height: 16),
-        if (tablet)
-          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Expanded(flex: 3, child: _ScheduleGrid()),
-            const SizedBox(width: 16),
-            Expanded(flex: 2, child: _CoveragePanel())
-          ])
-        else ...[_CoveragePanel(), const SizedBox(height: 16), _ScheduleGrid()],
-      ]);
-}
-
-class _ScheduleGrid extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) => _Panel(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Event shift plan',
-                style: Theme.of(context)
-                    .textTheme
-                    .titleLarge
-                    ?.copyWith(fontWeight: FontWeight.w800)),
-            const SizedBox(height: 14),
-            Table(
-              columnWidths: const {
-                0: FixedColumnWidth(78),
-                1: FlexColumnWidth(),
-                2: FlexColumnWidth()
+        actions: [
+          if (caps.contains('notification:read'))
+            IconButton(
+                tooltip: 'Notifications',
+                onPressed: () => showModalBottomSheet<void>(
+                    context: context,
+                    isScrollControlled: true,
+                    builder: (_) => const _NotificationInbox()),
+                icon: Badge(
+                    isLabelVisible: unreadNotifications > 0,
+                    label: Text('$unreadNotifications'),
+                    child: const Icon(Icons.notifications_outlined))),
+          if (events.isNotEmpty)
+            PopupMenuButton<String>(
+                tooltip: 'Select event',
+                icon: const Icon(Icons.event_available_outlined),
+                onSelected: (id) {
+                  ref.read(_selectedLiveEventProvider.notifier).state = id;
+                },
+                itemBuilder: (_) => events
+                    .map((e) => PopupMenuItem(
+                        value: e['id'] as String,
+                        child: Text(e['name'] as String? ?? 'Event')))
+                    .toList()),
+          IconButton(
+              tooltip: 'Refresh',
+              onPressed: () {
+                ref.invalidate(operationsBootstrapProvider);
+                if (event != null) {
+                  ref.invalidate(eventIssuesProvider(event['id'] as String));
+                  ref.invalidate(eventTasksProvider(event['id'] as String));
+                }
               },
-              children: const [
-                TableRow(children: [
-                  _TableLabel('TIME'),
-                  _TableLabel('SUITE 14'),
-                  _TableLabel('WEST GATE')
-                ]),
-                TableRow(children: [
-                  _TableCell('5:30'),
-                  _TableCell('Maya ✓'),
-                  _TableCell('Open ×')
-                ]),
-                TableRow(children: [
-                  _TableCell('6:00'),
-                  _TableCell('Priya ✓'),
-                  _TableCell('Vendor slot')
-                ]),
-                TableRow(children: [
-                  _TableCell('6:30'),
-                  _TableCell('Jordan ✓'),
-                  _TableCell('Eli ✓')
-                ]),
-              ],
-            ),
-          ],
-        ),
-      );
-}
-
-class _CoveragePanel extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) => _Panel(
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const _StatusPill(label: 'UNFILLED', color: _coral),
-        const SizedBox(height: 12),
-        Text('West Gate lead',
-            style: Theme.of(context)
-                .textTheme
-                .titleLarge
-                ?.copyWith(fontWeight: FontWeight.w800)),
-        const SizedBox(height: 6),
-        const Text('5:30–10:00 PM · Required for doors'),
-        const SizedBox(height: 18),
-        FilledButton(
-            onPressed: () {}, child: const Text('Find eligible people')),
-        const SizedBox(height: 8),
-        OutlinedButton(
-            onPressed: () {}, child: const Text('Request vendor staffing')),
-        const Divider(height: 32),
-        const Text('2 workers need acknowledgement',
-            style: TextStyle(fontWeight: FontWeight.w800)),
-        TextButton(onPressed: () {}, child: const Text('Send reminder')),
-      ]));
-}
-
-class _ServicePage extends ConsumerWidget {
-  const _ServicePage({required this.tablet, required this.desktop});
-  final bool tablet;
-  final bool desktop;
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final packed = ref.watch(_packedProvider);
-    final queue = _Panel(
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text('Suite service queue',
-          style: Theme.of(context)
-              .textTheme
-              .titleLarge
-              ?.copyWith(fontWeight: FontWeight.w800)),
-      const SizedBox(height: 14),
-      const _CompactWork(
-          title: 'HC-1842 · Suite 14',
-          meta: 'Ready · runner needed · due 6:45 PM',
-          color: _pine),
-      const _CompactWork(
-          title: 'HC-1847 · Sponsor Lounge',
-          meta: 'Preparing · due in 22 min',
-          color: _brass),
-      const _CompactWork(
-          title: 'HC-1839 · East Club',
-          meta: 'Shorted: ice · attention needed',
-          color: _coral)
-    ]));
-    final detail = _Panel(
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      const _StatusPill(label: 'READY FOR PACK', color: _brass),
-      const SizedBox(height: 12),
-      Text('Order HC-1842',
-          style: Theme.of(context)
-              .textTheme
-              .headlineSmall
-              ?.copyWith(fontWeight: FontWeight.w800)),
-      const Text('Suite 14 · 12 guests · due 6:45 PM'),
-      const Divider(height: 28),
-      const Text('12 beverage packs',
-          style: TextStyle(fontWeight: FontWeight.w700)),
-      const Text('1 gluten-free tray · dietary note verified'),
-      const Spacer(),
-      FilledButton(
-          onPressed: () => ref.read(_packedProvider.notifier).state = true,
-          child: Text(packed ? 'Packed · ready for pickup' : 'Confirm pack'))
-    ]));
-    return tablet
-        ? Column(children: [
-            _PageTitle(
-                title: 'Service fulfillment', subtitle: 'One order at risk'),
-            const SizedBox(height: 16),
-            Expanded(
-                child: Row(children: [
-              Expanded(child: queue),
-              const SizedBox(width: 16),
-              Expanded(child: detail)
-            ]))
-          ])
-        : ListView(children: [
-            _PageTitle(
-                title: 'Service fulfillment', subtitle: 'One order at risk'),
-            const SizedBox(height: 16),
-            queue,
-            const SizedBox(height: 16),
-            SizedBox(height: 330, child: detail)
-          ]);
+              icon: const Icon(Icons.refresh)),
+          IconButton(
+              tooltip: 'Sign out',
+              onPressed: () => ref.read(authSessionProvider.notifier).signOut(),
+              icon: const Icon(Icons.logout_outlined)),
+        ],
+      ),
+      body: SafeArea(
+          child: Column(children: [
+        if (tabs.length > 1)
+          Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+              child: SegmentedButton<int>(
+                  segments: [
+                    for (var i = 0; i < tabs.length; i++)
+                      ButtonSegment(value: i, label: Text(tabs[i]))
+                  ],
+                  selected: {
+                    selectedTab
+                  },
+                  onSelectionChanged: (value) =>
+                      ref.read(_liveTabProvider.notifier).state = value.first)),
+        Expanded(
+            child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+                child: page)),
+      ])),
+      floatingActionButton: event != null &&
+              tabs[selectedTab] == 'Issues' &&
+              caps.contains('issue:report')
+          ? FloatingActionButton.extended(
+              onPressed: () => _newLiveIssue(context, ref, event, locations),
+              backgroundColor: _coral,
+              foregroundColor: Colors.white,
+              icon: const Icon(Icons.add_alert_outlined),
+              label: const Text('Report issue'))
+          : event != null &&
+                  tabs[selectedTab] == 'Operations' &&
+                  caps.contains('operations:write')
+              ? FloatingActionButton.extended(
+                  onPressed: () => _newLiveTask(
+                      context,
+                      ref,
+                      event,
+                      locations,
+                      (identity['assignableUserIds'] as List? ?? const [])
+                          .whereType<String>()
+                          .toList(),
+                      (data['people'] as List? ?? const [])
+                          .whereType<Map>()
+                          .map((e) => Map<String, dynamic>.from(e))
+                          .toList()),
+                  icon: const Icon(Icons.add_task),
+                  label: const Text('Add task'))
+              : null,
+    );
   }
 }
 
-class _StockPage extends ConsumerWidget {
-  const _StockPage({required this.tablet, required this.desktop});
-  final bool tablet;
-  final bool desktop;
+class _NoEventsPage extends StatelessWidget {
+  const _NoEventsPage({required this.isAdmin, required this.onSetup});
+  final bool isAdmin;
+  final VoidCallback onSetup;
+  @override
+  Widget build(BuildContext context) => Center(
+      child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 500),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.event_busy_outlined, size: 52, color: _pine),
+            const SizedBox(height: 16),
+            const Text('No events are assigned to your account',
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+            const SizedBox(height: 8),
+            Text(
+                isAdmin
+                    ? 'Set up your venue and create an event to start using the live operations console.'
+                    : 'Ask your organization administrator to assign your account to an event.',
+                textAlign: TextAlign.center),
+            if (isAdmin) ...[
+              const SizedBox(height: 16),
+              FilledButton(
+                  onPressed: onSetup, child: const Text('Set up organization'))
+            ]
+          ])));
+}
+
+class _NotificationInbox extends ConsumerWidget {
+  const _NotificationInbox();
+  @override
+  Widget build(BuildContext context, WidgetRef ref) => SafeArea(
+      child: SizedBox(
+          height: MediaQuery.sizeOf(context).height * 0.72,
+          child: Column(children: [
+            Padding(
+                padding: const EdgeInsets.all(20),
+                child: Row(children: [
+                  const Icon(Icons.notifications_active_outlined, color: _pine),
+                  const SizedBox(width: 10),
+                  Text('Notifications',
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleLarge
+                          ?.copyWith(fontWeight: FontWeight.w800))
+                ])),
+            Expanded(
+                child: ref.watch(userNotificationsProvider).when(
+                    loading: () =>
+                        const Center(child: CircularProgressIndicator()),
+                    error: (error, _) => Center(
+                        child: Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Text('Notifications unavailable: $error'))),
+                    data: (rows) => rows.isEmpty
+                        ? const Center(child: Text('You are all caught up.'))
+                        : ListView.builder(
+                            itemCount: rows.length,
+                            itemBuilder: (context, index) {
+                              final notification =
+                                  Map<String, dynamic>.from(rows[index] as Map);
+                              final unread = notification['readAt'] == null;
+                              return ListTile(
+                                  leading: Icon(
+                                      unread
+                                          ? Icons.mark_email_unread_outlined
+                                          : Icons.drafts_outlined,
+                                      color: unread ? _pine : Colors.grey),
+                                  title: Text(
+                                      notification['title'] as String? ??
+                                          'Notification',
+                                      style: TextStyle(
+                                          fontWeight: unread
+                                              ? FontWeight.w800
+                                              : FontWeight.w500)),
+                                  subtitle: Text(
+                                      '${notification['body'] ?? ''}\n${notification['createdAt'] ?? ''}'),
+                                  isThreeLine: true,
+                                  onTap: unread
+                                      ? () async {
+                                          try {
+                                            await ref
+                                                .read(operationsApiProvider)
+                                                .markNotificationRead(
+                                                    notification['id']
+                                                        as String);
+                                            ref.invalidate(
+                                                userNotificationsProvider);
+                                          } catch (error) {
+                                            if (context.mounted) {
+                                              ScaffoldMessenger.of(context)
+                                                  .showSnackBar(SnackBar(
+                                                      content: Text(
+                                                          'Could not mark notification read: $error')));
+                                            }
+                                          }
+                                        }
+                                      : null);
+                            })))
+          ])));
+}
+
+class _LiveTodayPage extends ConsumerWidget {
+  const _LiveTodayPage(
+      {required this.event,
+      required this.venueCount,
+      required this.locationCount,
+      required this.capabilities});
+  final Map<String, dynamic> event;
+  final int venueCount;
+  final int locationCount;
+  final Set<String> capabilities;
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final saved = ref.watch(_countSavedProvider);
+    final eventId = event['id'] as String;
+    final issues = capabilities.contains('issue:read')
+        ? ref.watch(eventIssuesProvider(eventId))
+        : const AsyncValue<List<dynamic>>.data([]);
+    final tasks = capabilities.contains('operations:read')
+        ? ref.watch(eventTasksProvider(eventId))
+        : const AsyncValue<List<dynamic>>.data([]);
     return ListView(children: [
-      _PageTitle(
-          title: 'Stock',
-          subtitle: saved
-              ? 'Count saved · reconciliation ready'
-              : 'East Bar count · 7 of 18 items'),
-      const SizedBox(height: 16),
-      _Panel(
-          child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 650),
+      Text('Event day',
+          style: Theme.of(context)
+              .textTheme
+              .headlineMedium
+              ?.copyWith(fontWeight: FontWeight.w800)),
+      const SizedBox(height: 4),
+      Text(event['name'] as String? ?? 'Event'),
+      const SizedBox(height: 20),
+      Wrap(spacing: 12, runSpacing: 12, children: [
+        _LiveMetric(
+            label: 'Venues in scope',
+            value: '$venueCount',
+            icon: Icons.stadium_outlined),
+        _LiveMetric(
+            label: 'Locations',
+            value: '$locationCount',
+            icon: Icons.place_outlined),
+        _LiveMetric(
+            label: 'Open issues',
+            value: issues.valueOrNull?.length.toString() ?? '—',
+            icon: Icons.report_problem_outlined),
+        _LiveMetric(
+            label: 'Operations tasks',
+            value: tasks.valueOrNull?.length.toString() ?? '—',
+            icon: Icons.checklist_outlined),
+      ]),
+      const SizedBox(height: 20),
+      if (issues.hasError || tasks.hasError)
+        const Text(
+            'Some live data could not be loaded. Check your connection and refresh.'),
+      const Text('Live event data',
+          style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18)),
+      const SizedBox(height: 8),
+      if (issues.valueOrNull?.isEmpty ?? true)
+        const _EmptyLine('No reported issues for this event.'),
+      ...(issues.valueOrNull ?? const []).take(3).map((row) {
+        final item = Map<String, dynamic>.from(row as Map);
+        return ListTile(
+            leading: Icon(Icons.circle,
+                size: 12,
+                color:
+                    item['severity'] == 'CRITICAL' || item['severity'] == 'HIGH'
+                        ? _coral
+                        : _brass),
+            title: Text(item['title'] as String? ?? 'Issue'),
+            subtitle: Text(
+                '${item['state'] ?? 'REPORTED'} · ${item['category'] ?? ''}'));
+      }),
+      if (tasks.valueOrNull?.isEmpty ?? true)
+        const _EmptyLine('No operational tasks have been added yet.'),
+      ...(tasks.valueOrNull ?? const []).take(3).map((row) {
+        final item = Map<String, dynamic>.from(row as Map);
+        return ListTile(
+            leading: const Icon(Icons.task_alt_outlined),
+            title: Text(item['title'] as String? ?? 'Task'),
+            subtitle:
+                Text('${item['kind'] ?? ''} · ${item['state'] ?? 'OPEN'}'));
+      }),
+    ]);
+  }
+}
+
+class _LiveMetric extends StatelessWidget {
+  const _LiveMetric(
+      {required this.label, required this.value, required this.icon});
+  final String label, value;
+  final IconData icon;
+  @override
+  Widget build(BuildContext context) => SizedBox(
+      width: 160,
+      child: Card(
+          child: Padding(
+              padding: const EdgeInsets.all(16),
               child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const _StatusPill(label: 'COUNT IN PROGRESS', color: _blue),
-                    const SizedBox(height: 16),
-                    Text('Sparkling water · 24-pack',
+                    Icon(icon, color: _pine),
+                    const SizedBox(height: 12),
+                    Text(value,
                         style: Theme.of(context)
                             .textTheme
                             .headlineSmall
                             ?.copyWith(fontWeight: FontWeight.w800)),
-                    const SizedBox(height: 8),
-                    const Text('Expected quantity: 18 · East Bar storage'),
-                    const SizedBox(height: 28),
-                    Row(children: [
-                      OutlinedButton(
-                          onPressed: () {}, child: const Icon(Icons.remove)),
-                      const SizedBox(width: 14),
-                      const Text('12',
-                          style: TextStyle(
-                              fontSize: 44, fontWeight: FontWeight.w800)),
-                      const SizedBox(width: 14),
-                      OutlinedButton(
-                          onPressed: () {}, child: const Icon(Icons.add))
-                    ]),
-                    const SizedBox(height: 20),
-                    const Text(
-                        'This count is an observation. A -6 variance will require reconciliation.'),
-                    const SizedBox(height: 18),
-                    FilledButton(
-                        onPressed: () =>
-                            ref.read(_countSavedProvider.notifier).state = true,
-                        child: Text(
-                            saved ? 'Saved · view variance' : 'Save count')),
-                  ]))),
-    ]);
+                    Text(label, style: Theme.of(context).textTheme.bodySmall)
+                  ]))));
+}
+
+class _EmptyLine extends StatelessWidget {
+  const _EmptyLine(this.text);
+  final String text;
+  @override
+  Widget build(BuildContext context) => Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Text(text, style: const TextStyle(color: Color(0xFF59645D))));
+}
+
+class _LiveIssuesPage extends ConsumerWidget {
+  const _LiveIssuesPage(
+      {required this.event,
+      required this.canRead,
+      required this.capabilities,
+      required this.assignableUserIds,
+      required this.people});
+  final Map<String, dynamic> event;
+  final bool canRead;
+  final Set<String> capabilities;
+  final List<String> assignableUserIds;
+  final List<Map<String, dynamic>> people;
+  @override
+  Widget build(BuildContext context, WidgetRef ref) => Column(children: [
+        Expanded(
+            child: !canRead
+                ? const Center(
+                    child: Text('Report an issue with the button below.'))
+                : ref.watch(eventIssuesProvider(event['id'] as String)).when(
+                      loading: () =>
+                          const Center(child: CircularProgressIndicator()),
+                      error: (error, _) =>
+                          Center(child: Text('Issue list unavailable: $error')),
+                      data: (rows) => rows.isEmpty
+                          ? const Center(
+                              child: Text('No issues reported for this event.'))
+                          : ListView(
+                              children: rows.map((row) {
+                              final item =
+                                  Map<String, dynamic>.from(row as Map);
+                              final state =
+                                  item['state'] as String? ?? 'REPORTED';
+                              final actions = _issueActions(state, capabilities,
+                                  canAssign: assignableUserIds.isNotEmpty);
+                              return Card(
+                                  child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                    ListTile(
+                                        leading: const Icon(
+                                            Icons.report_problem_outlined,
+                                            color: _coral),
+                                        title: Text(item['title'] as String? ??
+                                            'Issue'),
+                                        subtitle: Text(
+                                            '${item['state']} · ${item['severity']} · ${item['category']}\n${item['description'] ?? ''}'),
+                                        isThreeLine: true),
+                                    TextButton.icon(
+                                        onPressed: () => _showIssueEvidence(
+                                            context,
+                                            ref,
+                                            event['id'] as String,
+                                            item),
+                                        icon: const Icon(
+                                            Icons.photo_library_outlined),
+                                        label:
+                                            const Text('View photo evidence')),
+                                    if (actions.isNotEmpty)
+                                      Align(
+                                          alignment: Alignment.centerRight,
+                                          child: PopupMenuButton<String>(
+                                              tooltip: 'Update issue',
+                                              onSelected: (action) =>
+                                                  _performLiveIssueAction(
+                                                      context,
+                                                      ref,
+                                                      event['id'] as String,
+                                                      item,
+                                                      action,
+                                                      assignableUserIds,
+                                                      people),
+                                              itemBuilder: (_) => actions
+                                                  .map((action) => PopupMenuItem(
+                                                      value: action,
+                                                      child: Text(_issueActionLabel(
+                                                          action))))
+                                                  .toList(),
+                                              child: const Padding(
+                                                  padding: EdgeInsets.fromLTRB(
+                                                      12, 0, 16, 12),
+                                                  child: Row(
+                                                      mainAxisSize: MainAxisSize.min,
+                                                      children: [
+                                                        Text('Update'),
+                                                        Icon(Icons.expand_more)
+                                                      ]))))
+                                  ]));
+                            }).toList()),
+                    )),
+        _PendingIssueQueue(eventId: event['id'] as String),
+      ]);
+}
+
+Future<void> _showIssueEvidence(BuildContext context, WidgetRef ref,
+    String eventId, Map<String, dynamic> issue) async {
+  try {
+    final rows = await ref
+        .read(operationsApiProvider)
+        .evidence(eventId, issue['id'] as String);
+    if (!context.mounted) return;
+    await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+              title: const Text('Issue photo evidence'),
+              content: SizedBox(
+                width: 480,
+                child: rows.isEmpty
+                    ? const Text('No photos are attached to this issue.')
+                    : SingleChildScrollView(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: rows.map((row) {
+                            final evidence =
+                                Map<String, dynamic>.from(row as Map);
+                            return Padding(
+                              padding: const EdgeInsets.only(bottom: 12),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(evidence['fileName'] as String? ??
+                                      'Photo'),
+                                  const SizedBox(height: 6),
+                                  Image.network(
+                                    evidence['downloadUrl'] as String,
+                                    errorBuilder: (_, __, ___) => const Text(
+                                        'Photo could not be loaded.'),
+                                  ),
+                                ],
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                      ),
+              ),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(dialogContext),
+                    child: const Text('Done')),
+              ],
+            ));
+  } catch (error) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not load evidence: $error')));
+    }
   }
 }
 
-class _InsightsPage extends StatelessWidget {
-  const _InsightsPage({required this.tablet, required this.desktop});
-  final bool tablet;
-  final bool desktop;
+class _PendingIssueQueue extends ConsumerWidget {
+  const _PendingIssueQueue({required this.eventId});
+  final String eventId;
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final pending = ref
+        .watch(issueSyncProvider)
+        .where((report) => report.eventId == eventId)
+        .toList();
+    if (pending.isEmpty) return const SizedBox.shrink();
+    return ExpansionTile(
+        leading: const Icon(Icons.cloud_upload_outlined),
+        title: Text(
+            '${pending.length} saved report${pending.length == 1 ? '' : 's'} waiting to sync'),
+        children: pending
+            .map((report) => ListTile(
+                title: Text(report.title),
+                subtitle: Text(report.state == SyncState.failed
+                    ? 'Sync failed · saved on this device${report.evidence.isEmpty ? '' : ' · ${report.evidence.length} photo(s)'}'
+                    : 'Saved on this device · waiting for network${report.evidence.isEmpty ? '' : ' · ${report.evidence.length} photo(s)'}'),
+                trailing: report.state == SyncState.failed
+                    ? IconButton(
+                        tooltip: 'Retry sync',
+                        onPressed: () =>
+                            ref.read(issueSyncProvider.notifier).synchronize(),
+                        icon: const Icon(Icons.sync))
+                    : const Icon(Icons.lock_outline)))
+            .toList());
+  }
+}
+
+List<String> _issueActions(String state, Set<String> caps,
+        {required bool canAssign}) =>
+    [
+      if (state == 'REPORTED' && caps.contains('issue:triage')) 'triage',
+      if (['REPORTED', 'TRIAGED', 'ESCALATED', 'ASSIGNED'].contains(state) &&
+          caps.contains('issue:triage') &&
+          canAssign)
+        'assign',
+      if (['REPORTED', 'TRIAGED', 'ASSIGNED', 'IN_PROGRESS'].contains(state) &&
+          caps.contains('issue:escalate'))
+        'escalate',
+      if (['ASSIGNED', 'ESCALATED', 'IN_PROGRESS'].contains(state) &&
+          caps.contains('issue:resolve'))
+        'resolve',
+      if (state == 'RESOLVED' && caps.contains('issue:verify')) 'verify',
+      if (state == 'VERIFIED' && caps.contains('issue:close')) 'close',
+    ];
+
+String _issueActionLabel(String action) => switch (action) {
+      'triage' => 'Mark triaged',
+      'assign' => 'Assign to person',
+      'escalate' => 'Escalate',
+      'resolve' => 'Resolve',
+      'verify' => 'Verify resolution',
+      'close' => 'Close issue',
+      _ => action,
+    };
+
+Future<void> _performLiveIssueAction(
+    BuildContext context,
+    WidgetRef ref,
+    String eventId,
+    Map<String, dynamic> issue,
+    String action,
+    List<String> assignableUserIds,
+    List<Map<String, dynamic>> people) async {
+  String? ownerId;
+  if (action == 'assign') {
+    final labels = <String, String>{
+      for (final person in people)
+        if (person['externalSubject'] is String)
+          person['externalSubject'] as String:
+              '${person['displayName'] ?? person['externalSubject']} · ${person['email'] ?? ''}'
+    };
+    ownerId = await showDialog<String>(
+        context: context,
+        builder: (context) => SimpleDialog(
+            title: const Text('Assign issue to'),
+            children: assignableUserIds
+                .map((id) => SimpleDialogOption(
+                    onPressed: () => Navigator.pop(context, id),
+                    child: Text(labels[id] ?? id)))
+                .toList()));
+    if (ownerId == null || !context.mounted) return;
+  }
+  final reason = TextEditingController();
+  final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+              title: Text(_issueActionLabel(action)),
+              content: TextField(
+                  controller: reason,
+                  autofocus: true,
+                  decoration: const InputDecoration(labelText: 'Reason'),
+                  minLines: 1,
+                  maxLines: 3),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(context, false),
+                    child: const Text('Cancel')),
+                FilledButton(
+                    onPressed: () => Navigator.pop(context, true),
+                    child: const Text('Save'))
+              ]));
+  if (confirmed != true || !context.mounted) return;
+  try {
+    await ref.read(operationsApiProvider).issueAction(
+        eventId, issue['id'] as String, action,
+        reason: reason.text.trim().isEmpty
+            ? 'Reviewed in operations console.'
+            : reason.text.trim(),
+        ownerId: ownerId);
+    ref.invalidate(eventIssuesProvider(eventId));
+  } catch (error) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not update issue: $error')));
+    }
+  }
+}
+
+class _LiveTasksPage extends ConsumerWidget {
+  const _LiveTasksPage({required this.event, required this.canWrite});
+  final Map<String, dynamic> event;
+  final bool canWrite;
+  @override
+  Widget build(BuildContext context, WidgetRef ref) =>
+      ref.watch(eventTasksProvider(event['id'] as String)).when(
+          loading: () => const Center(child: CircularProgressIndicator()),
+          error: (e, _) =>
+              Center(child: Text('Operations queue unavailable: $e')),
+          data: (rows) => rows.isEmpty
+              ? const Center(child: Text('No tasks for this event yet.'))
+              : ListView(
+                  children: rows.map((row) {
+                  final item = Map<String, dynamic>.from(row as Map);
+                  final state = item['state'] as String? ?? 'OPEN';
+                  return Card(
+                      child: ListTile(
+                          leading: Icon(
+                              state == 'DONE'
+                                  ? Icons.check_circle_outline
+                                  : state == 'BLOCKED'
+                                      ? Icons.warning_amber_outlined
+                                      : Icons.radio_button_unchecked,
+                              color: state == 'BLOCKED' ? _coral : _pine),
+                          title: Text(item['title'] as String? ?? 'Task'),
+                          subtitle: Text(
+                              '${item['kind']} · $state${item['ownerId'] == null ? '' : ' · ${item['ownerId']}'}'),
+                          trailing: canWrite && state != 'DONE'
+                              ? PopupMenuButton<String>(
+                                  onSelected: (next) async {
+                                    await ref
+                                        .read(operationsApiProvider)
+                                        .updateTask(
+                                            event['id'] as String,
+                                            item['id'] as String,
+                                            {'state': next});
+                                    ref.invalidate(eventTasksProvider(
+                                        event['id'] as String));
+                                  },
+                                  itemBuilder: (_) => const [
+                                        PopupMenuItem(
+                                            value: 'IN_PROGRESS',
+                                            child: Text('Start')),
+                                        PopupMenuItem(
+                                            value: 'BLOCKED',
+                                            child: Text('Mark blocked')),
+                                        PopupMenuItem(
+                                            value: 'DONE',
+                                            child: Text('Complete'))
+                                      ])
+                              : Text(state)));
+                }).toList()));
+}
+
+class _TenantSetupPage extends StatelessWidget {
+  const _TenantSetupPage(
+      {required this.venues,
+      required this.people,
+      required this.api,
+      required this.onSaved});
+  final List<Map<String, dynamic>> venues;
+  final List<Map<String, dynamic>> people;
+  final OperationsApi api;
+  final VoidCallback onSaved;
   @override
   Widget build(BuildContext context) => ListView(children: [
-        _PageTitle(
-            title: 'Operational insights',
-            subtitle: 'Focus follow-up where event delivery is at risk'),
-        const SizedBox(height: 16),
-        Wrap(spacing: 14, runSpacing: 14, children: const [
-          _Metric(
-              label: 'Events ready at doors',
-              value: '86%',
-              detail: '+8 pts this month',
-              color: _pine),
-          _Metric(
-              label: 'Average issue response',
-              value: '9 min',
-              detail: 'Target: under 12 min',
-              color: _blue),
-          _Metric(
-              label: 'Open closeout follow-ups',
-              value: '7',
-              detail: '3 due tomorrow',
-              color: _brass),
-        ]),
-        const SizedBox(height: 16),
-        _Panel(
-            child:
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text('Needs leadership attention',
-              style: Theme.of(context)
-                  .textTheme
-                  .titleLarge
-                  ?.copyWith(fontWeight: FontWeight.w800)),
-          const SizedBox(height: 12),
-          const _CompactWork(
-              title: 'Harbor City Arena · Storm vs. Comets',
-              meta: '2 blockers before doors · owner: Morgan',
-              color: _coral),
-          const _CompactWork(
-              title: 'Riverfront Theater · Gala',
-              meta: 'Closeout follow-up overdue · owner: Dana',
-              color: _brass)
-        ])),
-      ]);
-}
-
-class _PageTitle extends StatelessWidget {
-  const _PageTitle(
-      {required this.title, required this.subtitle, this.trailing});
-  final String title;
-  final String subtitle;
-  final Widget? trailing;
-  @override
-  Widget build(BuildContext context) =>
-      Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Expanded(
-            child:
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(title,
-              style: Theme.of(context)
-                  .textTheme
-                  .headlineMedium
-                  ?.copyWith(fontWeight: FontWeight.w900)),
-          const SizedBox(height: 4),
-          Text(subtitle, style: const TextStyle(color: Color(0xFF59645D)))
-        ])),
-        if (trailing != null) trailing!
-      ]);
-}
-
-class _HeroAction extends StatelessWidget {
-  const _HeroAction(
-      {required this.eyebrow,
-      required this.title,
-      required this.description,
-      required this.actionLabel,
-      required this.icon,
-      required this.onPressed});
-  final String eyebrow, title, description, actionLabel;
-  final IconData icon;
-  final VoidCallback onPressed;
-  @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.all(22),
-        decoration:
-            BoxDecoration(color: _ink, borderRadius: BorderRadius.circular(24)),
-        child: Row(children: [
-          Expanded(
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                Text(eyebrow,
-                    style: const TextStyle(
-                        color: _mint,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: 1.1)),
-                const SizedBox(height: 8),
-                Text(title,
-                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        color: Colors.white, fontWeight: FontWeight.w900)),
-                const SizedBox(height: 7),
-                Text(description,
-                    style: const TextStyle(color: Color(0xFFD5DED7))),
-                const SizedBox(height: 18),
-                FilledButton.icon(
-                    onPressed: onPressed,
-                    icon: Icon(icon),
-                    label: Text(actionLabel),
-                    style: FilledButton.styleFrom(
-                        backgroundColor: _mint, foregroundColor: _ink))
-              ])),
-          const SizedBox(width: 14),
-          Icon(icon, color: _mint, size: 42)
-        ]),
-      );
-}
-
-class _WorkCard extends StatelessWidget {
-  const _WorkCard(
-      {required this.state,
-      required this.stateColor,
-      required this.title,
-      required this.meta,
-      required this.detail,
-      required this.action,
-      this.liveStatus = false,
-      this.onPressed});
-  final String state, title, meta, detail, action;
-  final Color stateColor;
-  final bool liveStatus;
-  final VoidCallback? onPressed;
-  @override
-  Widget build(BuildContext context) => _Panel(
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        _StatusPill(label: state, color: stateColor, liveRegion: liveStatus),
-        const SizedBox(height: 12),
-        Text(title,
+        Text('Organization setup',
             style: Theme.of(context)
                 .textTheme
-                .titleLarge
+                .headlineSmall
                 ?.copyWith(fontWeight: FontWeight.w800)),
-        const SizedBox(height: 5),
-        Text(meta),
-        const SizedBox(height: 10),
-        Text(detail, style: const TextStyle(color: Color(0xFF59645D))),
-        const SizedBox(height: 16),
-        OutlinedButton(onPressed: onPressed, child: Text(action))
-      ]));
-}
-
-class _Panel extends StatelessWidget {
-  const _Panel({required this.child});
-  final Widget child;
-  @override
-  Widget build(BuildContext context) => Card(
-      margin: EdgeInsets.zero,
-      child: Padding(padding: const EdgeInsets.all(20), child: child));
-}
-
-class _StatusPill extends StatelessWidget {
-  const _StatusPill(
-      {required this.label, required this.color, this.liveRegion = false});
-  final String label;
-  final Color color;
-  final bool liveRegion;
-  @override
-  Widget build(BuildContext context) => Semantics(
-        container: true,
-        liveRegion: liveRegion,
-        label: label,
-        child: ExcludeSemantics(
-          child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-              decoration: BoxDecoration(
-                  color: color.withValues(alpha: .13),
-                  borderRadius: BorderRadius.circular(30)),
-              child: Row(mainAxisSize: MainAxisSize.min, children: [
-                Icon(Icons.circle, size: 8, color: color),
-                const SizedBox(width: 6),
-                Text(label,
-                    style: TextStyle(
-                        color: color,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w900,
-                        letterSpacing: .6))
-              ])),
-        ),
-      );
-}
-
-class _CompactWork extends StatelessWidget {
-  const _CompactWork(
-      {required this.title, required this.meta, required this.color});
-  final String title, meta;
-  final Color color;
-  @override
-  Widget build(BuildContext context) => Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-              color: const Color(0xFFF8F7F2),
-              borderRadius: BorderRadius.circular(14)),
-          child: Row(children: [
-            Container(
-                width: 4,
-                height: 40,
-                decoration: BoxDecoration(
-                    color: color, borderRadius: BorderRadius.circular(4))),
-            const SizedBox(width: 10),
-            Expanded(
-                child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                  Text(title,
-                      style: const TextStyle(fontWeight: FontWeight.w800)),
-                  const SizedBox(height: 3),
-                  Text(meta,
-                      style: const TextStyle(
-                          fontSize: 12, color: Color(0xFF59645D)))
-                ])),
-            const Icon(Icons.chevron_right)
-          ])));
-}
-
-class _SectionLabel extends StatelessWidget {
-  const _SectionLabel(this.value);
-  final String value;
-  @override
-  Widget build(BuildContext context) => Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Text(value,
-          style: const TextStyle(
-              fontSize: 11,
-              letterSpacing: 1,
-              fontWeight: FontWeight.w900,
-              color: Color(0xFF59645D))));
-}
-
-class _Milestone extends StatelessWidget {
-  const _Milestone(
-      {required this.time, required this.label, required this.state});
-  final String time, label, state;
-  @override
-  Widget build(BuildContext context) {
-    final color = state == 'complete'
-        ? _pine
-        : state == 'current'
-            ? _brass
-            : const Color(0xFF9AA39C);
-    return Padding(
-        padding: const EdgeInsets.only(bottom: 18),
-        child: Row(children: [
-          Container(
-              width: 12,
-              height: 12,
-              decoration: BoxDecoration(shape: BoxShape.circle, color: color)),
-          const SizedBox(width: 12),
-          SizedBox(
-              width: 68,
-              child: Text(time,
-                  style: const TextStyle(fontWeight: FontWeight.w700))),
-          Text(label)
-        ]));
-  }
-}
-
-class _TableLabel extends StatelessWidget {
-  const _TableLabel(this.text);
-  final String text;
-  @override
-  Widget build(BuildContext context) => Padding(
-      padding: const EdgeInsets.all(8),
-      child: Text(text,
-          style: const TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w900,
-              color: Color(0xFF59645D))));
-}
-
-class _TableCell extends StatelessWidget {
-  const _TableCell(this.text);
-  final String text;
-  @override
-  Widget build(BuildContext context) =>
-      Padding(padding: const EdgeInsets.all(8), child: Text(text));
-}
-
-class _Metric extends StatelessWidget {
-  const _Metric(
-      {required this.label,
-      required this.value,
-      required this.detail,
-      required this.color});
-  final String label, value, detail;
-  final Color color;
-  @override
-  Widget build(BuildContext context) => SizedBox(
-      width: 250,
-      child: _Panel(
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(label, style: const TextStyle(color: Color(0xFF59645D))),
         const SizedBox(height: 8),
-        Text(value,
-            style: TextStyle(
-                fontSize: 36, fontWeight: FontWeight.w900, color: color)),
-        Text(detail)
-      ])));
-}
-
-void _showShift(BuildContext context, WidgetRef ref) =>
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => Padding(
-        padding: const EdgeInsets.fromLTRB(24, 24, 24, 36),
-        child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Suite 14 service',
-                  style: Theme.of(context)
-                      .textTheme
-                      .headlineSmall
-                      ?.copyWith(fontWeight: FontWeight.w900)),
-              const SizedBox(height: 8),
-              const Text(
-                  '5:45–10:30 PM · East service corridor\nReport to Eli · location changed 18 min ago'),
-              const SizedBox(height: 18),
-              const Text(
-                  'Before you arrive\n• Black uniform and service kit\n• Review suite dietary notes'),
-              const SizedBox(height: 24),
-              FilledButton(
-                  onPressed: () {
-                    ref.read(_shiftAcknowledgedProvider.notifier).state = true;
-                    Navigator.pop(context);
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                        content: Text(
-                            'Shift acknowledged · you are ready for check-in')));
-                  },
-                  child: const Text('Acknowledge this shift')),
-              const SizedBox(height: 8),
-              OutlinedButton(
-                  onPressed: () {}, child: const Text('I have a conflict')),
-            ]),
-      ),
-    );
-
-void _showCheckIn(BuildContext context) => showModalBottomSheet<void>(
-      context: context,
-      builder: (context) => Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Check in',
-                  style: Theme.of(context)
-                      .textTheme
-                      .headlineSmall
-                      ?.copyWith(fontWeight: FontWeight.w900)),
-              const SizedBox(height: 8),
-              const Text('Available at 5:35 PM · East service corridor'),
-              const SizedBox(height: 22),
-              FilledButton(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                        content: Text('Check-in recorded at 5:42 PM')));
-                  },
-                  child: const Text('Check in now')),
-            ]),
-      ),
-    );
-void _reportIssue(BuildContext context, WidgetRef ref) =>
-    showModalBottomSheet<void>(
+        const Text('Create the real venue structure used by event operations.'),
+        const SizedBox(height: 16),
+        ...venues.map((v) => ListTile(
+            leading: const Icon(Icons.stadium_outlined),
+            title: Text(v['name'] as String? ?? 'Venue'))),
+        const SizedBox(height: 12),
+        Wrap(spacing: 8, runSpacing: 8, children: [
+          FilledButton.icon(
+              onPressed: () => _create(context, 'venue'),
+              icon: const Icon(Icons.add),
+              label: const Text('Add venue')),
+          OutlinedButton.icon(
+              onPressed:
+                  venues.isEmpty ? null : () => _create(context, 'location'),
+              icon: const Icon(Icons.place_outlined),
+              label: const Text('Add location')),
+          OutlinedButton.icon(
+              onPressed:
+                  venues.isEmpty ? null : () => _create(context, 'event'),
+              icon: const Icon(Icons.event_outlined),
+              label: const Text('Add event')),
+          OutlinedButton.icon(
+              onPressed: () => _create(context, 'person'),
+              icon: const Icon(Icons.person_add_alt),
+              label: const Text('Add person'))
+        ]),
+        const SizedBox(height: 24),
+        Text('People directory (${people.length})',
+            style: Theme.of(context)
+                .textTheme
+                .titleMedium
+                ?.copyWith(fontWeight: FontWeight.w800)),
+        ...people.map((person) => ListTile(
+            leading: const Icon(Icons.person_outline),
+            title: Text(person['displayName'] as String? ?? 'Person'),
+            subtitle: Text(person['email'] as String? ?? '')))
+      ]);
+  Future<void> _create(BuildContext context, String type) async {
+    final name = TextEditingController();
+    final email = TextEditingController();
+    final subject = TextEditingController();
+    final ok = await showDialog<bool>(
         context: context,
-        isScrollControlled: true,
-        builder: (context) => _ReportIssueSheet(ref: ref));
-
-void _published(BuildContext context) => showDialog<void>(
-    context: context,
-    builder: (context) => AlertDialog(
-            title: const Text('Publish schedule changes?'),
-            content: const Text(
-                '12 people will receive a shift or material-change notice. Two open slots remain visible to supervisors.'),
-            actions: [
-              TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('Review again')),
-              FilledButton(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                        content: Text('12 schedule changes published')));
-                  },
-                  child: const Text('Publish 12 changes'))
-            ]));
-
-class _ReportIssueSheet extends StatefulWidget {
-  const _ReportIssueSheet({required this.ref});
-  final WidgetRef ref;
-  @override
-  State<_ReportIssueSheet> createState() => _ReportIssueSheetState();
-}
-
-class _ReportIssueSheetState extends State<_ReportIssueSheet> {
-  final _title = TextEditingController();
-  final _description = TextEditingController();
-  final _locationFocus = FocusNode(debugLabel: 'issue-location');
-  String _selectedLocationId = '30000000-0000-4000-8000-000000000001';
-
-  @override
-  void dispose() {
-    _title.dispose();
-    _description.dispose();
-    _locationFocus.dispose();
-    super.dispose();
+        builder: (context) => AlertDialog(
+                title: Text('Add $type'),
+                content: Column(mainAxisSize: MainAxisSize.min, children: [
+                  TextField(
+                      controller: name,
+                      decoration: InputDecoration(
+                          labelText:
+                              type == 'person' ? 'Display name' : 'Name')),
+                  if (type == 'person')
+                    TextField(
+                        controller: email,
+                        decoration: const InputDecoration(labelText: 'Email')),
+                  if (type == 'person')
+                    TextField(
+                        controller: subject,
+                        decoration: const InputDecoration(
+                            labelText: 'Canonical subject (issuer|sub)'))
+                ]),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(context, false),
+                      child: const Text('Cancel')),
+                  FilledButton(
+                      onPressed: () => Navigator.pop(context, true),
+                      child: const Text('Save'))
+                ]));
+    if (ok != true || !context.mounted) return;
+    try {
+      if (type == 'venue') await api.createVenue(name.text.trim());
+      if (type == 'location') {
+        if (!context.mounted) return;
+        final venue = await _chooseVenue(context);
+        if (venue != null) {
+          await api.createLocation(venue['id'] as String, name.text.trim());
+        }
+      }
+      if (type == 'event') {
+        if (!context.mounted) return;
+        final venue = await _chooseVenue(context);
+        if (venue != null && context.mounted) {
+          final date = await showDatePicker(
+              context: context,
+              firstDate: DateTime.now().subtract(const Duration(days: 365)),
+              lastDate: DateTime.now().add(const Duration(days: 365 * 5)),
+              initialDate: DateTime.now());
+          final time = date != null && context.mounted
+              ? await showTimePicker(
+                  context: context,
+                  initialTime: const TimeOfDay(hour: 19, minute: 0))
+              : null;
+          if (date == null || time == null) return;
+          final startsAt =
+              DateTime(date.year, date.month, date.day, time.hour, time.minute);
+          await api.createEvent(
+              venue['id'] as String, name.text.trim(), startsAt);
+        }
+      }
+      if (type == 'person') {
+        await api.savePerson(
+            subject.text.trim(), email.text.trim(), name.text.trim());
+      }
+      onSaved();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$type saved')));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Could not save: $e')));
+      }
+    }
   }
 
-  @override
-  Widget build(BuildContext context) => Padding(
-        padding: EdgeInsets.fromLTRB(
-            24, 24, 24, MediaQuery.viewInsetsOf(context).bottom + 24),
-        child: SingleChildScrollView(
-            child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-              Text('Report an issue',
-                  style: Theme.of(context)
-                      .textTheme
-                      .headlineSmall
-                      ?.copyWith(fontWeight: FontWeight.w900)),
-              const SizedBox(height: 16),
-              TextField(
-                  controller: _title,
-                  textInputAction: TextInputAction.next,
-                  decoration: const InputDecoration(
-                      labelText: 'What is happening?',
-                      hintText: 'Refrigeration warning')),
-              const SizedBox(height: 12),
-              Focus(
-                focusNode: _locationFocus,
-                child: DropdownButtonFormField<String>(
-                  initialValue: _selectedLocationId,
-                  decoration: const InputDecoration(labelText: 'Location'),
-                  items: const [
-                    DropdownMenuItem(
-                        value: '30000000-0000-4000-8000-000000000001',
-                        child: Text('Suite 14 pantry')),
-                    DropdownMenuItem(
-                        value: '30000000-0000-4000-8000-000000000002',
-                        child: Text('East bar')),
-                    DropdownMenuItem(
-                        value: '30000000-0000-4000-8000-000000000003',
-                        child: Text('West Gate')),
-                  ],
-                  onChanged: (value) {
-                    if (value != null) {
-                      setState(() => _selectedLocationId = value);
-                    }
-                  },
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                  controller: _description,
-                  maxLines: 3,
-                  decoration: const InputDecoration(
-                      labelText: 'Details',
-                      hintText:
-                          'Temperature warning appeared on the display.')),
-              const SizedBox(height: 14),
-              Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  alignment: WrapAlignment.spaceBetween,
-                  children: [
-                    OutlinedButton.icon(
-                        onPressed: () {},
-                        icon: const Icon(Icons.camera_alt_outlined),
-                        label: const Text('Add photo')),
-                    FilledButton(
-                        onPressed: _submit, child: const Text('Submit issue'))
-                  ]),
-            ])),
-      );
+  Future<Map<String, dynamic>?> _chooseVenue(BuildContext context) =>
+      showDialog<Map<String, dynamic>>(
+          context: context,
+          builder: (context) => SimpleDialog(
+              title: const Text('Choose venue'),
+              children: venues
+                  .map((v) => SimpleDialogOption(
+                      onPressed: () => Navigator.pop(context, v),
+                      child: Text(v['name'] as String? ?? 'Venue')))
+                  .toList()));
+}
 
-  Future<void> _submit() async {
-    if (_title.text.trim().length < 3 || _description.text.trim().isEmpty) {
-      return;
+Future<void> _newLiveIssue(BuildContext context, WidgetRef ref,
+    Map<String, dynamic> event, List<Map<String, dynamic>> locations) async {
+  final title = TextEditingController(), description = TextEditingController();
+  final eventLocations = locations
+      .where((location) => location['venueId'] == event['venueId'])
+      .toList();
+  String? locationId;
+  final evidence = <LocalIssueEvidence>[];
+  final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+          builder: (context, setState) => AlertDialog(
+                  title: const Text('Report an issue'),
+                  content: Column(mainAxisSize: MainAxisSize.min, children: [
+                    TextField(
+                        controller: title,
+                        decoration: const InputDecoration(labelText: 'Issue')),
+                    TextField(
+                        controller: description,
+                        minLines: 2,
+                        maxLines: 4,
+                        decoration:
+                            const InputDecoration(labelText: 'What happened?')),
+                    Row(children: [
+                      OutlinedButton.icon(
+                        onPressed: () async {
+                          if (evidence.length >= 5) return;
+                          try {
+                            final photo = await ref
+                                .read(secureEvidenceStoreProvider)
+                                .capturePhoto();
+                            if (photo != null) {
+                              setState(() => evidence.add(photo));
+                            }
+                          } catch (error) {
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                      content: Text(
+                                          'Could not save photo: $error')));
+                            }
+                          }
+                        },
+                        icon: const Icon(Icons.camera_alt_outlined),
+                        label: Text('Add photo (${evidence.length}/5)'),
+                      ),
+                      if (evidence.isNotEmpty) ...[
+                        const SizedBox(width: 8),
+                        Text('${evidence.length} attached'),
+                      ],
+                    ]),
+                    if (evidence.isNotEmpty)
+                      Wrap(
+                        spacing: 6,
+                        children: evidence
+                            .map((photo) => InputChip(
+                                  avatar: const Icon(Icons.image_outlined),
+                                  label: Text(photo.fileName),
+                                  onDeleted: () async {
+                                    await ref
+                                        .read(secureEvidenceStoreProvider)
+                                        .delete(photo);
+                                    setState(() => evidence.remove(photo));
+                                  },
+                                ))
+                            .toList(),
+                      ),
+                    DropdownButtonFormField<String?>(
+                        initialValue: locationId,
+                        decoration:
+                            const InputDecoration(labelText: 'Location'),
+                        items: [
+                          const DropdownMenuItem<String?>(
+                              value: null, child: Text('No location')),
+                          ...eventLocations.map((location) =>
+                              DropdownMenuItem<String?>(
+                                  value: location['id'] as String,
+                                  child: Text(location['name'] as String? ??
+                                      'Location')))
+                        ],
+                        onChanged: (value) =>
+                            setState(() => locationId = value))
+                  ]),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: const Text('Cancel')),
+                    FilledButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        child: const Text('Save report'))
+                  ])));
+  if (result != true || !context.mounted) {
+    for (final photo in evidence) {
+      await ref.read(secureEvidenceStoreProvider).delete(photo);
     }
-    final item = PendingIssueReport(
+    return;
+  }
+  if (title.text.trim().length < 3 || description.text.trim().isEmpty) {
+    for (final photo in evidence) {
+      await ref.read(secureEvidenceStoreProvider).delete(photo);
+    }
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Enter an issue title and describe what happened.')));
+    return;
+  }
+  final venueId = event['venueId'] as String;
+  await ref.read(issueSyncProvider.notifier).submit(PendingIssueReport(
       idempotencyKey: const Uuid().v4(),
-      eventId: '20000000-0000-4000-8000-000000000001',
-      venueId: '10000000-0000-4000-8000-000000000001',
-      locationId: _selectedLocationId,
-      title: _title.text.trim(),
-      description: _description.text.trim(),
-      category: 'Service',
+      eventId: event['id'] as String,
+      venueId: venueId,
+      locationId: locationId,
+      title: title.text.trim(),
+      description: description.text.trim(),
+      category: 'Operations',
       severity: 'MODERATE',
       createdAt: DateTime.now(),
-    );
-    await widget.ref.read(issueSyncProvider.notifier).submit(item);
-    if (!mounted) return;
-    Navigator.pop(context);
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text(
-            'Issue report saved securely · syncs when signed in and online')));
+      evidence: List.unmodifiable(evidence)));
+  if (!context.mounted) return;
+  ref.invalidate(eventIssuesProvider(event['id'] as String));
+  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      content: Text('Issue saved securely and queued to sync.')));
+}
+
+Future<void> _newLiveTask(
+    BuildContext context,
+    WidgetRef ref,
+    Map<String, dynamic> event,
+    List<Map<String, dynamic>> locations,
+    List<String> assignableUserIds,
+    List<Map<String, dynamic>> people) async {
+  final title = TextEditingController(), description = TextEditingController();
+  final eventLocations = locations
+      .where((location) => location['venueId'] == event['venueId'])
+      .toList();
+  String kind = 'PLAN';
+  String? locationId;
+  String? ownerId;
+  final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+          builder: (context, setState) => AlertDialog(
+                  title: const Text('Add operations task'),
+                  content: Column(mainAxisSize: MainAxisSize.min, children: [
+                    DropdownButtonFormField<String>(
+                        initialValue: kind,
+                        items: const [
+                          DropdownMenuItem(value: 'PLAN', child: Text('Plan')),
+                          DropdownMenuItem(
+                              value: 'STAFFING', child: Text('Staffing')),
+                          DropdownMenuItem(
+                              value: 'SERVICE', child: Text('Service')),
+                          DropdownMenuItem(value: 'STOCK', child: Text('Stock'))
+                        ],
+                        onChanged: (v) => setState(() => kind = v ?? kind)),
+                    DropdownButtonFormField<String?>(
+                        initialValue: locationId,
+                        decoration:
+                            const InputDecoration(labelText: 'Location'),
+                        items: [
+                          const DropdownMenuItem<String?>(
+                              value: null, child: Text('No location')),
+                          ...eventLocations.map((location) =>
+                              DropdownMenuItem<String?>(
+                                  value: location['id'] as String,
+                                  child: Text(location['name'] as String? ??
+                                      'Location')))
+                        ],
+                        onChanged: (value) =>
+                            setState(() => locationId = value)),
+                    DropdownButtonFormField<String?>(
+                        initialValue: ownerId,
+                        decoration: const InputDecoration(labelText: 'Owner'),
+                        items: [
+                          const DropdownMenuItem<String?>(
+                              value: null, child: Text('Unassigned')),
+                          ...assignableUserIds.map((id) {
+                            final matches =
+                                people.where((p) => p['externalSubject'] == id);
+                            final person =
+                                matches.isEmpty ? null : matches.first;
+                            final label = person == null
+                                ? id
+                                : '${person['displayName'] ?? id} · ${person['email'] ?? ''}';
+                            return DropdownMenuItem<String?>(
+                                value: id, child: Text(label));
+                          })
+                        ],
+                        onChanged: (value) => setState(() => ownerId = value)),
+                    TextField(
+                        controller: title,
+                        decoration: const InputDecoration(labelText: 'Task')),
+                    TextField(
+                        controller: description,
+                        decoration: const InputDecoration(labelText: 'Details'))
+                  ]),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: const Text('Cancel')),
+                    FilledButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        child: const Text('Create'))
+                  ])));
+  if (result != true || !context.mounted) return;
+  if (title.text.trim().length < 2) {
+    ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Enter a task name before creating it.')));
+    return;
+  }
+  try {
+    await ref.read(operationsApiProvider).createTask(event['id'] as String, {
+      'kind': kind,
+      'venueId': event['venueId'],
+      if (locationId != null) 'locationId': locationId,
+      if (ownerId != null) 'ownerId': ownerId,
+      'title': title.text.trim(),
+      'description': description.text.trim()
+    });
+    ref.invalidate(eventTasksProvider(event['id'] as String));
+  } catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Could not create task: $e')));
+    }
   }
 }

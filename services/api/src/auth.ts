@@ -4,11 +4,15 @@ import { Request } from 'express';
 import { createRemoteJWKSet, decodeJwt, jwtVerify, type JWTVerifyGetKey } from 'jose';
 import { AuthProvidersService, type SsoProviderConfig } from './auth-providers';
 
-export type Capability = 'issue:report' | 'issue:read' | 'issue:triage' | 'issue:escalate' | 'issue:resolve' | 'issue:verify' | 'issue:close';
+export type Capability = 'issue:report' | 'issue:read' | 'issue:evidence' | 'issue:triage' | 'issue:escalate' | 'issue:resolve' | 'issue:verify' | 'issue:close' | 'operations:read' | 'operations:write' | 'notification:read' | 'tenant:admin';
+const capabilities = new Set<Capability>(['issue:report', 'issue:read', 'issue:evidence', 'issue:triage', 'issue:escalate', 'issue:resolve', 'issue:verify', 'issue:close', 'operations:read', 'operations:write', 'notification:read', 'tenant:admin']);
 
 export interface Identity {
   subject: string;
   tenantId: string;
+  organizationSlug?: string;
+  email?: string;
+  displayName?: string;
   capabilities: Capability[];
   venueIds: string[];
   eventIds: string[];
@@ -56,8 +60,8 @@ export class JwtIdentityGuard implements CanActivate {
         payload = verified;
       }
       const tenantId = provider?.tenantId ?? (typeof payload.tenant_id === 'string' ? payload.tenant_id : undefined);
-      if (typeof payload.sub !== 'string' || !tenantId || !Array.isArray(payload.capabilities) || !Array.isArray(payload.event_ids) || !Array.isArray(payload.venue_ids) || !Array.isArray(payload.location_ids) || !Array.isArray(payload.assignable_user_ids) || [...payload.capabilities, ...payload.event_ids, ...payload.venue_ids, ...payload.location_ids, ...payload.assignable_user_ids].some((claim) => typeof claim !== 'string')) throw new UnauthorizedException('The access token is missing required scope.');
-      request.identity = { subject: `${subjectPrefix}${payload.sub}`, tenantId, capabilities: payload.capabilities as Capability[], eventIds: payload.event_ids as string[], venueIds: payload.venue_ids as string[], locationIds: payload.location_ids as string[], assignableUserIds: payload.assignable_user_ids as string[] };
+      if (typeof payload.sub !== 'string' || !tenantId || !Array.isArray(payload.capabilities) || payload.capabilities.some((capability) => typeof capability !== 'string' || !capabilities.has(capability as Capability)) || !Array.isArray(payload.event_ids) || !Array.isArray(payload.venue_ids) || !Array.isArray(payload.location_ids) || !Array.isArray(payload.assignable_user_ids) || [...payload.event_ids, ...payload.venue_ids, ...payload.location_ids, ...payload.assignable_user_ids].some((claim) => typeof claim !== 'string')) throw new UnauthorizedException('The access token is missing required scope.');
+      request.identity = { subject: `${subjectPrefix}${payload.sub}`, tenantId, organizationSlug: provider?.organizationSlug, email: typeof payload.email === 'string' ? payload.email : typeof payload.preferred_username === 'string' ? payload.preferred_username : undefined, displayName: typeof payload.name === 'string' ? payload.name : undefined, capabilities: payload.capabilities as Capability[], eventIds: payload.event_ids as string[], venueIds: payload.venue_ids as string[], locationIds: payload.location_ids as string[], assignableUserIds: payload.assignable_user_ids as string[] };
       return true;
     } catch { throw new UnauthorizedException('The access token is invalid.'); }
   }
@@ -91,4 +95,12 @@ export function assertScope(identity: Identity, capability: Capability, eventId:
 
 export function assertAssignable(identity: Identity, userId: string) {
   if (!identity.assignableUserIds.includes(userId)) throw new ForbiddenException('This person is outside your assignment scope.');
+}
+
+export function assertTenantAdmin(identity: Identity) {
+  if (!identity.capabilities.includes('tenant:admin')) throw new ForbiddenException('Tenant administrator access is required.');
+}
+
+export function assertCapability(identity: Identity, capability: Capability) {
+  if (!identity.capabilities.includes(capability)) throw new ForbiddenException('Your role cannot perform this action.');
 }

@@ -1,9 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_appauth/flutter_appauth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:cryptography/cryptography.dart';
+import '../config/api_configuration.dart';
 
 const oidcRedirectUri = 'com.venuewrangler.enterprise:/oauth2redirect';
 
@@ -80,6 +83,45 @@ class AuthRepository {
   static const _refreshTokenKey = 'venue.session.refresh-token';
   static const _idTokenKey = 'venue.session.id-token';
   static const _expiresAtKey = 'venue.session.expires-at';
+
+  Future<String?> offlineCacheScope() async {
+    final organization = await _storage.read(key: _organizationKey);
+    final provider = await _storage.read(key: _providerKey);
+    final issuer = await _storage.read(key: _issuerKey);
+    final accessToken = await _storage.read(key: _accessTokenKey);
+    if (organization == null ||
+        provider == null ||
+        issuer == null ||
+        accessToken == null) {
+      return null;
+    }
+    try {
+      final parts = accessToken.split('.');
+      if (parts.length != 3) return null;
+      final claims = jsonDecode(
+              utf8.decode(base64Url.decode(base64Url.normalize(parts[1]))))
+          as Map<String, dynamic>;
+      final subject = claims['sub'];
+      if (subject is! String || subject.isEmpty) return null;
+      final scope = {
+        'organization': organization,
+        'provider': provider,
+        'issuer': issuer,
+        'subject': subject,
+        'tenant': claims['tenant_id'],
+        'capabilities': claims['capabilities'],
+        'venue_ids': claims['venue_ids'],
+        'event_ids': claims['event_ids'],
+        'location_ids': claims['location_ids'],
+      };
+      final digest = await Sha256().hash(utf8.encode(jsonEncode(scope)));
+      return digest.bytes
+          .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
+          .join();
+    } catch (_) {
+      return null;
+    }
+  }
 
   Future<List<AuthProviderOption>> providersFor(String organizationSlug) async {
     final response = await _dio.get<Map<String, dynamic>>(
@@ -188,6 +230,11 @@ class AuthRepository {
     ]) {
       await _storage.delete(key: key);
     }
+    final stored = await _storage.readAll();
+    for (final key in stored.keys
+        .where((key) => key.startsWith('venue.operations.cache.'))) {
+      await _storage.delete(key: key);
+    }
   }
 
   Future<AuthSession> _saveTokens(String organizationSlug,
@@ -264,8 +311,7 @@ class AuthSessionController extends StateNotifier<AuthSnapshot> {
 }
 
 final authDioProvider = Provider<Dio>((ref) => Dio(BaseOptions(
-      baseUrl: const String.fromEnvironment('VENUE_API_BASE_URL',
-          defaultValue: 'http://localhost:3000'),
+      baseUrl: ApiConfiguration.baseUrl,
       connectTimeout: const Duration(seconds: 10),
       receiveTimeout: const Duration(seconds: 10),
     )));

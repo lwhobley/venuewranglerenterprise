@@ -31,7 +31,9 @@ PostgreSQL
   └─ command receipts for idempotency
 ```
 
-Object storage holds issue media using pre-authorized, tenant-scoped upload commands; it is deliberately outside this initial text-only issue slice. Background jobs deliver retries and non-urgent notifications from durable events rather than directly from request handlers.
+Issue photo evidence is implemented as encrypted local capture plus direct, short-lived signed uploads to a private Cloud Storage bucket. Deployment must provision and secure that bucket and grant the API's Cloud Run service identity the required object and signing permissions. Background push delivery and non-urgent notification adapters remain future work; the app currently provides an in-app inbox.
+
+The app keeps a twelve-hour, identity-and-capability-scoped encrypted cache of the signed-in bootstrap and event issue/task lists for transport outages. It does not allow cached data after an API authorization or server response, and pending issue reports retain the original session scope so they are never replayed under a different account.
 
 ## Authorization model
 
@@ -44,6 +46,9 @@ The access token supplies a subject, organization tenant, roles, and explicitly 
 | Assign or triage | `issue:triage` plus event scope |
 | Escalate | `issue:escalate` plus event scope |
 | Resolve or verify | `issue:resolve` or `issue:verify` plus event scope |
+| Read operational tasks | `operations:read` plus event scope |
+| Create or update operational tasks | `operations:write` plus event, venue, location, and assignee scope |
+| Configure tenant venues, events, locations, and people | `tenant:admin` |
 
 The server never accepts a tenant identifier from a request body. It derives tenant scope from the verified token and uses the same identity inside the database transaction.
 
@@ -86,6 +91,9 @@ Health checks fail closed for missing JWT verification configuration, database c
 | `services/api/prisma` | Domain schema, tenant RLS, locations, and durable issue-event migrations |
 | `services/api/test/tenant-isolation.mjs` | Runtime-role two-tenant RLS and location-boundary verification |
 | `prototype/venue_wrangler_prototype/lib/features/issues` | Encrypted outbox, connectivity-triggered retry, REST client, and Riverpod controller |
+| `prototype/venue_wrangler_prototype/lib/features/operations` | API client and live organization, event, issue, and task data providers |
+| `services/api/src/operations.*` | Tenant bootstrap, administrator onboarding, operational task CRUD, and audit records |
+| `services/api/prisma/migrations/20260926000000_operations_admin` | Tenant people and operational-task tables with RLS and consistency constraints |
 | `docs/product/phase-6-architecture.md` | Architecture decisions and operation boundaries |
 
 ## Verification status
@@ -95,4 +103,4 @@ Health checks fail closed for missing JWT verification configuration, database c
 - Android device verification: on a FOXXD HTH C67 running Android 14, an issue report was saved while Wi-Fi and mobile data were disabled, survived force-stop/relaunch in encrypted storage, and remained queued after mobile data returned. The app now has organization-scoped Okta/Entra OIDC discovery and native PKCE sign-in, but no customer provider registration has been supplied; real login and server acceptance remain unverified. The header shows the queued/blocked count, and the mobile Event Command issue detail scrolls without a flex-layout assertion.
 - Automated Flutter coverage checks report-form labels, keyboard focus from title to location, live-region issue status, and a 200% text scale layout. Android UI hierarchy exposed the location control and submit action. Database polling is the current event transport, with broker-backed fan-out a future scale-up option.
 
-The current outbox provides durable local issue submission, startup/connectivity-triggered retry, visible failed state, and manual retry. A local cached read model remains follow-up work.
+The issue outbox provides durable local issue submission, encrypted photo evidence, session-bound replay, startup/connectivity-triggered retry, visible failed state, and manual retry. The app also keeps a short-lived encrypted cache of the organization bootstrap and previously loaded event issue/task lists for transport outages. These architecture notes describe repository behavior; they do not establish customer IdP acceptance, current production deployment state, or compliance certification.
