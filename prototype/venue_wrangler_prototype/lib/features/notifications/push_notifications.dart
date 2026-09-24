@@ -30,7 +30,9 @@ class PushNotifications {
   static Future<bool> initialize() => _initializing ??= _initialize();
 
   static Future<bool> _initialize() async {
-    if (!isConfigured || kIsWeb) return false;
+    if (!isConfigured || kIsWeb) {
+      return false;
+    }
     if (defaultTargetPlatform != TargetPlatform.iOS &&
         defaultTargetPlatform != TargetPlatform.android) return false;
     try {
