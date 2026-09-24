@@ -128,6 +128,7 @@ export class IssuesService {
       await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${identity.tenantId + key}, 0))`;
       const replay = await tx.commandReceipt.findUnique({ where: { organizationId_key: { organizationId: identity.tenantId, key } } });
       if (replay) return { response: this.replay(replay.fingerprint, fingerprint, replay.response), notification: null as { id: string; kind: string; recipientSubject: string } | null };
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`issue:${identity.tenantId}:${issueId}`}, 0))`;
       const issue = await tx.issue.findFirst({ where: { id: issueId, eventId } });
       if (!issue) throw new NotFoundException('Issue not found.');
       assertScope(identity, capability, eventId, issue.venueId, issue.locationId ?? undefined);
