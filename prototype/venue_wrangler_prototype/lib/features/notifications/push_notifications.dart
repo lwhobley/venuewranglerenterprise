@@ -34,7 +34,9 @@ class PushNotifications {
       return false;
     }
     if (defaultTargetPlatform != TargetPlatform.iOS &&
-        defaultTargetPlatform != TargetPlatform.android) return false;
+        defaultTargetPlatform != TargetPlatform.android) {
+      return false;
+    }
     try {
       if (Firebase.apps.isEmpty) {
         await Firebase.initializeApp(
