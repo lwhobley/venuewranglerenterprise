@@ -1,7 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { Prisma } from '@prisma/client';
+import { OperationalTaskKind, Prisma, type OperationalTask } from '@prisma/client';
 import { assertScope, type Identity } from './auth';
 import { PrismaService } from './prisma.service';
 
@@ -59,7 +59,7 @@ export class IntegrationService {
       const event = await this.prisma.withTenant(identity, async (tx) => {
         const venueEvent = await tx.event.findFirst({ where: { id: envelope.venueEventId, organizationId: provider.tenantId } });
         if (!venueEvent) throw new BadRequestException('venueEventId must identify an event in the configured tenant.');
-        return tx.externalIntegrationEvent.create({
+        const recordedEvent = await tx.externalIntegrationEvent.create({
           data: {
             organizationId: provider.tenantId,
             eventId: venueEvent.id,
@@ -71,8 +71,12 @@ export class IntegrationService {
             bodySha256,
           },
         });
+        const task = envelope.eventType === 'operations.task.upserted'
+          ? await this.upsertOperationalTask(tx, identity, provider.id, venueEvent.id, venueEvent.venueId, envelope.payload)
+          : null;
+        return { event: recordedEvent, task };
       });
-      return { event, replayed: false };
+      return { ...event, replayed: false };
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
         const existing = await this.prisma.withTenant(identity, (tx) => tx.externalIntegrationEvent.findFirst({ where: { organizationId: provider.tenantId, source: provider.id, externalId: envelope.externalId } }));
@@ -81,6 +85,83 @@ export class IntegrationService {
       }
       throw error;
     }
+  }
+
+  private async upsertOperationalTask(tx: Prisma.TransactionClient, identity: Identity, source: string, eventId: string, venueId: string, payload: Record<string, unknown>) {
+    const snapshot = this.operationalTaskSnapshot(payload);
+    await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`task:${identity.tenantId}:${source}:${snapshot.externalTaskId}`}, 0))`;
+    if (snapshot.locationId && !await tx.location.findFirst({ where: { id: snapshot.locationId, organizationId: identity.tenantId, venueId } })) {
+      throw new BadRequestException('The task location must belong to the mapped venue event.');
+    }
+    const current = await tx.operationalTask.findFirst({ where: { organizationId: identity.tenantId, externalSource: source, externalTaskId: snapshot.externalTaskId } });
+    if (current && current.eventId !== eventId) throw new ConflictException('An external task cannot be moved between Venue Wrangler events.');
+    const data = {
+      organizationId: identity.tenantId,
+      venueId,
+      eventId,
+      locationId: snapshot.locationId,
+      kind: snapshot.kind,
+      title: snapshot.title,
+      description: snapshot.description,
+      dueAt: snapshot.dueAt,
+      expectedQuantity: snapshot.expectedQuantity,
+      unit: snapshot.unit,
+      updatedBy: identity.subject,
+    };
+    let task: OperationalTask;
+    if (current) {
+      task = await tx.operationalTask.update({ where: { id: current.id }, data });
+      await tx.operationalTaskAudit.create({ data: {
+        organizationId: identity.tenantId,
+        taskId: task.id,
+        actorId: identity.subject,
+        action: 'integration.updated',
+        before: current as unknown as Prisma.InputJsonValue,
+        after: task as unknown as Prisma.InputJsonValue,
+      } });
+    } else {
+      task = await tx.operationalTask.create({ data: {
+        ...data,
+        state: 'OPEN',
+        externalSource: source,
+        externalTaskId: snapshot.externalTaskId,
+        createdBy: identity.subject,
+      } });
+      await tx.operationalTaskAudit.create({ data: {
+        organizationId: identity.tenantId,
+        taskId: task.id,
+        actorId: identity.subject,
+        action: 'integration.created',
+        after: task as unknown as Prisma.InputJsonValue,
+      } });
+    }
+    return task;
+  }
+
+  private operationalTaskSnapshot(payload: Record<string, unknown>) {
+    const { externalTaskId, kind, title, description, locationId, dueAt, expectedQuantity, unit } = payload;
+    if (typeof externalTaskId !== 'string' || !externalTaskId.trim() || externalTaskId.trim().length > 240) throw new BadRequestException('Task upserts require an externalTaskId between 1 and 240 characters.');
+    if (typeof kind !== 'string' || !Object.values(OperationalTaskKind).includes(kind as OperationalTaskKind)) throw new BadRequestException('Task upserts require a supported kind: PLAN, STAFFING, SERVICE, or STOCK.');
+    if (typeof title !== 'string' || title.trim().length < 2 || title.trim().length > 160) throw new BadRequestException('Task upserts require a title between 2 and 160 characters.');
+    if (description !== undefined && (typeof description !== 'string' || description.length > 4000)) throw new BadRequestException('description must be a string no longer than 4000 characters.');
+    if (locationId !== undefined && (typeof locationId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(locationId))) throw new BadRequestException('locationId must be a canonical Venue Wrangler UUID.');
+    let parsedDueAt: Date | null = null;
+    if (dueAt !== undefined) {
+      if (typeof dueAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T/.test(dueAt) || !Number.isFinite(Date.parse(dueAt))) throw new BadRequestException('dueAt must be an ISO 8601 timestamp.');
+      parsedDueAt = new Date(dueAt);
+    }
+    if (expectedQuantity !== undefined && (typeof expectedQuantity !== 'number' || !Number.isFinite(expectedQuantity) || expectedQuantity < 0 || expectedQuantity > 999999999)) throw new BadRequestException('expectedQuantity must be a non-negative finite number.');
+    if (unit !== undefined && (typeof unit !== 'string' || unit.trim().length < 1 || unit.trim().length > 32)) throw new BadRequestException('unit must be between 1 and 32 characters.');
+    return {
+      externalTaskId: externalTaskId.trim(),
+      kind: kind as OperationalTaskKind,
+      title: title.trim(),
+      description: typeof description === 'string' ? description.trim() : '',
+      locationId: typeof locationId === 'string' ? locationId : null,
+      dueAt: parsedDueAt,
+      expectedQuantity: typeof expectedQuantity === 'number' ? expectedQuantity : null,
+      unit: typeof unit === 'string' ? unit.trim() : null,
+    };
   }
 
   async list(identity: Identity, eventId: string) {

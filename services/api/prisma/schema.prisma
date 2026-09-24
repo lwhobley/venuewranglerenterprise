@@ -233,6 +233,8 @@ model OperationalTask {
   expectedQuantity Decimal?               @map("expected_quantity") @db.Decimal(12, 3)
   actualQuantity   Decimal?               @map("actual_quantity") @db.Decimal(12, 3)
   unit             String?
+  externalSource   String?                @map("external_source")
+  externalTaskId   String?                @map("external_task_id")
   metadata         Json                   @default("{}") @db.JsonB
   createdBy        String                 @map("created_by")
   updatedBy        String                 @map("updated_by")
@@ -245,6 +247,7 @@ model OperationalTask {
   auditEvents      OperationalTaskAudit[]
 
   @@unique([id, organizationId])
+  @@unique([organizationId, externalSource, externalTaskId], map: "operational_tasks_org_external_task_key")
   @@index([organizationId, eventId, kind, state])
   @@index([organizationId, ownerId, dueAt])
   @@map("operational_tasks")

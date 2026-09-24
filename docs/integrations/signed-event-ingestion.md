@@ -1,6 +1,6 @@
 # Signed integration event ingestion
 
-`POST /api/v1/integrations/events` is the provider-neutral ingestion seam for labor, POS, ticketing, and inventory adapters. It stores a normalized event envelope in the tenant-scoped event ledger. It does not call a vendor API, create or alter operational tasks, or replace any system of record; each customer/vendor still needs an adapter and agreed field mapping.
+`POST /api/v1/integrations/events` is the provider-neutral ingestion seam for labor, POS, ticketing, and inventory adapters. It stores a normalized event envelope in the tenant-scoped event ledger. `operations.task.upserted` also creates or updates an API-backed task for use in Plan, Staffing, Service, or Stock. It does not call a vendor API or replace any system of record; each customer/vendor still needs an adapter and agreed field mapping.
 
 ## Configure a source
 
@@ -46,5 +46,26 @@ The API accepts timestamps within five minutes and compares signatures in consta
 ```
 
 Map the external event/venue to the canonical Venue Wrangler event UUID before sending. `externalId` is stable per source and idempotent per tenant. Retrying the same exact payload returns the existing ledger record; reusing the ID for different bytes returns a conflict. Use a fresh timestamp and signature for retries. `GET /api/v1/integrations/events/:eventId` uses the signed-in user's bearer token and requires `operations:read` plus event scope.
+
+## Create or refresh an operational task
+
+For task-shaped updates, send `eventType: "operations.task.upserted"` and use a new event-level `externalId` for each source update. The payload is a normalized snapshot:
+
+```json
+{
+  "externalTaskId": "ukg-shift-88421",
+  "kind": "STAFFING",
+  "title": "Fill guest services shift",
+  "description": "Gate 4, event staffing plan",
+  "locationId": "30000000-0000-4000-8000-000000000001",
+  "dueAt": "2026-09-24T18:00:00Z",
+  "expectedQuantity": 12,
+  "unit": "staff"
+}
+```
+
+`externalTaskId` is the stable vendor task key; it must be unique within the configured source and tenant. Supported `kind` values are `PLAN`, `STAFFING`, `SERVICE`, and `STOCK`. A new task starts `OPEN`. Refreshes can change source-owned descriptive, timing, quantity, and location fields, but keep the existing workflow state and assignee under venue control. Only an existing task created by that same integration source can be refreshed; a source cannot claim a human-created task or move its task to another event. Locations must belong to the mapped event's venue. Every import creates an append-only operational-task audit record under the integration identity in the same database transaction as the event ledger write.
+
+This is a normalized adapter contract, not a ready-made UKG, POS, inventory, or ticketing connector. Build and validate the vendor-specific authentication, polling/webhook handling, ID mapping, and field mapping before enabling a source in a customer tenant.
 
 Do not send payment card data, authentication secrets, or unnecessary guest/employee personal data in `payload`. Define the approved field mapping and retention period with the venue before enabling a source.
