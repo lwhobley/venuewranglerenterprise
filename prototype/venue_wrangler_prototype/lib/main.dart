@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
@@ -7,8 +10,11 @@ import 'auth/sign_in_page.dart';
 import 'features/issues/issue_outbox.dart';
 import 'features/issues/secure_evidence_store.dart';
 import 'features/operations/operations_api.dart';
+import 'features/notifications/push_notifications.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await PushNotifications.initialize();
   runApp(const ProviderScope(child: VenueWranglerPrototype()));
 }
 
@@ -88,8 +94,68 @@ class AuthGate extends ConsumerWidget {
     if (auth.loading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
-    return auth.session == null ? const SignInPage() : const PrototypeShell();
+    return auth.session == null
+        ? const SignInPage()
+        : const _PushNotificationGate(child: PrototypeShell());
   }
+}
+
+class _PushNotificationGate extends ConsumerStatefulWidget {
+  const _PushNotificationGate({required this.child});
+  final Widget child;
+
+  @override
+  ConsumerState<_PushNotificationGate> createState() => _PushNotificationGateState();
+}
+
+class _PushNotificationGateState extends ConsumerState<_PushNotificationGate> {
+  StreamSubscription<RemoteMessage>? _foregroundSubscription;
+  StreamSubscription<RemoteMessage>? _openedSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    _attachPushHandlers();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        PushNotifications.syncIfEnabled(ref.read(operationsApiProvider));
+      }
+    });
+  }
+
+  Future<void> _attachPushHandlers() async {
+    if (!PushNotifications.isConfigured || !await PushNotifications.initialize() || !mounted) return;
+    _foregroundSubscription = FirebaseMessaging.onMessage.listen(_handlePushMessage);
+    _openedSubscription = FirebaseMessaging.onMessageOpenedApp.listen(_handlePushMessage);
+    final initial = await FirebaseMessaging.instance.getInitialMessage();
+    if (initial != null && mounted) _handlePushMessage(initial);
+  }
+
+  void _handlePushMessage(RemoteMessage _) {
+    ref.invalidate(userNotificationsProvider);
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    messenger?.showSnackBar(SnackBar(
+      content: const Text('A new operational update is available.'),
+      action: SnackBarAction(
+        label: 'View',
+        onPressed: () => showModalBottomSheet<void>(
+          context: context,
+          isScrollControlled: true,
+          builder: (_) => const _NotificationInbox(),
+        ),
+      ),
+    ));
+  }
+
+  @override
+  void dispose() {
+    _foregroundSubscription?.cancel();
+    _openedSubscription?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }
 
 class _BuildConfigurationPage extends StatelessWidget {
@@ -398,10 +464,54 @@ class _NoEventsPage extends StatelessWidget {
           ])));
 }
 
-class _NotificationInbox extends ConsumerWidget {
+class _NotificationInbox extends ConsumerStatefulWidget {
   const _NotificationInbox();
+
   @override
-  Widget build(BuildContext context, WidgetRef ref) => SafeArea(
+  ConsumerState<_NotificationInbox> createState() => _NotificationInboxState();
+}
+
+class _NotificationInboxState extends ConsumerState<_NotificationInbox> {
+  bool? _pushEnabled;
+  bool _updatingPush = false;
+
+  @override
+  void initState() {
+    super.initState();
+    PushNotifications.isEnabled().then((enabled) {
+      if (mounted) setState(() => _pushEnabled = enabled);
+    });
+  }
+
+  Future<void> _togglePush() async {
+    if (_updatingPush) return;
+    setState(() => _updatingPush = true);
+    try {
+      if (_pushEnabled == true) {
+        await PushNotifications.disable(ref.read(operationsApiProvider));
+        if (mounted) setState(() => _pushEnabled = false);
+      } else {
+        final enabled = await PushNotifications.enable(ref.read(operationsApiProvider));
+        if (mounted) {
+          setState(() => _pushEnabled = enabled);
+          if (!enabled) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                content: Text('Push permission or device registration was not completed.')));
+          }
+        }
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not update push alerts: $error')));
+      }
+    } finally {
+      if (mounted) setState(() => _updatingPush = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => SafeArea(
       child: SizedBox(
           height: MediaQuery.sizeOf(context).height * 0.72,
           child: Column(children: [
@@ -416,6 +526,22 @@ class _NotificationInbox extends ConsumerWidget {
                           .titleLarge
                           ?.copyWith(fontWeight: FontWeight.w800))
                 ])),
+            Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                child: !PushNotifications.isConfigured
+                    ? const Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text('Push alerts are not configured for this app build.',
+                            style: TextStyle(color: Color(0xFF59645D))))
+                    : Align(
+                        alignment: Alignment.centerLeft,
+                        child: OutlinedButton.icon(
+                          onPressed: _updatingPush ? null : _togglePush,
+                          icon: _updatingPush
+                              ? const SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                              : Icon(_pushEnabled == true ? Icons.notifications_off_outlined : Icons.notifications_active_outlined),
+                          label: Text(_pushEnabled == true ? 'Turn off device alerts' : 'Enable device alerts'),
+                        ))),
             Expanded(
                 child: ref.watch(userNotificationsProvider).when(
                     loading: () =>

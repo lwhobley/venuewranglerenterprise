@@ -100,6 +100,29 @@ class OperationsApi {
         options: Options(headers: {'Authorization': 'Bearer $token'}));
   }
 
+  Future<void> registerPushDevice({
+    required String installationId,
+    required String platform,
+    required String registrationToken,
+  }) async {
+    final token = await _auth.validAccessToken();
+    if (token == null) throw StateError('Sign in again to continue.');
+    await _dio.post<void>('/api/v1/me/push-devices',
+        data: {
+          'installationId': installationId,
+          'platform': platform,
+          'registrationToken': registrationToken,
+        },
+        options: Options(headers: {'Authorization': 'Bearer $token'}));
+  }
+
+  Future<void> revokePushDevice(String installationId) async {
+    final token = await _auth.validAccessToken();
+    if (token == null) throw StateError('Sign in again to continue.');
+    await _dio.delete<void>('/api/v1/me/push-devices/$installationId',
+        options: Options(headers: {'Authorization': 'Bearer $token'}));
+  }
+
   Future<void> issueAction(String eventId, String issueId, String action,
       {String? reason, String? ownerId}) async {
     final token = await _auth.validAccessToken();

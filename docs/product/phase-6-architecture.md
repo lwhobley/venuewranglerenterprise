@@ -31,7 +31,7 @@ PostgreSQL
   └─ command receipts for idempotency
 ```
 
-Issue photo evidence is implemented as encrypted local capture plus direct, short-lived signed uploads to a private Cloud Storage bucket. Deployment must provision and secure that bucket and grant the API's Cloud Run service identity the required object and signing permissions. Background push delivery and non-urgent notification adapters remain future work; the app currently provides an in-app inbox.
+Issue photo evidence is implemented as encrypted local capture plus direct, short-lived signed uploads to a private Cloud Storage bucket. Deployment must provision and secure that bucket and grant the API's Cloud Run service identity the required object and signing permissions. The app now has an opt-in FCM/APNs push path; issue notifications are persisted in the inbox first and sent after commit with generic, non-sensitive alert text. Firebase/APNs project configuration and device delivery acceptance still require external setup.
 
 The app keeps a twelve-hour, identity-and-capability-scoped encrypted cache of the signed-in bootstrap and event issue/task lists for transport outages. It does not allow cached data after an API authorization or server response, and pending issue reports retain the original session scope so they are never replayed under a different account.
 

@@ -6,6 +6,7 @@ import 'package:flutter_appauth/flutter_appauth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:cryptography/cryptography.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import '../config/api_configuration.dart';
 
 const oidcRedirectUri = 'com.venuewrangler.enterprise:/oauth2redirect';
@@ -83,6 +84,7 @@ class AuthRepository {
   static const _refreshTokenKey = 'venue.session.refresh-token';
   static const _idTokenKey = 'venue.session.id-token';
   static const _expiresAtKey = 'venue.session.expires-at';
+  static const _pushInstallationKey = 'venue.push.installation-id';
 
   Future<String?> offlineCacheScope() async {
     final organization = await _storage.read(key: _organizationKey);
@@ -199,6 +201,7 @@ class AuthRepository {
   Future<String?> validAccessToken() async => (await restore())?.accessToken;
 
   Future<void> signOut() async {
+    await _revokePushDevice();
     final issuer = await _storage.read(key: _issuerKey);
     final idToken = await _storage.read(key: _idTokenKey);
     if (issuer != null && idToken != null) {
@@ -215,6 +218,26 @@ class AuthRepository {
       }
     }
     await clear();
+  }
+
+  Future<void> _revokePushDevice() async {
+    final installationId = await _storage.read(key: _pushInstallationKey);
+    final accessToken = await _storage.read(key: _accessTokenKey);
+    if (installationId != null && accessToken != null) {
+      try {
+        await _dio.delete<void>(
+          '/api/v1/me/push-devices/$installationId',
+          options: Options(headers: {'Authorization': 'Bearer $accessToken'}),
+        );
+      } catch (_) {
+        // Clear the local session even if the device cannot reach the API to revoke its token.
+      }
+    }
+    try {
+      await FirebaseMessaging.instance.deleteToken();
+    } catch (_) {
+      // Firebase may be unconfigured or offline; the local session still ends.
+    }
   }
 
   Future<void> clear() async {

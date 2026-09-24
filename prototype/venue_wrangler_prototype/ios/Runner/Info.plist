@@ -39,6 +39,10 @@
 	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>Capture photos to document venue operations issues.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

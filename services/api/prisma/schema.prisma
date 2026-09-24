@@ -66,6 +66,7 @@ model Organization {
   notifications   UserNotification[]
   attachments     IssueAttachment[]
   integrationEvents ExternalIntegrationEvent[]
+  pushDevices     PushDevice[]
 
   @@map("organizations")
 }
@@ -325,4 +326,23 @@ model ExternalIntegrationEvent {
   @@unique([organizationId, source, externalId])
   @@index([organizationId, eventId, occurredAt(sort: Desc)])
   @@map("external_integration_events")
+}
+
+model PushDevice {
+  id                 String       @id @default(uuid()) @db.Uuid
+  organizationId     String       @map("organization_id") @db.Uuid
+  subject            String
+  installationId    String       @map("installation_id") @db.Uuid
+  registrationToken String       @map("registration_token")
+  tokenSha256        String       @map("token_sha256")
+  platform           String
+  active             Boolean      @default(true)
+  createdAt          DateTime     @default(now()) @map("created_at")
+  updatedAt          DateTime     @updatedAt @map("updated_at")
+  organization       Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([organizationId, installationId])
+  @@unique([organizationId, tokenSha256])
+  @@index([organizationId, subject, active])
+  @@map("push_devices")
 }

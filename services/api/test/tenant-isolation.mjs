@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
@@ -66,6 +66,8 @@ try {
       await tx.operationalTaskAudit.create({ data: { organizationId: tenantA, taskId: taskA.id, actorId: 'tenant-isolation-test', action: 'created' } });
       await tx.userNotification.create({ data: { organizationId: tenantA, eventId: eventA, issueId: issueA.id, recipientSubject: 'tenant-isolation-test', kind: 'issue.assigned', title: 'Tenant A', body: 'Tenant A' } });
       await tx.issueAttachment.create({ data: { organizationId: tenantA, eventId: eventA, issueId: issueA.id, clientId: randomUUID(), uploadedBy: 'tenant-isolation-test', fileName: 'fixture.jpg', contentType: 'image/jpeg', sizeBytes: 1, sha256: 'a'.repeat(64), storageObjectKey: `tenant-a/${randomUUID()}` } });
+      const pushTokenA = `tenant-a-push-token-${randomUUID()}-${randomUUID()}`;
+      await tx.pushDevice.create({ data: { organizationId: tenantA, subject: 'tenant-isolation-test', installationId: randomUUID(), registrationToken: pushTokenA, tokenSha256: createHash('sha256').update(pushTokenA).digest('hex'), platform: 'ios' } });
 
       await setTenant(tx, tenantB);
       const issueB = await makeIssue(tx, {
@@ -83,6 +85,8 @@ try {
       await tx.operationalTaskAudit.create({ data: { organizationId: tenantB, taskId: taskB.id, actorId: 'tenant-isolation-test', action: 'created' } });
       await tx.userNotification.create({ data: { organizationId: tenantB, eventId: eventB, issueId: issueB.id, recipientSubject: 'tenant-isolation-test', kind: 'issue.assigned', title: 'Tenant B', body: 'Tenant B' } });
       await tx.issueAttachment.create({ data: { organizationId: tenantB, eventId: eventB, issueId: issueB.id, clientId: randomUUID(), uploadedBy: 'tenant-isolation-test', fileName: 'fixture.jpg', contentType: 'image/jpeg', sizeBytes: 1, sha256: 'b'.repeat(64), storageObjectKey: `tenant-b/${randomUUID()}` } });
+      const pushTokenB = `tenant-b-push-token-${randomUUID()}-${randomUUID()}`;
+      await tx.pushDevice.create({ data: { organizationId: tenantB, subject: 'tenant-isolation-test', installationId: randomUUID(), registrationToken: pushTokenB, tokenSha256: createHash('sha256').update(pushTokenB).digest('hex'), platform: 'android' } });
 
       await setTenant(tx, tenantA);
       await assertTenantCannotRead(tx, tenantA, tenantB, issueB.id, taskB.id);
@@ -97,6 +101,7 @@ try {
       await assertTenantCannotRead(tx, tenantB, tenantA, issueA.id, taskA.id);
       await setTenant(tx, tenantB, 'unrelated-recipient');
       assert.equal(await tx.userNotification.count({ where: { organizationId: tenantB } }), 0, 'notifications must only be visible to their recipient subject');
+      assert.equal(await tx.pushDevice.count({ where: { organizationId: tenantB } }), 0, 'push tokens must only be visible to their registered subject');
       throw rollback;
     });
     assert.fail('The fixture transaction should roll back.');
@@ -141,4 +146,5 @@ async function assertTenantCannotRead(tx, visibleTenant, hiddenTenant, hiddenIss
   assert.equal(await tx.operationalTaskAudit.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} task audit isolation`);
   assert.equal(await tx.userNotification.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} notification isolation`);
   assert.equal(await tx.issueAttachment.count({ where: { issueId: hiddenIssueId } }), 0, `${visibleTenant} issue evidence isolation`);
+  assert.equal(await tx.pushDevice.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} push device isolation`);
 }

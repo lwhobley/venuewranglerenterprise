@@ -1,10 +1,11 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { IssueState, Prisma } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { Observable, concatMap, exhaustMap, from, map, timer } from 'rxjs';
 import { assertAssignable, assertScope, Identity } from './auth';
 import { AssignIssueDto, CreateIssueDto, IssueNoteDto } from './issues.dto';
 import { PrismaService } from './prisma.service';
+import { PushNotificationsService } from './push-notifications.service';
 
 export type StreamIssueEvent = {
   id: string;
@@ -23,7 +24,9 @@ export const issueTransitions: Record<string, IssueState[]> = {
 
 @Injectable()
 export class IssuesService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(IssuesService.name);
+
+  constructor(private readonly prisma: PrismaService, private readonly push: PushNotificationsService) {}
 
   stream(identity: Identity, eventId: string, lastEventId = '0'): Observable<StreamIssueEvent> {
     let cursor = BigInt(lastEventId);
@@ -73,10 +76,10 @@ export class IssuesService {
   async create(identity: Identity, eventId: string, dto: CreateIssueDto, key: string) {
     assertScope(identity, 'issue:report', eventId, dto.venueId, dto.locationId);
     const fingerprint = this.fingerprint('reported', { actorId: identity.subject, eventId, dto });
-    const response = await this.prisma.withTenant(identity, async (tx) => {
+    const transaction = await this.prisma.withTenant(identity, async (tx) => {
       await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${identity.tenantId + key}, 0))`;
       const replay = await tx.commandReceipt.findUnique({ where: { organizationId_key: { organizationId: identity.tenantId, key } } });
-      if (replay) return this.replay(replay.fingerprint, fingerprint, replay.response);
+      if (replay) return { response: this.replay(replay.fingerprint, fingerprint, replay.response), notification: null as { id: string; kind: string; recipientSubject: string } | null };
       const event = await tx.event.findFirst({ where: { id: eventId, venueId: dto.venueId } });
       if (!event) throw new NotFoundException('This event is unavailable in the selected venue.');
       if (dto.locationId) {
@@ -88,9 +91,9 @@ export class IssuesService {
       const result = { issue, replayed: false };
       await tx.commandReceipt.create({ data: { organizationId: identity.tenantId, key, fingerprint, action: 'reported', response: result as unknown as Prisma.InputJsonValue } });
       await tx.issueDomainEvent.create({ data: { organizationId: identity.tenantId, eventId, issueId: issue.id, action: 'reported', payload: issue as unknown as Prisma.InputJsonValue } });
-      return result;
+      return { response: result, notification: null as { id: string; kind: string; recipientSubject: string } | null };
     });
-    return response;
+    return transaction.response;
   }
 
   async assign(identity: Identity, eventId: string, issueId: string, dto: AssignIssueDto, key: string) {
@@ -121,10 +124,10 @@ export class IssuesService {
 
   private async command(identity: Identity, eventId: string, issueId: string, key: string, capability: 'issue:triage' | 'issue:escalate' | 'issue:resolve' | 'issue:verify' | 'issue:close', action: string, state: IssueState, reason: string | undefined, patch: Record<string, string>) {
     const fingerprint = this.fingerprint(action, { actorId: identity.subject, eventId, issueId, reason, patch });
-    const response = await this.prisma.withTenant(identity, async (tx) => {
+    const transaction = await this.prisma.withTenant(identity, async (tx) => {
       await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${identity.tenantId + key}, 0))`;
       const replay = await tx.commandReceipt.findUnique({ where: { organizationId_key: { organizationId: identity.tenantId, key } } });
-      if (replay) return this.replay(replay.fingerprint, fingerprint, replay.response);
+      if (replay) return { response: this.replay(replay.fingerprint, fingerprint, replay.response), notification: null as { id: string; kind: string; recipientSubject: string } | null };
       const issue = await tx.issue.findFirst({ where: { id: issueId, eventId } });
       if (!issue) throw new NotFoundException('Issue not found.');
       assertScope(identity, capability, eventId, issue.venueId, issue.locationId ?? undefined);
@@ -132,8 +135,9 @@ export class IssuesService {
       const updated = await tx.issue.update({ where: { id: issueId }, data: { ...patch, state } });
       await tx.issueAuditEvent.create({ data: { organizationId: identity.tenantId, issueId, actorId: identity.subject, action, reason, before: issue as unknown as Prisma.InputJsonValue, after: updated as unknown as Prisma.InputJsonValue } });
       const recipientSubject = action === 'assigned' ? updated.ownerId : action === 'resolved' ? issue.reporterId : null;
+      let notification: { id: string; kind: string; recipientSubject: string } | null = null;
       if (recipientSubject && recipientSubject !== identity.subject) {
-        await tx.userNotification.create({ data: {
+        const createdNotification = await tx.userNotification.create({ data: {
           organizationId: identity.tenantId,
           eventId,
           issueId,
@@ -142,13 +146,20 @@ export class IssuesService {
           title: action === 'assigned' ? 'Issue assigned to you' : 'Your issue was resolved',
           body: updated.title,
         } });
+        notification = { id: createdNotification.id, kind: createdNotification.kind, recipientSubject };
       }
       const result = { issue: updated, replayed: false };
       await tx.commandReceipt.create({ data: { organizationId: identity.tenantId, key, fingerprint, action, response: result as unknown as Prisma.InputJsonValue } });
       await tx.issueDomainEvent.create({ data: { organizationId: identity.tenantId, eventId, issueId, action, payload: updated as unknown as Prisma.InputJsonValue } });
-      return result;
+      return { response: result, notification };
     });
-    return response;
+    if (transaction.notification) {
+      const pushIdentity: Identity = { ...identity, subject: transaction.notification.recipientSubject };
+      void this.push.deliver(pushIdentity, transaction.notification).catch(() => {
+        this.logger.warn('Push dispatch failed after the durable in-app notification was committed.');
+      });
+    }
+    return transaction.response;
   }
 
   private fingerprint(action: string, body: unknown): string {
