@@ -13,7 +13,7 @@ The app uses Firebase Cloud Messaging (FCM) for opt-in iOS and Android alerts. T
 ## Permission and acceptance checks
 
 - A user with `notification:read` enables device alerts from the in-app Notifications inbox. Android/iOS permission is requested in response to that action.
-- Device tokens are stored under tenant and user RLS, replaced when they rotate, deleted when the user opts out, and revoked on sign-out when the device can reach the API.
+- Device tokens are stored under tenant and user RLS, replaced when they rotate, deleted when the user opts out, and revoked on sign-out when the device can reach the API. Sign-out disables local push immediately and rotates the installation ID even when offline, so a later user on the device is not stuck behind the previous account's registration.
 - Install the signed TestFlight build on a physical iPhone, accept notifications, and verify alerts with the app backgrounded and terminated. Also test Android 13+ permission behavior on a Play Services device.
 - Test an iOS foreground alert and the in-app refresh behavior. A denied OS permission leaves the durable in-app inbox available.
 - Confirm Firebase reports successful message delivery and that the active App Store profile includes `aps-environment=production` before a venue event.

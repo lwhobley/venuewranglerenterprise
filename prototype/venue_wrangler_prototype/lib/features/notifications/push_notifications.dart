@@ -146,9 +146,9 @@ class PushNotifications {
 
   static Future<void> _registerRefreshedToken(
       OperationsApi api, String token) async {
-    if (!await isEnabled()) return;
-    final installationId = await _installationId();
     try {
+      if (!await isEnabled()) return;
+      final installationId = await _installationId();
       await api.registerPushDevice(
         installationId: installationId,
         platform:
