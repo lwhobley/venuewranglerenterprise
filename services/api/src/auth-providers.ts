@@ -29,6 +29,8 @@ export class AuthProvidersService {
 
     const seen = new Set<string>();
     const seenIssuers = new Set<string>();
+    const tenantByOrganization = new Map<string, string>();
+    const organizationByTenant = new Map<string, string>();
     this.providers = parsed.map((value, index) => {
       if (!value || typeof value !== 'object') throw new Error(`SSO provider ${index} must be an object.`);
       const item = value as Record<string, unknown>;
@@ -43,6 +45,17 @@ export class AuthProvidersService {
         throw new Error(`SSO provider ${index} has invalid required fields.`);
       }
       if (!scopes.includes('openid')) throw new Error(`SSO provider ${index} must request the openid scope.`);
+      const normalizedTenantId = tenantId.toLowerCase();
+      const configuredTenantId = tenantByOrganization.get(organizationSlug);
+      if (configuredTenantId && configuredTenantId !== normalizedTenantId) {
+        throw new Error(`All SSO providers for organization ${organizationSlug} must use the same tenantId.`);
+      }
+      const configuredOrganization = organizationByTenant.get(normalizedTenantId);
+      if (configuredOrganization && configuredOrganization !== organizationSlug) {
+        throw new Error(`Tenant ${normalizedTenantId} cannot be mapped to multiple organization slugs.`);
+      }
+      tenantByOrganization.set(organizationSlug, normalizedTenantId);
+      organizationByTenant.set(normalizedTenantId, organizationSlug);
       const issuerUrl = new URL(issuer);
       if (issuerUrl.protocol !== 'https:' || issuerUrl.username || issuerUrl.password || issuerUrl.search || issuerUrl.hash) {
         throw new Error(`SSO provider ${index} issuer must be an HTTPS issuer URL.`);
