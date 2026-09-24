@@ -1016,14 +1016,24 @@ class _LiveTasksPage extends ConsumerWidget {
                           trailing: canWrite && state != 'DONE'
                               ? PopupMenuButton<String>(
                                   onSelected: (next) async {
-                                    await ref
-                                        .read(operationsApiProvider)
-                                        .updateTask(
-                                            event['id'] as String,
-                                            item['id'] as String,
-                                            {'state': next});
-                                    ref.invalidate(eventTasksProvider(
-                                        event['id'] as String));
+                                    try {
+                                      await ref
+                                          .read(operationsApiProvider)
+                                          .updateTask(
+                                              event['id'] as String,
+                                              item['id'] as String,
+                                              {'state': next});
+                                      ref.invalidate(eventTasksProvider(
+                                          event['id'] as String));
+                                    } catch (_) {
+                                      if (context.mounted) {
+                                        ScaffoldMessenger.of(context)
+                                            .showSnackBar(SnackBar(
+                                          content: const Text(
+                                              'Could not update task. Check your connection or refresh before retrying.'),
+                                        ));
+                                      }
+                                    }
                                   },
                                   itemBuilder: (_) => const [
                                         PopupMenuItem(
