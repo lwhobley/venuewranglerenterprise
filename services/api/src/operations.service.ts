@@ -97,6 +97,7 @@ export class OperationsService {
   async updateTask(identity: Identity, eventId: string, taskId: string, dto: UpdateOperationalTaskDto) {
     assertScope(identity, 'operations:write', eventId);
     return this.prisma.withTenant(identity, async (tx) => {
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`task:${identity.tenantId}:${taskId}`}, 0))`;
       const current = await tx.operationalTask.findFirst({ where: { id: taskId, eventId, organizationId: identity.tenantId } });
       if (!current) throw new NotFoundException('Task not found.');
       assertScope(identity, 'operations:write', eventId, current.venueId, current.locationId ?? undefined);
