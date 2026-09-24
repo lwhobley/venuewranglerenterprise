@@ -1,0 +1,124 @@
+name: iOS TestFlight
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'ios-v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-testflight-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-upload:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Check required Apple signing configuration
+        env:
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APPSTORE_ISSUER_ID: ${{ vars.APPSTORE_ISSUER_ID }}
+          APPSTORE_API_KEY_ID: ${{ vars.APPSTORE_API_KEY_ID }}
+          APPSTORE_API_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+          APPSTORE_CERTIFICATES_FILE_BASE64: ${{ secrets.APPSTORE_CERTIFICATES_FILE_BASE64 }}
+          APPSTORE_CERTIFICATES_PASSWORD: ${{ secrets.APPSTORE_CERTIFICATES_PASSWORD }}
+        run: |
+          for name in APPLE_TEAM_ID APPSTORE_ISSUER_ID APPSTORE_API_KEY_ID APPSTORE_API_PRIVATE_KEY APPSTORE_CERTIFICATES_FILE_BASE64 APPSTORE_CERTIFICATES_PASSWORD; do
+            if [[ -z "${!name}" ]]; then
+              echo "Missing required GitHub Actions variable or secret: ${name}"
+              exit 1
+            fi
+          done
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.5'
+          channel: stable
+          cache: true
+
+      - name: Resolve Flutter packages
+        working-directory: prototype/venue_wrangler_prototype
+        run: flutter pub get
+
+      - name: Import App Store signing certificate
+        uses: apple-actions/import-codesign-certs@v7
+        with:
+          p12-file-base64: ${{ secrets.APPSTORE_CERTIFICATES_FILE_BASE64 }}
+          p12-password: ${{ secrets.APPSTORE_CERTIFICATES_PASSWORD }}
+
+      - name: Install App Store provisioning profile
+        uses: apple-actions/download-provisioning-profiles@v6
+        with:
+          bundle-id: com.venuewrangler.enterprise
+          profile-type: IOS_APP_STORE
+          issuer-id: ${{ vars.APPSTORE_ISSUER_ID }}
+          api-key-id: ${{ vars.APPSTORE_API_KEY_ID }}
+          api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+
+      - name: Install iOS pods
+        working-directory: prototype/venue_wrangler_prototype/ios
+        run: pod install
+
+      - name: Prepare export options
+        env:
+          TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import plistlib
+
+          options = {
+              "method": "app-store-connect",
+              "destination": "export",
+              "signingStyle": "manual",
+              "teamID": os.environ["TEAM_ID"],
+              "provisioningProfiles": {
+                  "com.venuewrangler.enterprise": "AppStore com.venuewrangler.enterprise"
+              },
+          }
+          with open("prototype/venue_wrangler_prototype/ios/ExportOptions.plist", "wb") as output:
+              plistlib.dump(options, output)
+          PY
+
+      - name: Archive and export signed IPA
+        uses: Apple-Actions/xcodebuild@v1
+        id: archive
+        with:
+          workspace: prototype/venue_wrangler_prototype/ios/Runner.xcworkspace
+          scheme: Runner
+          sdk: iphoneos
+          action: archive
+          archive-path: build/ios/archive/VenueWrangler.xcarchive
+          export-path: build/ios/ipa
+          export-options-plist: prototype/venue_wrangler_prototype/ios/ExportOptions.plist
+          build-number: ${{ github.run_number }}
+          build-settings: |
+            DEVELOPMENT_TEAM=${{ vars.APPLE_TEAM_ID }}
+            PRODUCT_BUNDLE_IDENTIFIER=com.venuewrangler.enterprise
+            CODE_SIGN_STYLE=Manual
+            CODE_SIGN_IDENTITY=Apple Distribution
+            PROVISIONING_PROFILE_SPECIFIER=AppStore com.venuewrangler.enterprise
+
+      - name: Save IPA artifact
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: venue-wrangler-ios-${{ github.run_number }}
+          path: ${{ steps.archive.outputs.ipa-path }}
+          if-no-files-found: error
+
+      - name: Upload build to TestFlight
+        uses: apple-actions/upload-testflight-build@v5
+        with:
+          app-path: ${{ steps.archive.outputs.ipa-path }}
+          issuer-id: ${{ vars.APPSTORE_ISSUER_ID }}
+          api-key-id: ${{ vars.APPSTORE_API_KEY_ID }}
+          api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
