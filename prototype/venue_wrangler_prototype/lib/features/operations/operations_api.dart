@@ -773,8 +773,9 @@ class OperationsApi {
   Future<void> saveHospitalityDraft(
       String eventId, Map<String, Object?> draft) async {
     final scope = await _auth.offlineCacheScope();
-    if (scope == null)
+    if (scope == null) {
       throw StateError('Sign in again to save a scoped offline draft.');
+    }
     final key = 'venue.hospitality.drafts.$scope';
     final rows = await _storage.read(key: key);
     final drafts = rows == null
@@ -904,10 +905,12 @@ class OperationsApi {
   Future<void> enqueueOfflineAttendance(
       String eventId, String shiftId, String action) async {
     final scope = await _auth.offlineCacheScope();
-    if (scope == null)
+    if (scope == null) {
       throw StateError('Sign in again before recording attendance offline.');
-    if (action != 'CHECK_IN' && action != 'CHECK_OUT')
+    }
+    if (action != 'CHECK_IN' && action != 'CHECK_OUT') {
       throw ArgumentError.value(action, 'action');
+    }
     final id = const Uuid().v4();
     final item = <String, Object?>{
       'id': id,
@@ -949,7 +952,9 @@ class OperationsApi {
       } catch (error) {
         if (error is DioException &&
             error.response != null &&
-            error.response!.statusCode != 409) rethrow;
+            error.response!.statusCode != 409) {
+          rethrow;
+        }
       }
     }
   }
@@ -1101,12 +1106,14 @@ class OperationsApi {
       String fileName,
       String contentType,
       List<int> bytes) async {
-    if (bytes.isEmpty || bytes.length > 10 * 1024 * 1024)
+    if (bytes.isEmpty || bytes.length > 10 * 1024 * 1024) {
       throw StateError('Credential evidence must be 10 MiB or smaller.');
+    }
     final digest = await Sha256().hash(bytes);
     final token = await _auth.validAccessToken();
-    if (token == null || token.isEmpty)
+    if (token == null || token.isEmpty) {
       throw StateError('Sign in before uploading credential evidence.');
+    }
     final headers = {'Authorization': 'Bearer $token'};
     final response = await _dio.post<Map<String, dynamic>>(
         '/api/v1/admin/qualifications/$qualificationId/evidence',
@@ -1121,8 +1128,9 @@ class OperationsApi {
         options: Options(headers: headers));
     final upload = response.data;
     final uploadUrl = upload?['uploadUrl'];
-    if (uploadUrl is! String || uploadUrl.isEmpty)
+    if (uploadUrl is! String || uploadUrl.isEmpty) {
       throw StateError('The evidence API did not return a private upload URL.');
+    }
     final fields =
         Map<String, dynamic>.from(upload?['uploadFields'] as Map? ?? const {});
     await Dio().post<void>(uploadUrl,
@@ -1140,8 +1148,9 @@ class OperationsApi {
   Future<void> reviewQualificationEvidence(
       String qualificationId, String status, String reason) async {
     final token = await _auth.validAccessToken();
-    if (token == null || token.isEmpty)
+    if (token == null || token.isEmpty) {
       throw StateError('Sign in before reviewing credential evidence.');
+    }
     await _dio.put<void>(
         '/api/v1/admin/qualifications/$qualificationId/evidence/review',
         data: {'status': status, 'reason': reason.trim()},
@@ -1153,8 +1162,9 @@ class OperationsApi {
         '/api/v1/admin/qualifications/$qualificationId/evidence/download',
         options: Options(headers: {'Authorization': 'Bearer $token'})));
     final url = response.data?['downloadUrl'];
-    if (url is! String || url.isEmpty)
+    if (url is! String || url.isEmpty) {
       throw StateError('The evidence API did not return a download link.');
+    }
     return url;
   }
 
@@ -1263,12 +1273,14 @@ class StaffAttendanceOutboxController
 
   void watchConnectivity() {
     _subscription = _connectivity.onConnectivityChanged.listen((results) {
-      if (results.any((result) => result != ConnectivityResult.none))
+      if (results.any((result) => result != ConnectivityResult.none)) {
         unawaited(synchronize());
+      }
     });
     unawaited(_connectivity.checkConnectivity().then((results) {
-      if (results.any((result) => result != ConnectivityResult.none))
+      if (results.any((result) => result != ConnectivityResult.none)) {
         unawaited(synchronize());
+      }
     }, onError: (Object _) {}));
   }
 

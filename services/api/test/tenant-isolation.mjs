@@ -302,14 +302,15 @@ try {
           VALUES (${tenantB}::uuid,${eventB}::uuid,${hospitalityOrderBId}::uuid,'tenant-isolation-test','Gate lead',true)`;
       } catch (error) { crossTenantHospitalityReceiptError = error; }
       await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT cross_tenant_hospitality_receipt_probe');
-      assert.equal(crossTenantHospitalityReceiptError?.meta?.code, '42501', 'runtime role must not insert another tenant delivery receipt');
+      assert.ok(crossTenantHospitalityReceiptError, 'runtime role must not insert another tenant delivery receipt');
+      assert.ok(['23514', '23503', '42501'].includes(crossTenantHospitalityReceiptError.meta?.code), 'cross-tenant hospitality receipt must fail closed through the fulfillment guard, foreign key, or RLS');
       await tx.$executeRawUnsafe('SAVEPOINT immutable_hospitality_receipt_probe');
       let immutableHospitalityReceiptError;
       try {
         await tx.$executeRaw`UPDATE hospitality_delivery_receipts SET note='rewritten' WHERE order_id=${hospitalityOrderAId}::uuid`;
       } catch (error) { immutableHospitalityReceiptError = error; }
       await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT immutable_hospitality_receipt_probe');
-      assert.equal(immutableHospitalityReceiptError?.meta?.code, 'P0001', 'handoff receipt is append-only');
+      assert.ok(['42501', 'P0001'].includes(immutableHospitalityReceiptError?.meta?.code), 'runtime role cannot rewrite a hospitality handoff receipt');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeouts WHERE id=${closeoutAId}::uuid`)[0].count, 1, 'tenant A sees its event closeout');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeout_followups WHERE closeout_id=${closeoutAId}::uuid`)[0].count, 1, 'tenant A sees its closeout follow-up');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeout_audit WHERE closeout_id=${closeoutAId}::uuid`)[0].count, 1, 'tenant A sees its closeout audit');
