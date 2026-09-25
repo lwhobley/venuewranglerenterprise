@@ -369,7 +369,13 @@ class _LiveOperationsHome extends ConsumerWidget {
                     event: event,
                     venueCount: venues.length,
                     locationCount: locations.length,
-                    capabilities: caps),
+                    capabilities: caps,
+                    onNavigate: (tab) {
+                      final target = tabs.indexOf(tab);
+                      if (target >= 0) {
+                        ref.read(_liveTabProvider.notifier).state = target;
+                      }
+                    }),
               };
     return Scaffold(
       appBar: AppBar(
@@ -684,11 +690,13 @@ class _LiveTodayPage extends ConsumerWidget {
       {required this.event,
       required this.venueCount,
       required this.locationCount,
-      required this.capabilities});
+      required this.capabilities,
+      required this.onNavigate});
   final Map<String, dynamic> event;
   final int venueCount;
   final int locationCount;
   final Set<String> capabilities;
+  final ValueChanged<String> onNavigate;
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final eventId = event['id'] as String;
@@ -714,6 +722,35 @@ class _LiveTodayPage extends ConsumerWidget {
         (row as Map)['state'] != 'DONE').toList();
     final scheduledShifts = (shifts?.valueOrNull ?? const []).where((row) =>
         (row as Map)['state'] != 'CANCELLED').length;
+    final attention = <Map<String, dynamic>>[];
+    for (final row in openIssues) {
+      final item = Map<String, dynamic>.from(row as Map);
+      final severity = item['severity'] as String? ?? 'MODERATE';
+      if (severity == 'CRITICAL' || severity == 'HIGH') {
+        attention.add({...item, '_area': 'Issues', '_rank': severity == 'CRITICAL' ? 0 : 1, '_label': '$severity · ${item['state'] ?? 'REPORTED'}'});
+      }
+    }
+    final now = DateTime.now();
+    for (final row in openTasks) {
+      final item = Map<String, dynamic>.from(row as Map);
+      final dueAt = DateTime.tryParse(item['dueAt'] as String? ?? '')?.toLocal();
+      final overdue = dueAt != null && dueAt.isBefore(now);
+      final blocked = item['state'] == 'BLOCKED';
+      if (overdue || blocked) {
+        attention.add({...item, '_area': 'Operations', '_rank': blocked ? 1 : 2, '_label': blocked ? 'BLOCKED' : 'OVERDUE · ${_clockLabel(dueAt)}'});
+      }
+    }
+    attention.sort((a, b) {
+      final rank = (a['_rank'] as int).compareTo(b['_rank'] as int);
+      if (rank != 0) return rank;
+      final aUpdated = DateTime.tryParse(a['updatedAt'] as String? ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final bUpdated = DateTime.tryParse(b['updatedAt'] as String? ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
+      return bUpdated.compareTo(aUpdated);
+    });
+    final recentChanges = <Map<String, dynamic>>[
+      for (final row in openIssues) {...Map<String, dynamic>.from(row as Map), '_area': 'Issues'},
+      for (final row in openTasks) {...Map<String, dynamic>.from(row as Map), '_area': 'Operations'},
+    ]..sort((a, b) => (DateTime.tryParse(b['updatedAt'] as String? ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0)).compareTo(DateTime.tryParse(a['updatedAt'] as String? ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0)));
     return ListView(children: [
       Text('Event day',
           style: Theme.of(context)
@@ -753,35 +790,37 @@ class _LiveTodayPage extends ConsumerWidget {
         const Text(
             'Some live data could not be loaded. Check your connection and refresh.'),
       if (issues != null || tasks != null) ...[
-        const Text('Live event data',
+        const Text('Needs attention',
             style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18)),
         const SizedBox(height: 8),
       ],
-      if (issues != null && issues.hasValue && !issues.hasError && openIssues.isEmpty)
-        const _EmptyLine('No open issues for this event.'),
-      ...openIssues.take(3).map((row) {
-        final item = Map<String, dynamic>.from(row as Map);
+      if (attention.isEmpty &&
+          (issues == null || issues.hasValue) &&
+          (tasks == null || tasks.hasValue) &&
+          !(issues?.hasError ?? false) &&
+          !(tasks?.hasError ?? false))
+        const _EmptyLine('Nothing urgent is waiting on this team.'),
+      ...attention.take(5).map((item) {
         return ListTile(
-            leading: Icon(Icons.circle,
-                size: 12,
-                color:
-                    item['severity'] == 'CRITICAL' || item['severity'] == 'HIGH'
-                        ? _coral
-                        : _brass),
-            title: Text(item['title'] as String? ?? 'Issue'),
-            subtitle: Text(
-                '${item['state'] ?? 'REPORTED'} · ${item['category'] ?? ''}'));
-      }),
-      if (tasks != null && tasks.hasValue && !tasks.hasError && openTasks.isEmpty)
-        const _EmptyLine('No open operational tasks for this event.'),
-      ...openTasks.take(3).map((row) {
-        final item = Map<String, dynamic>.from(row as Map);
-        return ListTile(
-            leading: const Icon(Icons.task_alt_outlined),
+            onTap: () => onNavigate(item['_area'] as String),
+            leading: Icon(
+                item['_area'] == 'Issues' ? Icons.report_problem_outlined : Icons.task_alt_outlined,
+                color: (item['_rank'] as int) <= 1 ? _coral : _brass),
             title: Text(item['title'] as String? ?? 'Task'),
-            subtitle:
-                Text('${item['kind'] ?? ''} · ${item['state'] ?? 'OPEN'}'));
+            subtitle: Text('${item['_label']} · ${item['_area']} · ${item['ownerId'] ?? 'Unassigned'}'),
+            trailing: const Icon(Icons.chevron_right));
       }),
+      if (recentChanges.isNotEmpty) ...[
+        const SizedBox(height: 18),
+        const Text('Recently updated', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18)),
+        const SizedBox(height: 8),
+        ...recentChanges.take(3).map((item) => ListTile(
+          onTap: () => onNavigate(item['_area'] as String),
+          leading: const Icon(Icons.history),
+          title: Text(item['title'] as String? ?? 'Event update'),
+          subtitle: Text('${item['_area']} · ${item['state'] ?? 'Updated'} · ${_clockLabel(DateTime.tryParse(item['updatedAt'] as String? ?? '')?.toLocal())}'),
+        )),
+      ],
     ]);
   }
 }
