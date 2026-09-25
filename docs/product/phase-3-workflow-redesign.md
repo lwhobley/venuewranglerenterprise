@@ -343,6 +343,10 @@ Exception paths: `Blocked`, `At risk`, `Awaiting review`, `Exception accepted`, 
 
 Exceptions: `On hold`, `At risk`, `Partially fulfilled`, `Cancelled`, `Rejected`. A change after `Preparing` creates a revision record.
 
+**Implemented vertical slice (2026-09-25)**
+
+The API and Flutter event Hospitality queue now support scoped order submission with item name, quantity, unit, item note, destination location, service time, and delivery/dietary instructions. Requesters can retain an encrypted offline draft and submit it later. Kitchen operators with `hospitality:fulfill` accept, start preparation, mark ready, distribute, reject with a reason, or cancel with a reason; requesters confirm pickup and may cancel before acceptance. Writes are idempotent and append to a tenant-scoped immutable audit. Assigned operators and requesters receive durable notifications with an order reference. Remaining work includes linked event/BEO templates and menu catalog, approval thresholds, partial fulfilment and substitutions, named pickup/delivery proof, role-specific kitchen batching, and end-to-end offline handoff.
+
 ## 9. Fulfill kitchen distribution and pickup
 
 | Item | Definition |

@@ -5,8 +5,8 @@ import { createRemoteJWKSet, decodeJwt, jwtVerify, type JWTVerifyGetKey } from '
 import { AuthProvidersService, type SsoProviderConfig } from './auth-providers';
 import { PrismaService } from './prisma.service';
 
-export type Capability = 'issue:report' | 'issue:read' | 'issue:evidence' | 'issue:triage' | 'issue:escalate' | 'issue:resolve' | 'issue:verify' | 'issue:close' | 'operations:read' | 'operations:write' | 'notification:read' | 'tenant:admin';
-const capabilities = new Set<Capability>(['issue:report', 'issue:read', 'issue:evidence', 'issue:triage', 'issue:escalate', 'issue:resolve', 'issue:verify', 'issue:close', 'operations:read', 'operations:write', 'notification:read', 'tenant:admin']);
+export type Capability = 'issue:report' | 'issue:read' | 'issue:evidence' | 'issue:triage' | 'issue:escalate' | 'issue:resolve' | 'issue:verify' | 'issue:close' | 'operations:read' | 'operations:write' | 'hospitality:order' | 'hospitality:fulfill' | 'notification:read' | 'tenant:admin';
+const capabilities = new Set<Capability>(['issue:report', 'issue:read', 'issue:evidence', 'issue:triage', 'issue:escalate', 'issue:resolve', 'issue:verify', 'issue:close', 'operations:read', 'operations:write', 'hospitality:order', 'hospitality:fulfill', 'notification:read', 'tenant:admin']);
 
 export interface Identity {
   subject: string;

@@ -100,6 +100,19 @@ enum AttachmentStatus {
   @@map("attachment_status")
 }
 
+enum HospitalityOrderState {
+  SUBMITTED
+  ACCEPTED
+  PREPARING
+  READY
+  DISTRIBUTED
+  PICKED_UP
+  REJECTED
+  CANCELLED
+
+  @@map("hospitality_order_state")
+}
+
 model Organization {
   id                    String                     @id @default(uuid()) @db.Uuid
   slug                  String?                    @unique
@@ -122,6 +135,8 @@ model Organization {
   staffUnavailability  StaffUnavailability[]
   staffUnavailabilityAudits StaffUnavailabilityAudit[]
   qualifications        PersonQualification[]
+  hospitalityOrders    HospitalityOrder[]
+  hospitalityOrderAudits HospitalityOrderAudit[]
 
   @@map("organizations")
 }
@@ -136,7 +151,9 @@ model Venue {
   tasks          OperationalTask[]
   staffShifts    StaffShift[]
   staffingDemands StaffingDemand[]
+  hospitalityOrders HospitalityOrder[]
 
+  @@unique([id, organizationId])
   @@index([organizationId])
   @@map("venues")
 }
@@ -155,7 +172,9 @@ model Event {
   integrationEvents ExternalIntegrationEvent[]
   staffShifts       StaffShift[]
   staffingDemands   StaffingDemand[]
+  hospitalityOrders HospitalityOrder[]
 
+  @@unique([id, venueId, organizationId])
   @@index([organizationId, venueId])
   @@map("events")
 }
@@ -170,8 +189,10 @@ model Location {
   tasks          OperationalTask[]
   staffShifts    StaffShift[]
   staffingDemands StaffingDemand[]
+  hospitalityOrders HospitalityOrder[]
 
   @@unique([id, venueId])
+  @@unique([id, venueId, organizationId])
   @@index([organizationId, venueId])
   @@map("locations")
 }
@@ -317,6 +338,65 @@ model OperationalTask {
   @@index([organizationId, eventId, kind, state])
   @@index([organizationId, ownerId, dueAt])
   @@map("operational_tasks")
+}
+
+model HospitalityOrder {
+  id             String                @id @default(uuid()) @db.Uuid
+  organizationId String                @map("organization_id") @db.Uuid
+  venueId        String                @map("venue_id") @db.Uuid
+  eventId        String                @map("event_id") @db.Uuid
+  locationId     String?               @map("location_id") @db.Uuid
+  requestedBy    String                @map("requested_by")
+  assignedTo     String?               @map("assigned_to")
+  serviceAt      DateTime              @map("service_at")
+  instructions   String                @default("")
+  state          HospitalityOrderState @default(SUBMITTED)
+  rejectionReason String?              @map("rejection_reason")
+  createdAt      DateTime              @default(now()) @map("created_at")
+  updatedAt      DateTime              @updatedAt @map("updated_at")
+  organization   Organization          @relation(fields: [organizationId], references: [id])
+  venue          Venue                 @relation(fields: [venueId, organizationId], references: [id, organizationId], map: "hospitality_orders_venue_tenant_fk")
+  event          Event                 @relation(fields: [eventId, venueId, organizationId], references: [id, venueId, organizationId], map: "hospitality_orders_event_tenant_fk")
+  location       Location?             @relation(fields: [locationId, venueId, organizationId], references: [id, venueId, organizationId], map: "hospitality_orders_location_tenant_fk")
+  lines          HospitalityOrderLine[]
+  auditEvents    HospitalityOrderAudit[]
+  notifications  UserNotification[]
+
+  @@unique([id, organizationId])
+  @@unique([id, eventId, organizationId])
+  @@index([organizationId, eventId, state, serviceAt])
+  @@map("hospitality_orders")
+}
+
+model HospitalityOrderLine {
+  id             String          @id @default(uuid()) @db.Uuid
+  organizationId String          @map("organization_id") @db.Uuid
+  orderId        String          @map("order_id") @db.Uuid
+  itemName       String          @map("item_name")
+  quantity       Decimal         @db.Decimal(10, 3)
+  unit           String
+  note           String          @default("")
+  order          HospitalityOrder @relation(fields: [orderId, organizationId], references: [id, organizationId], map: "hospitality_order_lines_order_tenant_fk")
+
+  @@index([organizationId, orderId])
+  @@map("hospitality_order_lines")
+}
+
+model HospitalityOrderAudit {
+  id             String           @id @default(uuid()) @db.Uuid
+  organizationId String           @map("organization_id") @db.Uuid
+  orderId        String           @map("order_id") @db.Uuid
+  actorId        String           @map("actor_id")
+  action         String
+  before         Json?            @db.JsonB
+  after          Json?            @db.JsonB
+  reason         String?
+  createdAt      DateTime         @default(now()) @map("created_at")
+  organization   Organization     @relation(fields: [organizationId], references: [id])
+  order          HospitalityOrder @relation(fields: [orderId, organizationId], references: [id, organizationId], map: "hospitality_order_audit_tenant_fk")
+
+  @@index([organizationId, orderId, createdAt])
+  @@map("hospitality_order_audit")
 }
 
 model OperationalTaskAudit {
@@ -540,6 +620,7 @@ model UserNotification {
   eventId          String       @map("event_id") @db.Uuid
   issueId          String?      @map("issue_id") @db.Uuid
   shiftId          String?      @map("shift_id") @db.Uuid
+  hospitalityOrderId String?    @map("hospitality_order_id") @db.Uuid
   recipientSubject String       @map("recipient_subject")
   kind             String
   title            String
@@ -550,6 +631,7 @@ model UserNotification {
   event            Event        @relation(fields: [eventId], references: [id])
   issue            Issue?       @relation(fields: [issueId], references: [id])
   shift            StaffShift?  @relation(fields: [shiftId, eventId, organizationId], references: [id, eventId, organizationId], map: "user_notifications_shift_event_tenant_fk")
+  hospitalityOrder HospitalityOrder? @relation(fields: [hospitalityOrderId, eventId, organizationId], references: [id, eventId, organizationId], map: "user_notifications_hospitality_order_tenant_fk")
 
   @@index([organizationId, recipientSubject, readAt, createdAt(sort: Desc)])
   @@map("user_notifications")

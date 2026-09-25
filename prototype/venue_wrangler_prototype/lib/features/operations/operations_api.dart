@@ -410,6 +410,51 @@ class OperationsApi {
           (token, key) => _dio.post<void>('/api/v1/events/$eventId/inventory/counts/$countId/$action',
               data: action == 'approve' ? {'reason': reason} : null,
               options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
+  Future<List<Map<String, dynamic>>> hospitalityOrders(String eventId) async =>
+      (await _cachedGet('hospitality.$eventId', () async =>
+        (await _request((token) => _dio.get<List<dynamic>>(
+          '/api/v1/events/$eventId/hospitality/orders',
+          options: Options(headers: {'Authorization': 'Bearer $token'}),
+        ))).data!.map((row) => Map<String, dynamic>.from(row as Map)).toList()));
+  Future<List<Map<String, dynamic>>> hospitalityDrafts(String eventId) async {
+    final scope = await _auth.offlineCacheScope();
+    if (scope == null) return const [];
+    final raw = await _storage.read(key: 'venue.hospitality.drafts.$scope');
+    if (raw == null) return const [];
+    return (jsonDecode(raw) as List).whereType<Map>().map((row) => Map<String, dynamic>.from(row)).where((row) => row['eventId'] == eventId).toList();
+  }
+  Future<void> saveHospitalityDraft(String eventId, Map<String, Object?> draft) async {
+    final scope = await _auth.offlineCacheScope();
+    if (scope == null) throw StateError('Sign in again to save a scoped offline draft.');
+    final key = 'venue.hospitality.drafts.$scope';
+    final rows = await _storage.read(key: key);
+    final drafts = rows == null ? <Map<String, dynamic>>[] : (jsonDecode(rows) as List).whereType<Map>().map((row) => Map<String, dynamic>.from(row)).toList();
+    drafts.add({'draftId': const Uuid().v4(), 'eventId': eventId, 'savedAt': DateTime.now().toUtc().toIso8601String(), ...draft});
+    await _storage.write(key: key, value: jsonEncode(drafts));
+  }
+  Future<void> deleteHospitalityDraft(String eventId, String draftId) async {
+    final scope = await _auth.offlineCacheScope();
+    if (scope == null) return;
+    final key = 'venue.hospitality.drafts.$scope';
+    final raw = await _storage.read(key: key);
+    if (raw == null) return;
+    final drafts = (jsonDecode(raw) as List).whereType<Map>().map((row) => Map<String, dynamic>.from(row)).where((row) => row['eventId'] != eventId || row['draftId'] != draftId).toList();
+    if (drafts.isEmpty) { await _storage.delete(key: key); } else { await _storage.write(key: key, value: jsonEncode(drafts)); }
+  }
+  Future<void> submitHospitalityDraft(String eventId, Map<String, dynamic> draft) async {
+    final data = Map<String, Object?>.from(draft)..remove('draftId')..remove('eventId')..remove('savedAt');
+    await createHospitalityOrder(eventId, data);
+    await deleteHospitalityDraft(eventId, draft['draftId'] as String);
+  }
+  Future<void> createHospitalityOrder(String eventId, Map<String, Object?> order) async =>
+      _command<void>({'action': 'hospitality.order.create', 'eventId': eventId, ...order},
+        (token, key) => _dio.post<void>('/api/v1/events/$eventId/hospitality/orders', data: order,
+          options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
+  Future<void> hospitalityOrderAction(String eventId, String orderId, String action, {String? reason}) async =>
+      _command<void>({'action': 'hospitality.order.$action', 'eventId': eventId, 'orderId': orderId, 'reason': reason},
+        (token, key) => _dio.post<void>('/api/v1/events/$eventId/hospitality/orders/$orderId/actions',
+          data: {'action': action, if (reason != null) 'reason': reason},
+          options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
   Future<Map<String, dynamic>> shiftAssignmentSuggestions(String eventId, String shiftId) async =>
       (await _request((token) => _dio.get<Map<String, dynamic>>(
             '/api/v1/events/$eventId/shifts/$shiftId/assignment-suggestions',
@@ -646,6 +691,12 @@ final eventTasksProvider = FutureProvider.autoDispose
 final eventInventoryCountsProvider = FutureProvider.autoDispose
     .family<List<Map<String, dynamic>>, String>(
         (ref, id) => ref.watch(operationsApiProvider).inventoryCounts(id));
+final eventHospitalityOrdersProvider = FutureProvider.autoDispose
+    .family<List<Map<String, dynamic>>, String>(
+        (ref, id) => ref.watch(operationsApiProvider).hospitalityOrders(id));
+final eventHospitalityDraftsProvider = FutureProvider.autoDispose
+    .family<List<Map<String, dynamic>>, String>(
+        (ref, id) => ref.watch(operationsApiProvider).hospitalityDrafts(id));
 final eventShiftsProvider = FutureProvider.autoDispose
     .family<List<dynamic>, String>(
         (ref, id) => ref.watch(operationsApiProvider).shifts(id));

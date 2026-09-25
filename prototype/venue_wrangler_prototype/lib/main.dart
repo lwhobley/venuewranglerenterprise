@@ -11,6 +11,7 @@ import 'package:uuid/uuid.dart';
 import 'config/api_configuration.dart';
 import 'auth/auth.dart';
 import 'auth/sign_in_page.dart';
+import 'features/hospitality/hospitality_page.dart';
 import 'features/issues/issue_outbox.dart';
 import 'features/issues/secure_evidence_store.dart';
 import 'features/operations/operations_api.dart';
@@ -291,6 +292,7 @@ class _LiveOperationsHome extends ConsumerWidget {
       if (caps.contains('issue:read') || caps.contains('issue:report'))
         'Issues',
       if (caps.contains('operations:read')) 'Operations',
+      if (caps.contains('hospitality:order') || caps.contains('hospitality:fulfill') || caps.contains('operations:write') || isAdmin) 'Hospitality',
       if (caps.contains('operations:read')) 'Stock',
       if (caps.contains('operations:read')) 'Staffing',
       if (isAdmin) 'Setup'
@@ -335,6 +337,12 @@ class _LiveOperationsHome extends ConsumerWidget {
                         .toList()),
                 'Operations' => _LiveTasksPage(
                     event: event, canWrite: caps.contains('operations:write')),
+                'Hospitality' => HospitalityPage(
+                    event: event,
+                    canOrder: caps.contains('hospitality:order') || caps.contains('operations:write') || isAdmin,
+                    canFulfill: caps.contains('hospitality:fulfill') || isAdmin,
+                    subject: identity['subject'] as String? ?? '',
+                    locations: locations),
                 'Stock' => _LiveInventoryPage(
                     event: event,
                     canWrite: caps.contains('operations:write'),
@@ -640,18 +648,21 @@ class _NotificationInboxState extends ConsumerState<_NotificationInbox> {
                                                         as String);
                                             ref.invalidate(
                                                 userNotificationsProvider);
-                                            if (notification['shiftId'] is String && notification['eventId'] is String) {
+                                            if ((notification['shiftId'] is String || notification['hospitalityOrderId'] is String) && notification['eventId'] is String) {
                                               final identity = ref.read(operationsBootstrapProvider).valueOrNull?['identity'] as Map<String, dynamic>? ?? const {};
                                               final capabilities = (identity['capabilities'] as List? ?? const []).whereType<String>().toSet();
                                               final tabs = <String>[
                                                 'Today',
                                                 if (capabilities.contains('issue:read') || capabilities.contains('issue:report')) 'Issues',
                                                 if (capabilities.contains('operations:read')) 'Operations',
+                                                if (capabilities.contains('hospitality:order') || capabilities.contains('hospitality:fulfill') || capabilities.contains('operations:write') || capabilities.contains('tenant:admin')) 'Hospitality',
+                                                if (capabilities.contains('operations:read')) 'Stock',
                                                 if (capabilities.contains('operations:read')) 'Staffing',
                                                 if (capabilities.contains('tenant:admin')) 'Setup',
                                               ];
                                               ref.read(_selectedLiveEventProvider.notifier).state = notification['eventId'] as String;
-                                              ref.read(_liveTabProvider.notifier).state = tabs.indexOf('Staffing');
+                                              final targetTab = notification['hospitalityOrderId'] is String ? 'Hospitality' : 'Staffing';
+                                              ref.read(_liveTabProvider.notifier).state = tabs.indexOf(targetTab);
                                               if (context.mounted) Navigator.pop(context);
                                             }
                                           } catch (error) {
@@ -2687,9 +2698,6 @@ Future<void> _newLiveTask(
                           DropdownMenuItem(value: 'PLAN', child: Text('Plan')),
                           DropdownMenuItem(
                               value: 'STAFFING', child: Text('Staffing')),
-                          DropdownMenuItem(
-                              value: 'SERVICE', child: Text('Service')),
-                          DropdownMenuItem(value: 'STOCK', child: Text('Stock'))
                         ],
                         onChanged: (v) => setState(() => kind = v ?? kind)),
                     DropdownButtonFormField<String?>(

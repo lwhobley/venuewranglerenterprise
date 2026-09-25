@@ -17,6 +17,12 @@ describe('authorization assertions', () => {
     expect(() => assertScope(identity, 'operations:write', 'event-1', 'venue-1', 'location-1')).not.toThrow();
   });
 
+  it('enforces hospitality order permissions separately from kitchen fulfillment', () => {
+    const requester = { ...identity, capabilities: [...identity.capabilities, 'hospitality:order'] as Identity['capabilities'] };
+    expect(() => assertScope(requester, 'hospitality:order', 'event-1', 'venue-1', 'location-1')).not.toThrow();
+    expect(() => assertScope(requester, 'hospitality:fulfill', 'event-1', 'venue-1', 'location-1')).toThrow(ForbiddenException);
+  });
+
   it('denies a capability the identity does not have', () => {
     expect(() => assertScope(identity, 'issue:close', 'event-1')).toThrow(ForbiddenException);
   });
