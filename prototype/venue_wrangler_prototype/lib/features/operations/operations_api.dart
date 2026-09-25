@@ -422,6 +422,11 @@ class OperationsApi {
       _command<void>({'eventId': eventId, 'claimId': claimId, 'decision': decision, 'reason': reason.trim()},
         (token, key) => _dio.post<void>('/api/v1/events/$eventId/attendance/offline/$claimId/review',
           data: {'decision': decision, 'reason': reason.trim()}, options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
+
+  Future<void> correctAttendance(String eventId, String shiftId, Map<String, Object?> correction) async =>
+      _command<void>({'eventId': eventId, 'shiftId': shiftId, ...correction},
+        (token, key) => _dio.post<void>('/api/v1/events/$eventId/shifts/$shiftId/attendance/correction',
+          data: correction, options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
   Future<void> respondToShift(
       String eventId, String shiftId, String response, {String? reason}) async {
     await _command<void>(

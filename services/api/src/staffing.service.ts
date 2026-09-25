@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, Injectable,
 import { Prisma, StaffShiftResponse } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { assertScope, type Identity } from './auth';
-import { CreateStaffShiftDto, OfflineAttendanceClaimDto, RespondToShiftDto, ReviewAttendanceClaimDto, UpdateStaffShiftDto } from './staffing.dto';
+import { CreateStaffShiftDto, OfflineAttendanceClaimDto, RespondToShiftDto, ReviewAttendanceClaimDto, StaffAttendanceCorrectionDto, UpdateStaffShiftDto } from './staffing.dto';
 import { PrismaService } from './prisma.service';
 import { PushNotificationsService } from './push-notifications.service';
 
@@ -232,6 +232,37 @@ export class StaffingService {
         ? { attendance: 'CHECKED_IN', checkedInAt: now, updatedBy: identity.subject }
         : { attendance: 'CHECKED_OUT', checkedOutAt: now, updatedBy: identity.subject } });
       await this.audit(tx, identity, shiftId, action, current, updated);
+      return updated;
+    });
+  }
+
+  async correctAttendance(identity: Identity, eventId: string, shiftId: string, dto: StaffAttendanceCorrectionDto, key: string) {
+    assertScope(identity, 'operations:write', eventId);
+    const reason = dto.reason.trim();
+    if (reason.length < 3) throw new BadRequestException('An attendance correction reason of at least three characters is required.');
+    if (dto.checkedInAt === undefined && dto.checkedOutAt === undefined) throw new BadRequestException('Provide a corrected check-in or check-out time.');
+    const input = { eventId, shiftId, checkedInAt: dto.checkedInAt, checkedOutAt: dto.checkedOutAt, reason };
+    return this.command(identity, key, 'staff-attendance.correct', input, async (tx) => {
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`staff-shift:${identity.tenantId}:${shiftId}`}, 0))`;
+      const current = await tx.staffShift.findFirst({ where: { id: shiftId, eventId, organizationId: identity.tenantId } });
+      if (!current) throw new NotFoundException('Shift not found.');
+      assertScope(identity, 'operations:write', eventId, current.venueId, current.locationId ?? undefined);
+      if (current.attendance === 'NOT_STARTED' || !current.checkedInAt) throw new ConflictException('The shift has no recorded attendance to correct.');
+      if (await tx.staffAttendanceClaim.findFirst({ where: { organizationId: identity.tenantId, shiftId, status: 'PENDING_REVIEW' }, select: { id: true } })) throw new ConflictException('Review pending offline attendance claims before correcting the shift.');
+      if (dto.checkedOutAt !== undefined && current.attendance !== 'CHECKED_OUT') throw new ConflictException('A check-out time can only be corrected after the shift is checked out.');
+      const checkedInAt = dto.checkedInAt === undefined ? current.checkedInAt : new Date(dto.checkedInAt);
+      const checkedOutAt = dto.checkedOutAt === undefined ? current.checkedOutAt : new Date(dto.checkedOutAt);
+      if ((dto.checkedInAt === undefined || checkedInAt.getTime() === current.checkedInAt.getTime())
+        && (dto.checkedOutAt === undefined || checkedOutAt?.getTime() === current.checkedOutAt?.getTime())) throw new ConflictException('The corrected times must change at least one recorded value.');
+      const latestAllowed = new Date(Date.now() + 5 * 60_000);
+      if (checkedInAt > latestAllowed || (checkedOutAt && checkedOutAt > latestAllowed)) throw new BadRequestException('Corrected attendance times cannot be more than five minutes in the future.');
+      if (checkedOutAt && checkedOutAt < checkedInAt) throw new BadRequestException('Check-out must be at or after check-in.');
+      const updated = await tx.staffShift.update({ where: { id: shiftId }, data: {
+        ...(dto.checkedInAt !== undefined ? { checkedInAt } : {}),
+        ...(dto.checkedOutAt !== undefined ? { checkedOutAt } : {}),
+        updatedBy: identity.subject,
+      } });
+      await this.audit(tx, identity, shiftId, 'attendance.corrected', current, updated, reason);
       return updated;
     });
   }

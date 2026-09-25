@@ -311,4 +311,27 @@ describe('event staffing workflow', () => {
     expect(tx.staffShift.update).not.toHaveBeenCalled();
     expect(tx.staffAttendanceClaim.update).not.toHaveBeenCalled();
   });
+
+  it('corrects attendance only for a scoped supervisor and retains the original times in audit', async () => {
+    const current = {
+      id: 'shift-1', eventId: 'event-1', organizationId: 'tenant-1', venueId: 'venue-1', locationId: 'location-1',
+      attendance: 'CHECKED_OUT', checkedInAt: new Date('2025-10-01T17:00:00Z'), checkedOutAt: new Date('2025-10-01T22:00:00Z'),
+    };
+    const { service, tx } = harness(current);
+    const correctedIn = '2025-10-01T17:06:00Z';
+    await service.correctAttendance(manager, 'event-1', 'shift-1', { checkedInAt: correctedIn, reason: 'Badge reader recorded six minutes late.' }, 'staff-attendance-correction-key-1');
+    expect(tx.staffShift.update).toHaveBeenCalledWith({ where: { id: 'shift-1' }, data: { checkedInAt: new Date(correctedIn), updatedBy: manager.subject } });
+    expect(tx.staffShiftAuditEvent.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      action: 'attendance.corrected', reason: 'Badge reader recorded six minutes late.', before: current,
+    }) }));
+  });
+
+  it('denies worker corrections and blocks manager edits while offline claims await review', async () => {
+    const current = { id: 'shift-1', eventId: 'event-1', organizationId: 'tenant-1', venueId: 'venue-1', locationId: 'location-1', attendance: 'CHECKED_IN', checkedInAt: new Date('2025-10-01T17:00:00Z'), checkedOutAt: null };
+    const { service, tx } = harness(current);
+    await expect(service.correctAttendance(worker, 'event-1', 'shift-1', { checkedInAt: '2025-10-01T17:05:00Z', reason: 'Correcting time.' }, 'staff-attendance-correction-key-2')).rejects.toBeInstanceOf(ForbiddenException);
+    tx.staffAttendanceClaim.findFirst.mockResolvedValue({ id: 'claim-pending' });
+    await expect(service.correctAttendance(manager, 'event-1', 'shift-1', { checkedInAt: '2025-10-01T17:05:00Z', reason: 'Correcting time.' }, 'staff-attendance-correction-key-3')).rejects.toThrow('Review pending offline attendance claims');
+    expect(tx.staffShift.update).not.toHaveBeenCalled();
+  });
 });

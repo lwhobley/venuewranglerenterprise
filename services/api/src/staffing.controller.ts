@@ -3,7 +3,7 @@ import { ApiBearerAuth, ApiQuery, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { JwtIdentityGuard } from './auth';
 import { StaffingService } from './staffing.service';
-import { CreateStaffShiftDto, OfflineAttendanceClaimDto, RespondToShiftDto, ReviewAttendanceClaimDto, StartStaffBreakDto, UpdateStaffShiftDto } from './staffing.dto';
+import { CreateStaffShiftDto, OfflineAttendanceClaimDto, RespondToShiftDto, ReviewAttendanceClaimDto, StaffAttendanceCorrectionDto, StartStaffBreakDto, UpdateStaffShiftDto } from './staffing.dto';
 
 @Controller('v1')
 @UseGuards(JwtIdentityGuard)
@@ -44,6 +44,9 @@ export class StaffingController {
   }
   @Post('events/:eventId/shifts/:shiftId/check-out') checkOut(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Param('shiftId', new ParseUUIDPipe()) shiftId: string, @Headers('idempotency-key') key: string) {
     return this.staffing.attendance(req.identity, eventId, shiftId, 'check-out', this.key(key));
+  }
+  @Post('events/:eventId/shifts/:shiftId/attendance/correction') correctAttendance(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Param('shiftId', new ParseUUIDPipe()) shiftId: string, @Body() dto: StaffAttendanceCorrectionDto, @Headers('idempotency-key') key: string) {
+    return this.staffing.correctAttendance(req.identity, eventId, shiftId, dto, this.key(key));
   }
   @Post('events/:eventId/shifts/:shiftId/attendance/offline') offlineAttendance(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Param('shiftId', new ParseUUIDPipe()) shiftId: string, @Body() dto: OfflineAttendanceClaimDto, @Headers('idempotency-key') key: string) {
     return this.staffing.submitOfflineAttendance(req.identity, eventId, shiftId, dto, this.key(key));

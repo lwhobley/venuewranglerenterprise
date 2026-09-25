@@ -1244,7 +1244,7 @@ class _LiveStaffingPage extends ConsumerWidget {
                       ListTile(
                         leading: const CircleAvatar(child: Icon(Icons.badge_outlined)),
                         title: Text(shift['role'] as String? ?? 'Shift', style: const TextStyle(fontWeight: FontWeight.w800)),
-                        subtitle: Text('$assignedName · $locationName\n${_shiftTimeLabel(startsAt, endsAt)}\n$state · $response · $attendance${breakSummary.isEmpty ? '' : '\n$breakSummary'}${requiredQualifications.isEmpty ? '' : '\nRequires: ${requiredQualifications.join(', ')}'}'),
+                        subtitle: Text('$assignedName · $locationName\n${_shiftTimeLabel(startsAt, endsAt)}\n$state · $response · $attendance${attendance == 'NOT_STARTED' ? '' : '\n${_attendanceTimeLabel(shift)}'}${breakSummary.isEmpty ? '' : '\n$breakSummary'}${requiredQualifications.isEmpty ? '' : '\nRequires: ${requiredQualifications.join(', ')}'}'),
                         isThreeLine: true,
                       ),
                       if (shift['instructions'] is String && (shift['instructions'] as String).isNotEmpty)
@@ -1275,6 +1275,8 @@ class _LiveStaffingPage extends ConsumerWidget {
                             OutlinedButton(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'publish'), child: const Text('Publish')),
                           if (canWrite && state == 'PUBLISHED' && attendance == 'NOT_STARTED')
                             TextButton(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'cancel'), child: const Text('Cancel shift')),
+                          if (canWrite && attendance != 'NOT_STARTED')
+                            OutlinedButton(onPressed: () => _correctAttendance(context, ref, eventId, shift), child: const Text('Correct attendance')),
                           if (shift['assignedSubject'] == null && state == 'PUBLISHED')
                             FilledButton(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'claim'), child: const Text('Claim shift')),
                           if (assignedToMe && state == 'PUBLISHED' && response == 'PENDING') ...[
@@ -1472,6 +1474,63 @@ String _clockLabel(DateTime? value) {
   if (value == null) return 'time unavailable';
   final hour = value.hour % 12 == 0 ? 12 : value.hour % 12;
   return '$hour:${value.minute.toString().padLeft(2, '0')} ${value.hour < 12 ? 'AM' : 'PM'}';
+}
+
+String _attendanceTimeLabel(Map<String, dynamic> shift) {
+  final checkedIn = DateTime.tryParse(shift['checkedInAt'] as String? ?? '')?.toLocal();
+  final checkedOut = DateTime.tryParse(shift['checkedOutAt'] as String? ?? '')?.toLocal();
+  return 'In ${_clockLabel(checkedIn)}${checkedOut == null ? '' : ' · Out ${_clockLabel(checkedOut)}'}';
+}
+
+Future<DateTime?> _pickAttendanceDateTime(BuildContext context, DateTime initial) async {
+  final date = await showDatePicker(context: context, initialDate: initial, firstDate: DateTime(initial.year - 2), lastDate: DateTime.now().add(const Duration(days: 2)));
+  if (date == null || !context.mounted) return null;
+  final time = await showTimePicker(context: context, initialTime: TimeOfDay.fromDateTime(initial));
+  if (time == null) return null;
+  return DateTime(date.year, date.month, date.day, time.hour, time.minute);
+}
+
+Future<void> _correctAttendance(BuildContext context, WidgetRef ref, String eventId, Map<String, dynamic> shift) async {
+  DateTime? checkedInAt = DateTime.tryParse(shift['checkedInAt'] as String? ?? '')?.toLocal();
+  DateTime? checkedOutAt = DateTime.tryParse(shift['checkedOutAt'] as String? ?? '')?.toLocal();
+  final reason = TextEditingController();
+  final correction = await showDialog<Map<String, Object?>>(
+    context: context,
+    builder: (dialogContext) => StatefulBuilder(builder: (context, setState) => AlertDialog(
+      title: const Text('Correct attendance'),
+      content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('The original times remain in the audit history. Add the reason for this correction.'),
+        ListTile(contentPadding: EdgeInsets.zero, title: const Text('Check-in'), subtitle: Text(_shiftTimeLabel(checkedInAt, checkedInAt)), trailing: const Icon(Icons.edit_calendar), onTap: () async {
+          final value = await _pickAttendanceDateTime(context, checkedInAt ?? DateTime.now());
+          if (value != null) setState(() => checkedInAt = value);
+        }),
+        if (checkedOutAt != null) ListTile(contentPadding: EdgeInsets.zero, title: const Text('Check-out'), subtitle: Text(_shiftTimeLabel(checkedOutAt, checkedOutAt)), trailing: const Icon(Icons.edit_calendar), onTap: () async {
+          final value = await _pickAttendanceDateTime(context, checkedOutAt ?? DateTime.now());
+          if (value != null) setState(() => checkedOutAt = value);
+        }),
+        TextField(controller: reason, maxLength: 500, minLines: 2, maxLines: 4, decoration: const InputDecoration(labelText: 'Reason', border: OutlineInputBorder())),
+      ]),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+        FilledButton(onPressed: () {
+          if (reason.text.trim().length < 3 || checkedInAt == null) return;
+          Navigator.pop(dialogContext, {
+            'checkedInAt': checkedInAt!.toUtc().toIso8601String(),
+            if (checkedOutAt != null) 'checkedOutAt': checkedOutAt!.toUtc().toIso8601String(),
+            'reason': reason.text.trim(),
+          });
+        }, child: const Text('Save correction')),
+      ],
+    )),
+  );
+  reason.dispose();
+  if (correction == null) return;
+  try {
+    await ref.read(operationsApiProvider).correctAttendance(eventId, shift['id'] as String, correction);
+    ref.invalidate(eventShiftsProvider(eventId));
+  } catch (error) {
+    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not correct attendance: $error')));
+  }
 }
 
 Future<void> _runShiftCommand(BuildContext context, WidgetRef ref, String eventId, String shiftId, String action, {Map<String, Object?>? data}) async {

@@ -40,3 +40,9 @@ export class ReviewAttendanceClaimDto {
   @ApiProperty({ enum: ['ACCEPTED', 'REJECTED'] }) @IsIn(['ACCEPTED', 'REJECTED']) decision!: 'ACCEPTED' | 'REJECTED';
   @ApiProperty({ minLength: 3, maxLength: 500 }) @IsString() @Length(3, 500) reason!: string;
 }
+
+export class StaffAttendanceCorrectionDto {
+  @ApiPropertyOptional({ description: 'Corrected check-in timestamp; original value remains in the immutable audit event.' }) @IsOptional() @IsDateString() checkedInAt?: string;
+  @ApiPropertyOptional({ description: 'Corrected check-out timestamp; original value remains in the immutable audit event.' }) @IsOptional() @IsDateString() checkedOutAt?: string;
+  @ApiProperty({ minLength: 3, maxLength: 500 }) @IsString() @Length(3, 500) reason!: string;
+}
