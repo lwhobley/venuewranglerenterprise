@@ -21,6 +21,7 @@ import 'features/operations/vendor_staffing_page.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await ApiConfiguration.initialize();
   await PushNotifications.initialize();
   runApp(const ProviderScope(child: VenueWranglerPrototype()));
 }
@@ -3046,7 +3047,8 @@ class _TenantSetupPage extends StatelessWidget {
   Future<void> _uploadQualificationEvidence(BuildContext context, Map<String, dynamic> qualification) async {
     final source = await showModalBottomSheet<ImageSource>(context: context, builder: (context) => SafeArea(child: Wrap(children: [
       ListTile(leading: const Icon(Icons.photo_library_outlined), title: const Text('Choose certification photo'), onTap: () => Navigator.pop(context, ImageSource.gallery)),
-      ListTile(leading: const Icon(Icons.photo_camera_outlined), title: const Text('Take certification photo'), onTap: () => Navigator.pop(context, ImageSource.camera)),
+      if (ApiConfiguration.allowCameraEvidence)
+        ListTile(leading: const Icon(Icons.photo_camera_outlined), title: const Text('Take certification photo'), onTap: () => Navigator.pop(context, ImageSource.camera)),
     ])));
     if (source == null || !context.mounted) return;
     try {
@@ -3350,6 +3352,7 @@ Future<void> _newLiveIssue(BuildContext context, WidgetRef ref,
                         decoration:
                             const InputDecoration(labelText: 'What happened?')),
                     Row(children: [
+                      if (ApiConfiguration.allowCameraEvidence)
                       OutlinedButton.icon(
                         onPressed: () async {
                           if (evidence.length >= 5) return;
@@ -3393,6 +3396,7 @@ Future<void> _newLiveIssue(BuildContext context, WidgetRef ref,
                                 ))
                             .toList(),
                       ),
+                    if (ApiConfiguration.allowLocationEvidence)
                     Align(
                       alignment: Alignment.centerLeft,
                       child: OutlinedButton.icon(
@@ -3470,6 +3474,9 @@ Future<void> _newLiveIssue(BuildContext context, WidgetRef ref,
 }
 
 Future<Position?> _captureIssueLocation() async {
+  if (!ApiConfiguration.allowLocationEvidence) {
+    throw StateError('Location evidence is disabled by your organization.');
+  }
   if (!await Geolocator.isLocationServiceEnabled()) {
     throw StateError('Turn on device location services, then try again.');
   }

@@ -5,8 +5,8 @@ This guide specifies the mobile device management (MDM) distribution configurati
 ## Honest boundary and non-claims
 
 This repository provides:
-- The Flutter client build configuration and environment parameterization.
-- The standard AppConfig managed configuration dictionary schema.
+- Flutter client build configuration plus runtime retrieval of managed AppConfig values on iOS and Android.
+- The Android managed-restriction schema and Apple managed configuration dictionary contract.
 - The administrative deployment procedures and configuration profile specifications.
 
 This repository does **not** provide, and no repository change can claim:
@@ -27,11 +27,13 @@ When Venue Wrangler Enterprise is distributed to supervised corporate-owned devi
 
 | Key | Type | Requirement | Description | Example |
 | --- | --- | --- | --- | --- |
-| `server_url` | String | **Required** | The verified HTTPS API origin for the Cloud Run deployment. Must begin with `https://`. Do not use wildcard or unverified staging origins. | `https://api.venue.example.com` |
-| `organization_hint` | String | Optional | The tenant slug or UUID hint used to pre-populate the enterprise SSO sign-in domain. | `us-east-arena-01` |
-| `allow_camera_evidence` | Boolean | Optional (Default: `true`) | Enables or disables on-device camera access for issue photo attachments. | `true` |
-| `allow_location_evidence` | Boolean | Optional (Default: `true`) | Enables or disables foreground GPS coordinate attachment for issue locations. | `true` |
-| `offline_cache_max_hours` | Integer | Optional (Default: `12`) | Maximum hours encrypted offline drafts and roster caches remain valid without re-authentication. | `12` |
+| `server_url` | String | Required for managed deployment | Verified HTTPS API origin. The app rejects non-HTTPS origins in release builds and rejects credentials, paths, query strings, and fragments. Managed configuration overrides the build-time URL. | `https://api.venue.example.com` |
+| `organization_hint` | String | Optional | Organization access-code slug used to prefill the enterprise sign-in form; the user can review or change it. | `arena-ops` |
+| `allow_camera_evidence` | Boolean | Optional (Default: `true`) | Enables or disables camera capture for issue and qualification evidence. When disabled, qualification documents can still be selected from the photo library. | `true` |
+| `allow_location_evidence` | Boolean | Optional (Default: `true`) | Enables or disables foreground device-location evidence on issue reports. | `true` |
+| `offline_cache_max_hours` | Integer from 0 to 12 | Optional (Default: `12`) | Maximum age for using cached read snapshots during a transport outage. `0` disables cached-read fallback. Encrypted pending reports and evidence remain queued until they can sync; this setting does not delete unsynced work. | `12` |
+
+The app reads the managed settings at startup. Relaunch the app after changing an MDM configuration policy. The API URL must be the origin only; do not include `/api` or another path.
 
 ### Intune App Configuration XML representation (iOS)
 
@@ -110,7 +112,7 @@ Before distributing devices to event staff, operators must complete this verific
 
 - [ ] **MDM enrollment:** Device reports compliant in Microsoft Intune and displays enrolled management profile.
 - [ ] **App installation:** Venue Wrangler Enterprise installs automatically without requesting an Apple ID or Google account on the device.
-- [ ] **Managed configuration injection:** On launch, the app connects to the configured `server_url` without prompting the user to type a server address.
+- [ ] **Managed configuration injection:** After a full app relaunch, the app connects to the configured `server_url` without prompting the user to type a server address; `organization_hint` is prefilled when supplied.
 - [ ] **Network connectivity:** Handheld device resolves the Cloud Run API hostname over venue operational Wi-Fi (WPA3-Enterprise / 802.1X SSID) and cellular fallback.
 - [ ] **Authentication:** Scoped operator signs in via customer Entra ID / Okta; IdP token issues expected `operations:read`, `operations:write`, or `hospitality:*` capabilities.
 - [ ] **Camera / Scanner test:** If issue reporting or asset scanning is enabled, verify camera permission is granted by MDM policy without interactive prompt block.

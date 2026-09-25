@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'auth.dart';
+import '../config/api_configuration.dart';
 
 class SignInPage extends ConsumerStatefulWidget {
   const SignInPage({super.key});
@@ -16,6 +17,12 @@ class _SignInPageState extends ConsumerState<SignInPage> {
   List<AuthProviderOption>? _providers;
   bool _loading = false;
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _organization.text = ApiConfiguration.organizationHint ?? '';
+  }
 
   @override
   void dispose() {

@@ -7,6 +7,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
+import '../../config/api_configuration.dart';
 
 class LocalIssueEvidence {
   const LocalIssueEvidence({
@@ -66,6 +67,9 @@ class SecureEvidenceStore implements IssueEvidenceStore {
   final Future<Directory> Function() _supportDirectory;
 
   Future<LocalIssueEvidence?> capturePhoto() async {
+    if (!ApiConfiguration.allowCameraEvidence) {
+      throw StateError('Photo capture is disabled by your organization.');
+    }
     final photo = await _picker.pickImage(
       source: ImageSource.camera,
       imageQuality: 82,

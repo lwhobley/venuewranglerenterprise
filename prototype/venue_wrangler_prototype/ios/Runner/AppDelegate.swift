@@ -12,6 +12,19 @@ import UIKit
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+    let managedConfigurationChannel = FlutterMethodChannel(
+      name: "app.venuewranglerenterprise/managed_configuration",
+      binaryMessenger: engineBridge.applicationRegistrar.messenger()
+    )
+    managedConfigurationChannel.setMethodCallHandler { call, result in
+      guard call.method == "readManagedConfiguration" else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      let values = UserDefaults.standard.dictionary(forKey: "com.apple.configuration.managed") ?? [:]
+      result(values)
+    }
+
     let channel = FlutterMethodChannel(
       name: "app.venuewranglerenterprise/external_url",
       binaryMessenger: engineBridge.applicationRegistrar.messenger()

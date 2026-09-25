@@ -19,9 +19,9 @@ class OperationsApi {
 
   static const _cachePrefix = 'venue.operations.cache.';
   static const _maxCacheBytes = 256 * 1024;
-  static const _maxCacheAge = Duration(hours: 12);
 
   Future<T> _cachedGet<T>(String cacheKey, Future<T> Function() load) async {
+    final maxCacheAge = ApiConfiguration.offlineCacheMaxAge;
     final scope = await _auth.offlineCacheScope();
     if (scope == null) return load();
     final storageKey = '$_cachePrefix$scope.$cacheKey';
@@ -31,7 +31,8 @@ class OperationsApi {
         'cachedAt': DateTime.now().toUtc().toIso8601String(),
         'value': value
       });
-      if (utf8.encode(encoded).length <= _maxCacheBytes) {
+      if (maxCacheAge > Duration.zero &&
+          utf8.encode(encoded).length <= _maxCacheBytes) {
         await _storage.write(key: storageKey, value: encoded);
       }
       return value;
@@ -45,7 +46,10 @@ class OperationsApi {
         final age = cachedAt == null
             ? null
             : DateTime.now().toUtc().difference(cachedAt);
-        if (age != null && age >= Duration.zero && age <= _maxCacheAge) {
+        if (maxCacheAge > Duration.zero &&
+            age != null &&
+            age >= Duration.zero &&
+            age <= maxCacheAge) {
           return snapshot['value'] as T;
         }
       }

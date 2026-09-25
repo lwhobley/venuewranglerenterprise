@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<restrictions xmlns:android="http://schemas.android.com/apk/res/android">
+    <restriction
+        android:key="server_url"
+        android:title="Venue Wrangler API URL"
+        android:restrictionType="string"
+        android:defaultValue="" />
+    <restriction
+        android:key="organization_hint"
+        android:title="Organization access code"
+        android:restrictionType="string"
+        android:defaultValue="" />
+    <restriction
+        android:key="allow_camera_evidence"
+        android:title="Allow camera evidence"
+        android:restrictionType="bool"
+        android:defaultValue="true" />
+    <restriction
+        android:key="allow_location_evidence"
+        android:title="Allow location evidence"
+        android:restrictionType="bool"
+        android:defaultValue="true" />
+    <restriction
+        android:key="offline_cache_max_hours"
+        android:title="Offline cache retention (hours)"
+        android:restrictionType="integer"
+        android:defaultValue="12" />
+</restrictions>
