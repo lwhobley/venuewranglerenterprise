@@ -1350,7 +1350,7 @@ Future<void> _newLiveShift(
         const SizedBox(height: 8),
         ListTile(contentPadding: EdgeInsets.zero, title: const Text('Starts'), subtitle: Text(_shiftTimeLabel(startsAt, startsAt)), trailing: const Icon(Icons.edit_calendar), onTap: () async { final value = await pickDateTime(startsAt); if (value != null) setState(() => startsAt = value); }),
         ListTile(contentPadding: EdgeInsets.zero, title: const Text('Ends'), subtitle: Text(_shiftTimeLabel(endsAt, endsAt)), trailing: const Icon(Icons.edit_calendar), onTap: () async { final value = await pickDateTime(endsAt); if (value != null) setState(() => endsAt = value); }),
-        TextField(controller: qualificationCodes, decoration: const InputDecoration(labelText: 'Required qualification codes (optional)', hintText: 'FOOD_HANDLER, ALCOHOL_SERVICE'), helperText: 'Codes must match active credentials in the tenant roster.'),
+        TextField(controller: qualificationCodes, decoration: const InputDecoration(labelText: 'Required qualification codes (optional)', hintText: 'FOOD_HANDLER, ALCOHOL_SERVICE', helperText: 'Codes must match active credentials in the tenant roster.')),
         TextField(controller: instructions, decoration: const InputDecoration(labelText: 'Instructions (optional)'), minLines: 1, maxLines: 3),
       ]))),
       actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')), FilledButton(onPressed: () {
