@@ -58,6 +58,8 @@ try {
   let attendanceClaimBId;
   let demandBId;
   let demandAuditBId;
+  let stockTransferAId;
+  let stockTransferBId;
   try {
     await prisma.$transaction(async (tx) => {
       await setTenant(tx, tenantA);
@@ -98,6 +100,15 @@ try {
       await tx.issueAttachment.create({ data: { organizationId: tenantA, eventId: eventA, issueId: issueA.id, clientId: randomUUID(), uploadedBy: 'tenant-isolation-test', fileName: 'fixture.jpg', contentType: 'image/jpeg', sizeBytes: 1, sha256: 'a'.repeat(64), storageObjectKey: `tenant-a/${randomUUID()}` } });
       const pushTokenA = `tenant-a-push-token-${randomUUID()}-${randomUUID()}`;
       await tx.pushDevice.create({ data: { organizationId: tenantA, subject: 'tenant-isolation-test', installationId: randomUUID(), registrationToken: pushTokenA, tokenSha256: createHash('sha256').update(pushTokenA).digest('hex'), platform: 'ios' } });
+      const [stockItemA] = await tx.$queryRaw`INSERT INTO stock_items(organization_id,venue_id,location_id,sku,name,unit,on_hand)
+        VALUES (${tenantA}::uuid,${venueA}::uuid,${locationA}::uuid,${`RLS-${randomUUID()}`},'Tenant A transfer fixture','case',8) RETURNING id`;
+      const [stockTransferA] = await tx.$queryRaw`INSERT INTO stock_transfers(organization_id,venue_id,event_id,source_location_id,destination_location_id,requested_by)
+        VALUES (${tenantA}::uuid,${venueA}::uuid,${eventA}::uuid,${locationA}::uuid,${annexLocationA}::uuid,'tenant-isolation-test') RETURNING id`;
+      stockTransferAId = stockTransferA.id;
+      await tx.$executeRaw`INSERT INTO stock_transfer_lines(organization_id,transfer_id,source_item_id,requested_quantity)
+        VALUES (${tenantA}::uuid,${stockTransferA.id}::uuid,${stockItemA.id}::uuid,2)`;
+      await tx.$executeRaw`INSERT INTO stock_transfer_audit(organization_id,transfer_id,actor_id,action)
+        VALUES (${tenantA}::uuid,${stockTransferA.id}::uuid,'tenant-isolation-test','requested')`;
 
       await setTenant(tx, tenantB);
       const issueB = await makeIssue(tx, {
@@ -136,6 +147,15 @@ try {
       await tx.issueAttachment.create({ data: { organizationId: tenantB, eventId: eventB, issueId: issueB.id, clientId: randomUUID(), uploadedBy: 'tenant-isolation-test', fileName: 'fixture.jpg', contentType: 'image/jpeg', sizeBytes: 1, sha256: 'b'.repeat(64), storageObjectKey: `tenant-b/${randomUUID()}` } });
       const pushTokenB = `tenant-b-push-token-${randomUUID()}-${randomUUID()}`;
       await tx.pushDevice.create({ data: { organizationId: tenantB, subject: 'tenant-isolation-test', installationId: randomUUID(), registrationToken: pushTokenB, tokenSha256: createHash('sha256').update(pushTokenB).digest('hex'), platform: 'android' } });
+      const [stockItemB] = await tx.$queryRaw`INSERT INTO stock_items(organization_id,venue_id,location_id,sku,name,unit,on_hand)
+        VALUES (${tenantB}::uuid,${venueB}::uuid,${locationB}::uuid,${`RLS-${randomUUID()}`},'Tenant B transfer fixture','case',6) RETURNING id`;
+      const [stockTransferB] = await tx.$queryRaw`INSERT INTO stock_transfers(organization_id,venue_id,event_id,source_location_id,destination_location_id,requested_by)
+        VALUES (${tenantB}::uuid,${venueB}::uuid,${eventB}::uuid,${locationB}::uuid,NULL,'tenant-isolation-test') RETURNING id`;
+      stockTransferBId = stockTransferB.id;
+      await tx.$executeRaw`INSERT INTO stock_transfer_lines(organization_id,transfer_id,source_item_id,requested_quantity)
+        VALUES (${tenantB}::uuid,${stockTransferB.id}::uuid,${stockItemB.id}::uuid,3)`;
+      await tx.$executeRaw`INSERT INTO stock_transfer_audit(organization_id,transfer_id,actor_id,action)
+        VALUES (${tenantB}::uuid,${stockTransferB.id}::uuid,'tenant-isolation-test','requested')`;
 
       await setTenant(tx, tenantA);
       assert.equal(await tx.userNotification.count({ where: { organizationId: tenantA, shiftId: shiftA.id, recipientSubject: 'tenant-isolation-test' } }), 1, 'the assigned worker can read the shift notification');
@@ -145,6 +165,21 @@ try {
       assert.equal(await tx.staffAttendanceClaim.count({ where: { organizationId: tenantA } }), 1, 'tenant A sees its pending attendance claims');
       assert.equal(await tx.staffingDemand.count({ where: { organizationId: tenantA } }), 1, 'tenant A sees its staffing demand');
       assert.equal(await tx.staffingDemandAudit.count({ where: { organizationId: tenantA } }), 1, 'tenant A sees its staffing demand audit');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_transfers WHERE id=${stockTransferAId}::uuid`)[0].count, 1, 'tenant A sees its stock transfer');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_transfer_lines WHERE transfer_id=${stockTransferAId}::uuid`)[0].count, 1, 'tenant A sees its transfer lines');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_transfer_audit WHERE transfer_id=${stockTransferAId}::uuid`)[0].count, 1, 'tenant A sees its transfer audit');
+      assert.equal((await tx.$executeRaw`UPDATE stock_transfers SET request_note='cross tenant write' WHERE id=${stockTransferBId}::uuid`), 0, 'tenant A cannot update tenant B transfers');
+      await tx.$executeRawUnsafe('SAVEPOINT stock_transfer_rls_insert_probe');
+      let crossTenantInsertError;
+      try {
+        await tx.$executeRaw`INSERT INTO stock_transfers(organization_id,venue_id,event_id,source_location_id,destination_location_id,requested_by)
+          VALUES (${tenantB}::uuid,${venueB}::uuid,${eventB}::uuid,${locationB}::uuid,NULL,'forbidden-cross-tenant-insert')`;
+      } catch (error) {
+        crossTenantInsertError = error;
+      }
+      await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT stock_transfer_rls_insert_probe');
+      assert.ok(crossTenantInsertError, 'tenant A cross-tenant transfer insert must fail RLS WITH CHECK');
+      assert.equal(crossTenantInsertError.meta?.code, '42501', 'cross-tenant transfer insert must fail with PostgreSQL insufficient_privilege');
       const auditService = new AuditService({
         withTenant: async (identity, action) => {
           await setTenant(tx, identity.tenantId, identity.subject);
@@ -180,7 +215,7 @@ try {
       assert.equal(await tx.personQualification.count({ where: { organizationId: tenantB } }), 0, 'tenant A cannot read tenant B qualifications');
       assert.equal(await tx.staffBreak.count({ where: { organizationId: tenantB } }), 0, 'tenant A cannot read tenant B break evidence');
       assert.equal(await tx.staffAttendanceClaim.count({ where: { organizationId: tenantB } }), 0, 'tenant A cannot read tenant B attendance claims');
-      await assertTenantCannotRead(tx, tenantA, tenantB, issueB.id, taskB.id, shiftB.id, breakBId, attendanceClaimBId, demandBId, demandAuditBId);
+      await assertTenantCannotRead(tx, tenantA, tenantB, issueB.id, taskB.id, shiftB.id, breakBId, attendanceClaimBId, demandBId, demandAuditBId, stockTransferBId);
       const updated = await tx.issue.updateMany({ where: { id: issueB.id }, data: { title: 'forbidden update' } });
       const deleted = await tx.issue.deleteMany({ where: { id: issueB.id } });
       const updatedTask = await tx.operationalTask.updateMany({ where: { id: taskB.id }, data: { title: 'forbidden update' } });
@@ -204,7 +239,10 @@ try {
       assert.equal(await tx.staffAttendanceClaim.count({ where: { organizationId: tenantA } }), 0, 'tenant B cannot read tenant A attendance claims');
       assert.equal(await tx.staffingDemand.count({ where: { organizationId: tenantA } }), 0, 'tenant B cannot read tenant A staffing demands');
       assert.equal(await tx.staffingDemandAudit.count({ where: { organizationId: tenantA } }), 0, 'tenant B cannot read tenant A staffing demand audit');
-      await assertTenantCannotRead(tx, tenantB, tenantA, issueA.id, taskA.id, shiftA.id, breakAId, attendanceClaimAId, demandAId, demandAuditAId);
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_transfers WHERE id=${stockTransferAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A stock transfers');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_transfer_lines WHERE transfer_id=${stockTransferAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A transfer lines');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_transfer_audit WHERE transfer_id=${stockTransferAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A transfer audit');
+      await assertTenantCannotRead(tx, tenantB, tenantA, issueA.id, taskA.id, shiftA.id, breakAId, attendanceClaimAId, demandAId, demandAuditAId, stockTransferAId);
       await setTenant(tx, tenantB, 'unrelated-recipient');
       assert.equal(await tx.userNotification.count({ where: { organizationId: tenantB } }), 0, 'notifications must only be visible to their recipient subject');
       assert.equal(await tx.pushDevice.count({ where: { organizationId: tenantB } }), 0, 'push tokens must only be visible to their registered subject');
@@ -238,7 +276,7 @@ try {
   await prisma.$disconnect();
 }
 
-async function assertTenantCannotRead(tx, visibleTenant, hiddenTenant, hiddenIssueId, hiddenTaskId, hiddenShiftId, hiddenBreakId, hiddenAttendanceClaimId, hiddenDemandId, hiddenDemandAuditId) {
+async function assertTenantCannotRead(tx, visibleTenant, hiddenTenant, hiddenIssueId, hiddenTaskId, hiddenShiftId, hiddenBreakId, hiddenAttendanceClaimId, hiddenDemandId, hiddenDemandAuditId, hiddenStockTransferId) {
   assert.equal(await tx.organization.count({ where: { id: hiddenTenant } }), 0, `${visibleTenant} organization isolation`);
   assert.equal(await tx.venue.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} venue isolation`);
   assert.equal(await tx.event.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} event isolation`);
@@ -262,4 +300,7 @@ async function assertTenantCannotRead(tx, visibleTenant, hiddenTenant, hiddenIss
   assert.equal(await tx.staffAttendanceClaim.count({ where: { id: hiddenAttendanceClaimId } }), 0, `${visibleTenant} offline attendance claim isolation`);
   assert.equal(await tx.staffingDemand.count({ where: { id: hiddenDemandId } }), 0, `${visibleTenant} staffing demand isolation`);
   assert.equal(await tx.staffingDemandAudit.count({ where: { id: hiddenDemandAuditId } }), 0, `${visibleTenant} staffing demand audit isolation`);
+  assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_transfers WHERE id=${hiddenStockTransferId}::uuid`)[0].count, 0, `${visibleTenant} stock transfer isolation`);
+  assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_transfer_lines WHERE transfer_id=${hiddenStockTransferId}::uuid`)[0].count, 0, `${visibleTenant} stock transfer line isolation`);
+  assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_transfer_audit WHERE transfer_id=${hiddenStockTransferId}::uuid`)[0].count, 0, `${visibleTenant} stock transfer audit isolation`);
 }
