@@ -90,6 +90,7 @@ class HospitalityPage extends ConsumerWidget {
                   order: orders[index],
                   eventId: eventId,
                   subject: subject,
+                  canOrder: canOrder,
                   canFulfill: canFulfill,
                 ),
               )),
@@ -168,10 +169,12 @@ class _HospitalityOrderCard extends ConsumerWidget {
       {required this.order,
       required this.eventId,
       required this.subject,
+      required this.canOrder,
       required this.canFulfill});
   final Map<String, dynamic> order;
   final String eventId;
   final String subject;
+  final bool canOrder;
   final bool canFulfill;
 
   @override
@@ -184,6 +187,15 @@ class _HospitalityOrderCard extends ConsumerWidget {
         .map((row) => Map<String, dynamic>.from(row))
         .toList();
     final actions = <(String, String)>[];
+    if (state == 'AWAITING_APPROVAL') {
+      if (canOrder || canFulfill) {
+        actions.add(('approve', 'Approve request'));
+        actions.add(('reject', 'Reject'));
+      }
+      if (isRequester) {
+        actions.add(('cancel', 'Cancel request'));
+      }
+    }
     if (canFulfill) {
       if (state == 'SUBMITTED') {
         actions.add(('accept', 'Accept'));
@@ -222,6 +234,32 @@ class _HospitalityOrderCard extends ConsumerWidget {
       subtitle: Text(
           '${lines.length} item${lines.length == 1 ? '' : 's'}${order['locationId'] == null ? ' · venue-wide service' : ' · assigned service area'}'),
       children: [
+        if (state == 'AWAITING_APPROVAL')
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            child: Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Theme.of(context)
+                    .colorScheme
+                    .tertiaryContainer
+                    .withValues(alpha: 0.5),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(children: [
+                Icon(Icons.pending_actions_outlined,
+                    size: 18,
+                    color: Theme.of(context).colorScheme.onTertiaryContainer),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Awaiting manager approval before submission to kitchen (order exceeds tenant threshold).',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+              ]),
+            ),
+          ),
         for (final line in lines)
           ListTile(
             dense: true,
@@ -246,6 +284,14 @@ class _HospitalityOrderCard extends ConsumerWidget {
               child: Align(
                   alignment: Alignment.centerLeft,
                   child: Text('Service notes: ${order['instructions']}'))),
+        if ((order['beoReference'] as String? ?? '').isNotEmpty)
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.event_note_outlined),
+            title: Text('BEO ${order['beoReference']}'),
+            subtitle:
+                const Text('Venue-provided banquet event order reference'),
+          ),
         if (order['deliveryReceipt'] is Map)
           ListTile(
             leading: const Icon(Icons.fact_check_outlined),
@@ -276,6 +322,7 @@ class _HospitalityOrderCard extends ConsumerWidget {
   }
 
   IconData _icon(String state) => switch (state) {
+        'AWAITING_APPROVAL' => Icons.pending_actions_outlined,
         'READY' => Icons.notifications_active_outlined,
         'DISTRIBUTED' ||
         'PARTIALLY_DISTRIBUTED' =>
@@ -592,7 +639,7 @@ class _PickupReceiptDialogState extends State<_PickupReceiptDialog> {
       );
 }
 
-class _OrderComposer extends StatefulWidget {
+class _OrderComposer extends ConsumerStatefulWidget {
   const _OrderComposer(
       {required this.venueId,
       required this.locations,
@@ -603,18 +650,20 @@ class _OrderComposer extends StatefulWidget {
   final Future<void> Function(Map<String, Object?> data) onSubmit;
   final Future<void> Function(Map<String, Object?> data) onSaveDraft;
   @override
-  State<_OrderComposer> createState() => _OrderComposerState();
+  ConsumerState<_OrderComposer> createState() => _OrderComposerState();
 }
 
-class _OrderComposerState extends State<_OrderComposer> {
+class _OrderComposerState extends ConsumerState<_OrderComposer> {
   final _item = TextEditingController();
   final _quantity = TextEditingController(text: '1');
   final _unit = TextEditingController(text: 'each');
   final _note = TextEditingController();
   final _instructions = TextEditingController();
+  final _beoReference = TextEditingController();
   final _lines = <Map<String, Object?>>[];
   late DateTime _serviceAt;
   String? _locationId;
+  String? _selectedMenuItemId;
   bool _saving = false;
   String? _error;
 
@@ -632,118 +681,164 @@ class _OrderComposerState extends State<_OrderComposer> {
     _unit.dispose();
     _note.dispose();
     _instructions.dispose();
+    _beoReference.dispose();
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-        title: const Text('New hospitality request'),
-        content: SizedBox(
-            width: 520,
-            child: SingleChildScrollView(
-                child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                  OutlinedButton.icon(
-                      onPressed: _chooseTime,
-                      icon: const Icon(Icons.schedule),
-                      label: Text(
-                          'Service time: ${MaterialLocalizations.of(context).formatMediumDate(_serviceAt)} ${MaterialLocalizations.of(context).formatTimeOfDay(TimeOfDay.fromDateTime(_serviceAt))}')),
-                  if (widget.locations.isNotEmpty)
-                    DropdownButtonFormField<String>(
-                      initialValue: _locationId ?? '',
-                      decoration:
-                          const InputDecoration(labelText: 'Service area'),
+  Widget build(BuildContext context) {
+    final menuItemsAsync =
+        ref.watch(venueHospitalityMenuItemsProvider(widget.venueId));
+    final menuItems = menuItemsAsync.valueOrNull ?? const [];
+    return AlertDialog(
+      title: const Text('New hospitality request'),
+      content: SizedBox(
+          width: 520,
+          child: SingleChildScrollView(
+              child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                OutlinedButton.icon(
+                    onPressed: _chooseTime,
+                    icon: const Icon(Icons.schedule),
+                    label: Text(
+                        'Service time: ${MaterialLocalizations.of(context).formatMediumDate(_serviceAt)} ${MaterialLocalizations.of(context).formatTimeOfDay(TimeOfDay.fromDateTime(_serviceAt))}')),
+                if (widget.locations.isNotEmpty)
+                  DropdownButtonFormField<String>(
+                    initialValue: _locationId ?? '',
+                    decoration:
+                        const InputDecoration(labelText: 'Service area'),
+                    items: [
+                      const DropdownMenuItem(
+                          value: '', child: Text('Venue-wide')),
+                      ...widget.locations.map((location) => DropdownMenuItem(
+                          value: location['id'] as String,
+                          child: Text(location['name'] as String)))
+                    ],
+                    onChanged: _saving
+                        ? null
+                        : (value) => setState(
+                            () => _locationId = value == '' ? null : value),
+                  ),
+                const SizedBox(height: 8),
+                if (menuItems.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: DropdownButtonFormField<String?>(
+                      initialValue: _selectedMenuItemId,
+                      decoration: const InputDecoration(
+                          labelText: 'Menu catalog item (optional)'),
                       items: [
                         const DropdownMenuItem(
-                            value: '', child: Text('Venue-wide')),
-                        ...widget.locations.map((location) => DropdownMenuItem(
-                            value: location['id'] as String,
-                            child: Text(location['name'] as String)))
+                            value: null,
+                            child: Text('Custom item (not in catalog)')),
+                        ...menuItems.map((item) => DropdownMenuItem(
+                            value: item['id'] as String,
+                            child: Text(
+                                '${item['name']} (${item['category']}) · \$${item['unitPrice']} / ${item['defaultUnit']}'))),
                       ],
                       onChanged: _saving
                           ? null
-                          : (value) => setState(
-                              () => _locationId = value == '' ? null : value),
+                          : (id) {
+                              setState(() {
+                                _selectedMenuItemId = id;
+                                if (id != null) {
+                                  final found = menuItems.firstWhere(
+                                      (it) => it['id'] == id,
+                                      orElse: () => const {});
+                                  if (found.isNotEmpty) {
+                                    _item.text = found['name'] as String;
+                                    _unit.text = found['defaultUnit'] as String;
+                                  }
+                                }
+                              });
+                            },
                     ),
-                  const SizedBox(height: 8),
-                  Row(children: [
-                    Expanded(
-                        flex: 3,
-                        child: TextField(
-                            controller: _item,
-                            decoration: const InputDecoration(
-                                labelText: 'Food or beverage'))),
-                    const SizedBox(width: 8),
-                    Expanded(
-                        child: TextField(
-                            controller: _quantity,
-                            keyboardType: const TextInputType.numberWithOptions(
-                                decimal: true),
-                            decoration:
-                                const InputDecoration(labelText: 'Qty'))),
-                    const SizedBox(width: 8),
-                    Expanded(
-                        child: TextField(
-                            controller: _unit,
-                            decoration:
-                                const InputDecoration(labelText: 'Unit')))
-                  ]),
-                  TextField(
-                      controller: _note,
-                      decoration: const InputDecoration(
-                          labelText: 'Item note (optional)')),
-                  Align(
-                      alignment: Alignment.centerRight,
-                      child: TextButton.icon(
-                          onPressed: _saving ? null : _addLine,
-                          icon: const Icon(Icons.add),
-                          label: const Text('Add item'))),
-                  for (var i = 0; i < _lines.length; i++)
-                    ListTile(
-                        dense: true,
-                        title: Text(
-                            '${_lines[i]['quantity']} ${_lines[i]['unit']} · ${_lines[i]['itemName']}'),
-                        subtitle: (_lines[i]['note'] as String).isEmpty
-                            ? null
-                            : Text(_lines[i]['note'] as String),
-                        trailing: IconButton(
-                            onPressed: _saving
-                                ? null
-                                : () => setState(() => _lines.removeAt(i)),
-                            icon: const Icon(Icons.close))),
-                  TextField(
-                      controller: _instructions,
-                      maxLength: 1000,
-                      maxLines: 2,
-                      decoration: const InputDecoration(
-                          labelText: 'Delivery or dietary instructions')),
-                  if (_error != null)
-                    Padding(
-                        padding: const EdgeInsets.only(top: 8),
-                        child: Text(_error!,
-                            style: TextStyle(
-                                color: Theme.of(context).colorScheme.error))),
-                ]))),
-        actions: [
-          TextButton(
-              onPressed: _saving ? null : () => Navigator.pop(context),
-              child: const Text('Close')),
-          OutlinedButton(
-              onPressed: _saving ? null : _saveDraft,
-              child: const Text('Save offline draft')),
-          FilledButton.icon(
-              onPressed: _saving ? null : _submit,
-              icon: _saving
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Icon(Icons.send),
-              label: const Text('Submit request'))
-        ],
-      );
+                  ),
+                Row(children: [
+                  Expanded(
+                      flex: 3,
+                      child: TextField(
+                          controller: _item,
+                          decoration: const InputDecoration(
+                              labelText: 'Food or beverage'))),
+                  const SizedBox(width: 8),
+                  Expanded(
+                      child: TextField(
+                          controller: _quantity,
+                          keyboardType: const TextInputType.numberWithOptions(
+                              decimal: true),
+                          decoration: const InputDecoration(labelText: 'Qty'))),
+                  const SizedBox(width: 8),
+                  Expanded(
+                      child: TextField(
+                          controller: _unit,
+                          decoration: const InputDecoration(labelText: 'Unit')))
+                ]),
+                TextField(
+                    controller: _note,
+                    decoration: const InputDecoration(
+                        labelText: 'Item note (optional)')),
+                Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton.icon(
+                        onPressed: _saving ? null : _addLine,
+                        icon: const Icon(Icons.add),
+                        label: const Text('Add item'))),
+                for (var i = 0; i < _lines.length; i++)
+                  ListTile(
+                      dense: true,
+                      title: Text(
+                          '${_lines[i]['quantity']} ${_lines[i]['unit']} · ${_lines[i]['itemName']}'),
+                      subtitle: (_lines[i]['note'] as String).isEmpty
+                          ? null
+                          : Text(_lines[i]['note'] as String),
+                      trailing: IconButton(
+                          onPressed: _saving
+                              ? null
+                              : () => setState(() => _lines.removeAt(i)),
+                          icon: const Icon(Icons.close))),
+                TextField(
+                  controller: _beoReference,
+                  maxLength: 120,
+                  decoration: const InputDecoration(
+                      labelText: 'Banquet event order reference (optional)',
+                      helperText:
+                          'Reference only; the venue system remains the source of truth.'),
+                ),
+                TextField(
+                    controller: _instructions,
+                    maxLength: 1000,
+                    maxLines: 2,
+                    decoration: const InputDecoration(
+                        labelText: 'Delivery or dietary instructions')),
+                if (_error != null)
+                  Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(_error!,
+                          style: TextStyle(
+                              color: Theme.of(context).colorScheme.error))),
+              ]))),
+      actions: [
+        TextButton(
+            onPressed: _saving ? null : () => Navigator.pop(context),
+            child: const Text('Close')),
+        OutlinedButton(
+            onPressed: _saving ? null : _saveDraft,
+            child: const Text('Save offline draft')),
+        FilledButton.icon(
+            onPressed: _saving ? null : _submit,
+            icon: _saving
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.send),
+            label: const Text('Submit request'))
+      ],
+    );
+  }
 
   void _addLine() {
     final name = _item.text.trim();
@@ -768,11 +863,13 @@ class _OrderComposerState extends State<_OrderComposer> {
         'itemName': name,
         'quantity': quantity,
         'unit': unit,
-        'note': _note.text.trim()
+        'note': _note.text.trim(),
+        if (_selectedMenuItemId != null) 'menuItemId': _selectedMenuItemId,
       });
       _item.clear();
       _quantity.text = '1';
       _note.clear();
+      _selectedMenuItemId = null;
       _error = null;
     });
   }
@@ -841,6 +938,8 @@ class _OrderComposerState extends State<_OrderComposer> {
       'venueId': widget.venueId,
       if (_locationId != null) 'locationId': _locationId,
       'serviceAt': _serviceAt.toUtc().toIso8601String(),
+      if (_beoReference.text.trim().isNotEmpty)
+        'beoReference': _beoReference.text.trim(),
       'instructions': _instructions.text.trim(),
       'lines': List<Map<String, Object?>>.from(_lines)
     };

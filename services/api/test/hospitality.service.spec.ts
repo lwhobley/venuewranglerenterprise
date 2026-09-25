@@ -10,14 +10,26 @@ const venueId = '00000000-0000-0000-0000-000000000002';
 const tenantId = '00000000-0000-0000-0000-000000000003';
 const requester: Identity = { subject: 'requester-1', tenantId, capabilities: ['operations:read','operations:write','hospitality:order'], eventIds: [eventId], venueIds: [venueId], locationIds: [], assignableUserIds: ['kitchen-1'] };
 const kitchen: Identity = { ...requester, subject: 'kitchen-1', capabilities: ['operations:read','hospitality:fulfill'], assignableUserIds: [] };
+const admin: Identity = { ...requester, subject: 'admin-1', capabilities: ['tenant:admin'], assignableUserIds: [] };
 
-function harness(order: Record<string, unknown> = {}) {
+function harness(order: Record<string, unknown> = {}, orgSettings: Record<string, unknown> = {}) {
   const tx = {
     $queryRaw: vi.fn().mockResolvedValue([]),
     commandReceipt: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
     event: { findFirst: vi.fn().mockResolvedValue({ id: eventId, venueId }) },
+    venue: { findFirst: vi.fn().mockResolvedValue({ id: venueId, organizationId: tenantId }) },
     location: { findFirst: vi.fn().mockResolvedValue({ id: 'loc-1' }) },
     person: { findFirst: vi.fn().mockResolvedValue({ id: 'person-1' }) },
+    organization: {
+      findUnique: vi.fn().mockResolvedValue({ id: tenantId, hospitalityApprovalThreshold: null, ...orgSettings }),
+      update: vi.fn().mockImplementation(({ data }) => ({ id: tenantId, ...data })),
+    },
+    hospitalityMenuItem: {
+      findFirst: vi.fn().mockResolvedValue(null),
+      findMany: vi.fn().mockResolvedValue([]),
+      create: vi.fn().mockImplementation(({ data }) => ({ id: 'menu-1', ...data })),
+    },
+    tenantSetupAuditEvent: { create: vi.fn().mockResolvedValue({}) },
     hospitalityOrder: {
       findFirst: vi.fn().mockResolvedValue({ id: 'order-1', organizationId: tenantId, eventId, venueId, locationId: null, requestedBy: requester.subject, assignedTo: 'kitchen-1', serviceAt: new Date(), state: 'SUBMITTED', instructions: '', rejectionReason: null, lines: [], ...order }),
       findMany: vi.fn().mockResolvedValue([]),
@@ -40,13 +52,49 @@ describe('hospitality order lifecycle', () => {
     const { service, tx, push } = harness();
     const order = await service.create(requester, eventId, {
       venueId, serviceAt: '2026-10-20T18:00:00Z', assignedTo: 'kitchen-1', instructions: 'Deliver to suite 14',
+      beoReference: '  BEO-2026-014  ',
       lines: [{ itemName: 'House lemonade', quantity: 2, unit: 'pitcher', note: 'No ice' }],
     }, 'hospitality-create-key-0001');
     expect(order).toMatchObject({ id: 'order-1', state: 'SUBMITTED' });
-    expect(tx.hospitalityOrder.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ requestedBy: requester.subject, assignedTo: 'kitchen-1', lines: { create: [expect.objectContaining({ itemName: 'House lemonade', quantity: 2 })] } }) }));
+    expect(tx.hospitalityOrder.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ requestedBy: requester.subject, assignedTo: 'kitchen-1', beoReference: 'BEO-2026-014', lines: { create: [expect.objectContaining({ itemName: 'House lemonade', quantity: 2 })] } }) }));
     expect(tx.hospitalityOrderAudit.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ action: 'submitted', actorId: requester.subject }) }));
     expect(tx.userNotification.create).toHaveBeenCalled();
     expect(push.deliver).toHaveBeenCalled();
+  });
+
+  it('routes orders exceeding the tenant approval threshold to AWAITING_APPROVAL', async () => {
+    const { service, tx } = harness({}, { hospitalityApprovalThreshold: 10 });
+    const order = await service.create(requester, eventId, {
+      venueId, serviceAt: '2026-10-20T18:00:00Z', assignedTo: 'kitchen-1',
+      beoReference: 'BEO-99',
+      lines: [{ itemName: 'Catering wrap tray', quantity: 12, unit: 'platter' }],
+    }, 'hospitality-create-threshold-key');
+    expect(order).toMatchObject({ id: 'order-1', state: 'AWAITING_APPROVAL' });
+    expect(tx.hospitalityOrder.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ state: 'AWAITING_APPROVAL' }),
+    }));
+    expect(tx.hospitalityOrderAudit.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ action: 'submitted_awaiting_approval' }),
+    }));
+  });
+
+  it('allows an operations manager to approve an order in AWAITING_APPROVAL', async () => {
+    const { service, tx } = harness({ state: 'AWAITING_APPROVAL' });
+    const order = await service.act(requester, eventId, 'order-1', { action: 'approve' }, 'hospitality-approve-key');
+    expect(order).toMatchObject({ state: 'SUBMITTED' });
+    expect(tx.hospitalityOrder.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: { state: 'SUBMITTED' },
+    }));
+    expect(tx.hospitalityOrderAudit.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ action: 'approved' }),
+    }));
+  });
+
+  it('prevents kitchen from accepting an order while awaiting approval', async () => {
+    const { service, tx } = harness({ state: 'AWAITING_APPROVAL' });
+    await expect(service.act(kitchen, eventId, 'order-1', { action: 'accept' }, 'hospitality-accept-unapproved'))
+      .rejects.toThrow('Action accept is not valid while this order is awaiting approval.');
+    expect(tx.hospitalityOrder.update).not.toHaveBeenCalled();
   });
 
   it('does not allow a requester role to advance kitchen fulfillment', async () => {
@@ -164,5 +212,49 @@ describe('hospitality order lifecycle', () => {
     const { service, tx } = harness();
     await expect(service.list(requester, '00000000-0000-0000-0000-000000000098')).rejects.toBeInstanceOf(ForbiddenException);
     expect(tx.hospitalityOrder.findMany).not.toHaveBeenCalled();
+  });
+
+  it('creates and lists venue menu catalog items with audit history', async () => {
+    const { service, tx } = harness();
+    const item = await service.createMenuItem(admin, {
+      venueId, name: 'Premium Coffee Urn', description: 'Fresh brew', category: 'Beverage', unit: 'urn',
+    }, 'menu-item-create-key-01');
+    expect(item).toMatchObject({ id: 'menu-1', name: 'Premium Coffee Urn' });
+    expect(tx.hospitalityMenuItem.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ name: 'Premium Coffee Urn', venueId, category: 'Beverage', unit: 'urn' }),
+    }));
+    expect(tx.tenantSetupAuditEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ action: 'created', resourceType: 'hospitality_menu_item' }),
+    }));
+
+    await service.listMenuItems(requester, venueId);
+    expect(tx.hospitalityMenuItem.findMany).toHaveBeenCalledWith({
+      where: { organizationId: tenantId, venueId, active: true },
+      orderBy: [{ category: 'asc' }, { name: 'asc' }],
+    });
+  });
+
+  it('rejects duplicate menu item names in the same venue', async () => {
+    const { service, tx } = harness();
+    tx.hospitalityMenuItem.findFirst.mockResolvedValueOnce({ id: 'menu-existing' });
+    await expect(service.createMenuItem(admin, {
+      venueId, name: 'Premium Coffee Urn',
+    }, 'menu-item-create-dup-key')).rejects.toThrow('A menu item with this name already exists in this venue.');
+  });
+
+  it('manages tenant hospitality approval threshold policy', async () => {
+    const { service, tx } = harness({}, { hospitalityApprovalThreshold: 25 });
+    const current = await service.getHospitalityPolicy(admin);
+    expect(current).toEqual({ hospitalityApprovalThreshold: 25 });
+
+    const updated = await service.updateHospitalityPolicy(admin, { hospitalityApprovalThreshold: 50 }, 'policy-update-key');
+    expect(updated).toEqual({ hospitalityApprovalThreshold: 50 });
+    expect(tx.organization.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: tenantId },
+      data: { hospitalityApprovalThreshold: 50 },
+    }));
+    expect(tx.tenantSetupAuditEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ action: 'updated', resourceType: 'hospitality_policy' }),
+    }));
   });
 });

@@ -101,6 +101,7 @@ enum AttachmentStatus {
 }
 
 enum HospitalityOrderState {
+  AWAITING_APPROVAL
   SUBMITTED
   ACCEPTED
   PREPARING
@@ -148,6 +149,8 @@ model Organization {
   staffUnavailability          StaffUnavailability[]
   staffUnavailabilityAudits    StaffUnavailabilityAudit[]
   qualifications               PersonQualification[]
+  hospitalityApprovalThreshold Decimal?                      @map("hospitality_approval_threshold") @db.Decimal(10, 3)
+  hospitalityMenuItems         HospitalityMenuItem[]
   hospitalityOrders            HospitalityOrder[]
   hospitalityOrderAudits       HospitalityOrderAudit[]
   hospitalityOrderFulfillments HospitalityOrderFulfillment[]
@@ -169,6 +172,7 @@ model Venue {
   staffingDemands        StaffingDemand[]
   hospitalityOrders      HospitalityOrder[]
   vendorStaffingRequests StaffingVendorRequest[]
+  hospitalityMenuItems   HospitalityMenuItem[]
 
   @@unique([id, organizationId])
   @@index([organizationId])
@@ -498,6 +502,7 @@ model HospitalityOrder {
   requestedBy       String                        @map("requested_by")
   assignedTo        String?                       @map("assigned_to")
   serviceAt         DateTime                      @map("service_at")
+  beoReference      String?                       @map("beo_reference")
   instructions      String                        @default("")
   state             HospitalityOrderState         @default(SUBMITTED)
   rejectionReason   String?                       @map("rejection_reason")
@@ -528,12 +533,35 @@ model HospitalityOrderLine {
   unit              String
   note              String                        @default("")
   fulfilledQuantity Decimal                       @default(0) @map("fulfilled_quantity") @db.Decimal(10, 3)
+  menuItemId        String?                       @map("menu_item_id") @db.Uuid
   order             HospitalityOrder              @relation(fields: [orderId, organizationId], references: [id, organizationId], map: "hospitality_order_lines_order_tenant_fk")
+  menuItem          HospitalityMenuItem?          @relation(fields: [menuItemId, organizationId], references: [id, organizationId], map: "hospitality_order_lines_menu_item_fk")
   fulfillments      HospitalityOrderFulfillment[]
 
   @@unique([id, orderId, organizationId])
   @@index([organizationId, orderId])
   @@map("hospitality_order_lines")
+}
+
+model HospitalityMenuItem {
+  id             String                 @id @default(uuid()) @db.Uuid
+  organizationId String                 @map("organization_id") @db.Uuid
+  venueId        String                 @map("venue_id") @db.Uuid
+  name           String
+  description    String                 @default("")
+  category       String                 @default("General")
+  unit           String                 @default("each")
+  active         Boolean                @default(true)
+  createdAt      DateTime               @default(now()) @map("created_at")
+  updatedAt      DateTime               @updatedAt @map("updated_at")
+  organization   Organization           @relation(fields: [organizationId], references: [id])
+  venue          Venue                  @relation(fields: [venueId, organizationId], references: [id, organizationId], map: "hospitality_menu_items_venue_org_fk")
+  orderLines     HospitalityOrderLine[]
+
+  @@unique([id, organizationId])
+  @@unique([organizationId, venueId, name])
+  @@index([organizationId, venueId, active, category, name])
+  @@map("hospitality_menu_items")
 }
 
 model HospitalityOrderFulfillment {

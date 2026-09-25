@@ -3,13 +3,105 @@ import { Prisma, HospitalityOrderState } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { assertCapability, assertScope, type Identity } from './auth';
 import { PrismaService } from './prisma.service';
-import { CreateHospitalityOrderDto, HospitalityOrderActionDto } from './hospitality.dto';
+import { CreateHospitalityMenuItemDto, CreateHospitalityOrderDto, HospitalityOrderActionDto, UpdateHospitalityPolicyDto } from './hospitality.dto';
 import { PushNotificationsService } from './push-notifications.service';
 
 @Injectable()
 export class HospitalityService {
   private readonly logger = new Logger(HospitalityService.name);
   constructor(private readonly prisma: PrismaService, private readonly push: PushNotificationsService) {}
+
+  async listMenuItems(identity: Identity, venueId: string) {
+    if (!identity.capabilities.some(c => ['hospitality:order', 'hospitality:fulfill', 'operations:read', 'operations:write', 'tenant:admin'].includes(c))) {
+      throw new ForbiddenException('Hospitality access is required to view menu items.');
+    }
+    if (!identity.venueIds.includes(venueId) && !identity.capabilities.includes('tenant:admin')) {
+      throw new ForbiddenException('This venue is outside your assigned scope.');
+    }
+    return this.prisma.withTenant(identity, async tx => {
+      return tx.hospitalityMenuItem.findMany({
+        where: { organizationId: identity.tenantId, venueId, active: true },
+        orderBy: [{ category: 'asc' }, { name: 'asc' }],
+      });
+    });
+  }
+
+  async createMenuItem(identity: Identity, dto: CreateHospitalityMenuItemDto, key: string) {
+    if (!identity.capabilities.includes('tenant:admin') && !identity.capabilities.includes('operations:write')) {
+      throw new ForbiddenException('Only a tenant administrator or operations manager can create menu items.');
+    }
+    if (!identity.venueIds.includes(dto.venueId) && !identity.capabilities.includes('tenant:admin')) {
+      throw new ForbiddenException('This venue is outside your assigned scope.');
+    }
+    return this.command(identity, key, 'hospitality.menu_item.create', dto, async tx => {
+      const venue = await tx.venue.findFirst({ where: { id: dto.venueId, organizationId: identity.tenantId } });
+      if (!venue) throw new NotFoundException('Venue not found.');
+      const name = dto.name.trim();
+      const existing = await tx.hospitalityMenuItem.findFirst({
+        where: { organizationId: identity.tenantId, venueId: dto.venueId, name: { equals: name, mode: 'insensitive' } },
+      });
+      if (existing) throw new ConflictException('A menu item with this name already exists in this venue.');
+      const item = await tx.hospitalityMenuItem.create({
+        data: {
+          organizationId: identity.tenantId,
+          venueId: dto.venueId,
+          name,
+          description: dto.description?.trim() ?? '',
+          category: dto.category?.trim() ?? 'General',
+          unit: dto.unit?.trim() ?? 'each',
+          active: true,
+        },
+      });
+      await tx.tenantSetupAuditEvent.create({
+        data: {
+          organizationId: identity.tenantId,
+          actorId: identity.subject,
+          action: 'created',
+          resourceType: 'hospitality_menu_item',
+          resourceId: item.id,
+          changedFields: ['name', 'category', 'unit'],
+        },
+      });
+      return item;
+    });
+  }
+
+  async getHospitalityPolicy(identity: Identity) {
+    if (!identity.capabilities.some(c => ['tenant:admin', 'operations:read', 'operations:write', 'hospitality:order', 'hospitality:fulfill'].includes(c))) {
+      throw new ForbiddenException('Hospitality policy access is required.');
+    }
+    return this.prisma.withTenant(identity, async tx => {
+      const org = await tx.organization.findUnique({
+        where: { id: identity.tenantId },
+        select: { hospitalityApprovalThreshold: true },
+      });
+      return { hospitalityApprovalThreshold: org?.hospitalityApprovalThreshold != null ? Number(org.hospitalityApprovalThreshold) : null };
+    });
+  }
+
+  async updateHospitalityPolicy(identity: Identity, dto: UpdateHospitalityPolicyDto, key: string) {
+    if (!identity.capabilities.includes('tenant:admin')) {
+      throw new ForbiddenException('Only a tenant administrator can update hospitality policy.');
+    }
+    return this.command(identity, key, 'hospitality.policy.update', dto, async tx => {
+      const updated = await tx.organization.update({
+        where: { id: identity.tenantId },
+        data: { hospitalityApprovalThreshold: dto.hospitalityApprovalThreshold != null ? dto.hospitalityApprovalThreshold : null },
+        select: { id: true, hospitalityApprovalThreshold: true },
+      });
+      await tx.tenantSetupAuditEvent.create({
+        data: {
+          organizationId: identity.tenantId,
+          actorId: identity.subject,
+          action: 'updated',
+          resourceType: 'hospitality_policy',
+          resourceId: updated.id,
+          changedFields: ['hospitality_approval_threshold'],
+        },
+      });
+      return { hospitalityApprovalThreshold: updated.hospitalityApprovalThreshold != null ? Number(updated.hospitalityApprovalThreshold) : null };
+    });
+  }
 
   async list(identity: Identity, eventId: string) {
     this.assertCanView(identity, eventId);
@@ -36,7 +128,18 @@ export class HospitalityService {
   async create(identity: Identity, eventId: string, dto: CreateHospitalityOrderDto, key: string) {
     const capability = this.orderCapability(identity);
     assertScope(identity, capability, eventId, dto.venueId, dto.locationId);
-    const input = { eventId, ...dto, lines: dto.lines.map(line => ({ ...line, itemName: line.itemName.trim(), unit: line.unit.trim(), note: line.note?.trim() ?? '' })) };
+    const input = {
+      eventId,
+      ...dto,
+      beoReference: dto.beoReference?.trim() || undefined,
+      lines: dto.lines.map(line => ({
+        ...line,
+        menuItemId: line.menuItemId?.trim() || undefined,
+        itemName: line.itemName.trim(),
+        unit: line.unit.trim(),
+        note: line.note?.trim() ?? '',
+      })),
+    };
     const result = await this.command(identity, key, 'hospitality.order.create', input, async tx => {
       const event = await tx.event.findFirst({ where: { id: eventId, venueId: dto.venueId, organizationId: identity.tenantId } });
       if (!event) throw new NotFoundException('Event not found in this venue.');
@@ -47,15 +150,34 @@ export class HospitalityService {
         const person = await tx.person.findFirst({ where: { organizationId: identity.tenantId, externalSubject: dto.assignedTo, active: true }, select: { id: true } });
         if (!person) throw new NotFoundException('The selected kitchen operator is not an active tenant user.');
       }
+      for (const line of input.lines) {
+        if (line.menuItemId) {
+          const menuItem = await tx.hospitalityMenuItem.findFirst({
+            where: { id: line.menuItemId, venueId: dto.venueId, organizationId: identity.tenantId, active: true },
+          });
+          if (!menuItem) throw new ConflictException('The selected menu item is not active for this venue.');
+        }
+      }
+      const org = await tx.organization.findUnique({
+        where: { id: identity.tenantId },
+        select: { hospitalityApprovalThreshold: true },
+      });
+      const threshold = org?.hospitalityApprovalThreshold != null ? Number(org.hospitalityApprovalThreshold) : null;
+      const totalQuantity = input.lines.reduce((sum, line) => sum + line.quantity, 0);
+      const requiresApproval = threshold !== null && totalQuantity > threshold;
+      const initialState: HospitalityOrderState = requiresApproval ? 'AWAITING_APPROVAL' : 'SUBMITTED';
+
       const order = await tx.hospitalityOrder.create({ data: {
         organizationId: identity.tenantId, venueId: dto.venueId, eventId, locationId: dto.locationId,
         requestedBy: identity.subject, assignedTo: dto.assignedTo, serviceAt: new Date(dto.serviceAt),
-        instructions: dto.instructions?.trim() ?? '', state: 'SUBMITTED',
-        lines: { create: input.lines },
+        beoReference: input.beoReference ?? null,
+        instructions: dto.instructions?.trim() ?? '', state: initialState,
+        lines: { create: input.lines.map(line => ({ itemName: line.itemName, quantity: line.quantity, unit: line.unit, note: line.note, menuItemId: line.menuItemId ?? null })) },
       }, include: { lines: { orderBy: { itemName: 'asc' }, include: { fulfillments: { orderBy: { createdAt: 'asc' } } } } } });
-      await this.audit(tx, identity, order.id, 'submitted', null, order);
+      await this.audit(tx, identity, order.id, requiresApproval ? 'submitted_awaiting_approval' : 'submitted', null, order);
+      const noticeTitle = requiresApproval ? 'Hospitality order awaiting approval' : 'New hospitality order';
       const notification = dto.assignedTo && dto.assignedTo !== identity.subject
-        ? await this.notification(tx, identity, order, dto.assignedTo, 'hospitality.order.submitted', 'New hospitality order') : null;
+        ? await this.notification(tx, identity, order, dto.assignedTo, requiresApproval ? 'hospitality.order.awaiting_approval' : 'hospitality.order.submitted', noticeTitle) : null;
       return { order, notification };
     });
     this.deliver(identity, result.notification);
@@ -68,15 +190,42 @@ export class HospitalityService {
       const current = await tx.hospitalityOrder.findFirst({ where: { id: orderId, eventId, organizationId: identity.tenantId }, include: { lines: { orderBy: { itemName: 'asc' }, include: { fulfillments: { orderBy: { createdAt: 'asc' } } } }, deliveryReceipt: true } });
       if (!current) throw new NotFoundException('Hospitality order not found.');
       if (identity.capabilities.includes('hospitality:fulfill') && current.assignedTo && current.assignedTo !== identity.subject && !identity.capabilities.includes('tenant:admin')) throw new ForbiddenException('This order is assigned to another kitchen operator.');
-      const mustFulfill = ['accept', 'preparing', 'ready', 'distribute', 'fulfill', 'reject'].includes(dto.action);
+
+      if (dto.action === 'approve') {
+        if (!identity.capabilities.includes('operations:write') && !identity.capabilities.includes('tenant:admin')) {
+          throw new ForbiddenException('Only an operations manager or tenant administrator can approve hospitality orders.');
+        }
+        const approveCapability = identity.capabilities.includes('tenant:admin') ? 'tenant:admin' : 'operations:write';
+        assertScope(identity, approveCapability, eventId, current.venueId, current.locationId ?? undefined);
+        if (current.state !== 'AWAITING_APPROVAL') {
+          throw new ConflictException('Only orders awaiting approval can be approved.');
+        }
+        const updated = await tx.hospitalityOrder.update({
+          where: { id: orderId },
+          data: { state: 'SUBMITTED' },
+          include: { lines: { orderBy: { itemName: 'asc' }, include: { fulfillments: { orderBy: { createdAt: 'asc' } } } }, deliveryReceipt: true },
+        });
+        await this.audit(tx, identity, orderId, 'approved', current, updated);
+        const recipient = current.assignedTo ?? current.requestedBy;
+        const notification = await this.notification(tx, identity, updated, recipient, 'hospitality.order.approved', 'Hospitality order approved');
+        return { order: updated, notification };
+      }
+
+      const mustFulfill = ['accept', 'preparing', 'ready', 'distribute', 'fulfill'].includes(dto.action);
       if (mustFulfill) {
         const fulfillCapability = identity.capabilities.includes('hospitality:fulfill') ? 'hospitality:fulfill' : 'tenant:admin';
         assertCapability(identity, fulfillCapability);
         assertScope(identity, fulfillCapability, eventId, current.venueId, current.locationId ?? undefined);
+      } else if (dto.action === 'reject') {
+        if (!identity.capabilities.includes('hospitality:fulfill') && !identity.capabilities.includes('operations:write') && !identity.capabilities.includes('tenant:admin')) {
+          throw new ForbiddenException('Only kitchen staff or an operations manager can reject this order.');
+        }
+        const rejectCapability = identity.capabilities.includes('operations:write') ? 'operations:write' : identity.capabilities.includes('tenant:admin') ? 'tenant:admin' : 'hospitality:fulfill';
+        assertScope(identity, rejectCapability, eventId, current.venueId, current.locationId ?? undefined);
       } else {
         if (dto.action === 'pickup' && identity.subject !== current.requestedBy && !identity.capabilities.includes('hospitality:fulfill') && !identity.capabilities.includes('tenant:admin')) throw new ForbiddenException('Only the requester or kitchen team can confirm pickup.');
-        if (dto.action === 'cancel' && identity.subject !== current.requestedBy && !identity.capabilities.includes('hospitality:fulfill') && !identity.capabilities.includes('tenant:admin')) throw new ForbiddenException('Only the requester or kitchen team can cancel this order.');
-        const capability = identity.subject === current.requestedBy ? this.orderCapability(identity) : identity.capabilities.includes('tenant:admin') ? 'tenant:admin' : 'hospitality:fulfill';
+        if (dto.action === 'cancel' && identity.subject !== current.requestedBy && !identity.capabilities.includes('hospitality:fulfill') && !identity.capabilities.includes('operations:write') && !identity.capabilities.includes('tenant:admin')) throw new ForbiddenException('Only the requester, operations manager, or kitchen team can cancel this order.');
+        const capability = identity.subject === current.requestedBy ? this.orderCapability(identity) : identity.capabilities.includes('tenant:admin') ? 'tenant:admin' : identity.capabilities.includes('operations:write') ? 'operations:write' : 'hospitality:fulfill';
         assertScope(identity, capability, eventId, current.venueId, current.locationId ?? undefined);
       }
       if (dto.action === 'fulfill' || dto.action === 'distribute') {
@@ -100,7 +249,7 @@ export class HospitalityService {
         );
         return { order: updated, notification };
       }
-      const nextState = this.nextState(current.state, dto.action, identity.subject === current.requestedBy, Boolean(identity.capabilities.includes('hospitality:fulfill') || identity.capabilities.includes('tenant:admin')));
+      const nextState = this.nextState(current.state, dto.action, identity.subject === current.requestedBy, Boolean(identity.capabilities.includes('hospitality:fulfill') || identity.capabilities.includes('tenant:admin') || identity.capabilities.includes('operations:write')));
       if (['reject', 'cancel'].includes(dto.action) && !dto.reason?.trim()) throw new ConflictException('A reason is required to reject or cancel an order.');
       if (dto.action === 'pickup') {
         const receivedByName = dto.receivedByName?.trim();
@@ -125,8 +274,11 @@ export class HospitalityService {
     return result.order;
   }
 
-  private nextState(state: HospitalityOrderState, action: HospitalityOrderActionDto['action'], isRequester: boolean, canFulfill: boolean): HospitalityOrderState {
+  private nextState(state: HospitalityOrderState, action: HospitalityOrderActionDto['action'], isRequester: boolean, canFulfillOrManage: boolean): HospitalityOrderState {
     const transitions: Record<string, HospitalityOrderState> = {
+      'AWAITING_APPROVAL:approve': 'SUBMITTED',
+      'AWAITING_APPROVAL:reject': 'REJECTED',
+      'AWAITING_APPROVAL:cancel': 'CANCELLED',
       'SUBMITTED:accept': 'ACCEPTED', 'SUBMITTED:reject': 'REJECTED', 'SUBMITTED:cancel': 'CANCELLED',
       'ACCEPTED:preparing': 'PREPARING', 'ACCEPTED:cancel': 'CANCELLED',
       'PREPARING:ready': 'READY', 'PREPARING:cancel': 'CANCELLED',
@@ -136,8 +288,10 @@ export class HospitalityService {
     };
     const next = transitions[`${state}:${action}`];
     if (!next) throw new ConflictException(`Action ${action} is not valid while this order is ${state.toLowerCase().replace('_', ' ')}.`);
-    if (action === 'cancel' && ((!isRequester && !canFulfill) || (isRequester && state !== 'SUBMITTED'))) throw new ForbiddenException('Requesters can cancel only before kitchen acceptance; kitchen staff may cancel later with a reason.');
-    if (action === 'pickup' && !isRequester && !canFulfill) throw new ForbiddenException('Only the requester or kitchen team can confirm pickup.');
+    if (action === 'cancel' && ((!isRequester && !canFulfillOrManage) || (isRequester && !['SUBMITTED', 'AWAITING_APPROVAL'].includes(state)))) {
+      throw new ForbiddenException('Requesters can cancel only before kitchen acceptance; managers or kitchen staff may cancel later with a reason.');
+    }
+    if (action === 'pickup' && !isRequester && !canFulfillOrManage) throw new ForbiddenException('Only the requester or kitchen team can confirm pickup.');
     return next;
   }
 

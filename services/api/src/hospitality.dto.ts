@@ -3,6 +3,7 @@ import { Type } from 'class-transformer';
 import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsDateString, IsIn, IsNumber, IsOptional, IsString, IsUUID, Length, Max, Min, ValidateNested } from 'class-validator';
 
 export class HospitalityOrderLineDto {
+  @ApiPropertyOptional({ description: 'Optional link to a venue menu catalog item.' }) @IsOptional() @IsUUID() menuItemId?: string;
   @ApiProperty() @IsString() @Length(2, 160) itemName!: string;
   @ApiProperty() @IsNumber({ maxDecimalPlaces: 3 }) @Min(0.001) @Max(100000) quantity!: number;
   @ApiProperty() @IsString() @Length(1, 24) unit!: string;
@@ -13,9 +14,27 @@ export class CreateHospitalityOrderDto {
   @ApiProperty() @IsUUID() venueId!: string;
   @ApiPropertyOptional() @IsOptional() @IsUUID() locationId?: string;
   @ApiProperty() @IsDateString() serviceAt!: string;
+  @ApiPropertyOptional({ description: 'Optional banquet event order reference from the venue system.' }) @IsOptional() @IsString() @Length(1, 120) beoReference?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() @Length(0, 1000) instructions?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() @Length(1, 240) assignedTo?: string;
   @ApiProperty({ type: [HospitalityOrderLineDto] }) @IsArray() @ArrayMinSize(1) @ArrayMaxSize(40) @ValidateNested({ each: true }) @Type(() => HospitalityOrderLineDto) lines!: HospitalityOrderLineDto[];
+}
+
+export class CreateHospitalityMenuItemDto {
+  @ApiProperty() @IsUUID() venueId!: string;
+  @ApiProperty() @IsString() @Length(2, 160) name!: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() @Length(0, 1000) description?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() @Length(1, 80) category?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() @Length(1, 24) unit?: string;
+}
+
+export class UpdateHospitalityPolicyDto {
+  @ApiPropertyOptional({ description: 'Tenant-configured order quantity approval threshold. A threshold set by the tenant is not a legal rule.' })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 3 })
+  @Min(0)
+  @Max(100000)
+  hospitalityApprovalThreshold?: number | null;
 }
 
 export class HospitalityFulfillmentLineDto {
@@ -26,8 +45,8 @@ export class HospitalityFulfillmentLineDto {
 }
 
 export class HospitalityOrderActionDto {
-  @ApiProperty({ enum: ['accept', 'preparing', 'ready', 'distribute', 'fulfill', 'pickup', 'reject', 'cancel'] })
-  @IsIn(['accept', 'preparing', 'ready', 'distribute', 'fulfill', 'pickup', 'reject', 'cancel']) action!: 'accept' | 'preparing' | 'ready' | 'distribute' | 'fulfill' | 'pickup' | 'reject' | 'cancel';
+  @ApiProperty({ enum: ['approve', 'accept', 'preparing', 'ready', 'distribute', 'fulfill', 'pickup', 'reject', 'cancel'] })
+  @IsIn(['approve', 'accept', 'preparing', 'ready', 'distribute', 'fulfill', 'pickup', 'reject', 'cancel']) action!: 'approve' | 'accept' | 'preparing' | 'ready' | 'distribute' | 'fulfill' | 'pickup' | 'reject' | 'cancel';
   @ApiPropertyOptional() @IsOptional() @IsString() @Length(3, 500) reason?: string;
   @ApiPropertyOptional({ type: [HospitalityFulfillmentLineDto] }) @IsOptional() @IsArray() @ArrayMinSize(1) @ArrayMaxSize(40) @ValidateNested({ each: true }) @Type(() => HospitalityFulfillmentLineDto) fulfillments?: HospitalityFulfillmentLineDto[];
   @ApiPropertyOptional({ description: 'Name of the person receiving the completed hospitality order.' }) @IsOptional() @IsString() @Length(2, 120) receivedByName?: string;

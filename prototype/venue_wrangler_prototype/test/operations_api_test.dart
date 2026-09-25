@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
@@ -36,9 +37,10 @@ class _SseFixtureAdapter implements HttpClientAdapter {
 }
 
 class _StatusAdapter implements HttpClientAdapter {
-  _StatusAdapter(this.status, {this.failTransport = false});
+  _StatusAdapter(this.status, {this.failTransport = false, this.body = ''});
   final int status;
   final bool failTransport;
+  final String body;
   int requests = 0;
   RequestOptions? lastRequest;
 
@@ -48,7 +50,9 @@ class _StatusAdapter implements HttpClientAdapter {
     requests++;
     lastRequest = options;
     if (failTransport) throw DioException(requestOptions: options);
-    return ResponseBody.fromString('', status);
+    return ResponseBody.fromString(body, status, headers: {
+      Headers.contentTypeHeader: [Headers.jsonContentType],
+    });
   }
 
   @override
@@ -148,6 +152,85 @@ data: {"issueId":"issue-1","action":"reported"}
       'receiverAcknowledged': true,
     });
     expect(adapter.lastRequest?.headers['Idempotency-Key'], isNotEmpty);
+  });
+
+  test('submits hospitality approval action with idempotency', () async {
+    final adapter = _StatusAdapter(204);
+    final dio = Dio(BaseOptions(baseUrl: 'https://venue.example'))
+      ..httpClientAdapter = adapter;
+    final api = OperationsApi(_FixedTokenAuth(), const FlutterSecureStorage(),
+        dio: dio);
+
+    await api.hospitalityOrderAction(
+      'event-1',
+      'order-1',
+      'approve',
+    );
+
+    expect(adapter.lastRequest?.data, {
+      'action': 'approve',
+    });
+    expect(adapter.lastRequest?.headers['Idempotency-Key'], isNotEmpty);
+  });
+
+  test('creates hospitality order with BEO reference and menu item linkage',
+      () async {
+    final adapter = _StatusAdapter(201);
+    final dio = Dio(BaseOptions(baseUrl: 'https://venue.example'))
+      ..httpClientAdapter = adapter;
+    final api = OperationsApi(_FixedTokenAuth(), const FlutterSecureStorage(),
+        dio: dio);
+
+    await api.createHospitalityOrder('event-1', {
+      'venueId': 'venue-1',
+      'beoReference': 'BEO-2026-99',
+      'serviceAt': '2026-10-01T19:00:00.000Z',
+      'lines': [
+        {
+          'itemName': 'Fruit platter',
+          'quantity': 2,
+          'unit': 'tray',
+          'menuItemId': 'menu-item-1',
+        }
+      ],
+    });
+
+    expect(adapter.lastRequest?.data, {
+      'venueId': 'venue-1',
+      'beoReference': 'BEO-2026-99',
+      'serviceAt': '2026-10-01T19:00:00.000Z',
+      'lines': [
+        {
+          'itemName': 'Fruit platter',
+          'quantity': 2,
+          'unit': 'tray',
+          'menuItemId': 'menu-item-1',
+        }
+      ],
+    });
+    expect(adapter.lastRequest?.headers['Idempotency-Key'], isNotEmpty);
+  });
+
+  test('fetches hospitality menu catalog items for venue', () async {
+    final adapter = _StatusAdapter(200,
+        body: jsonEncode([
+          {
+            'id': 'menu-item-1',
+            'name': 'Fruit platter',
+            'category': 'Food',
+            'defaultUnit': 'tray',
+            'unitPrice': 75.00,
+            'isActive': true,
+          }
+        ]));
+    final dio = Dio(BaseOptions(baseUrl: 'https://venue.example'))
+      ..httpClientAdapter = adapter;
+    final api = OperationsApi(_FixedTokenAuth(), const FlutterSecureStorage(),
+        dio: dio);
+
+    final items = await api.hospitalityMenuItems('venue-1');
+    expect(items.length, 1);
+    expect(items.first['name'], 'Fruit platter');
   });
 
   test(

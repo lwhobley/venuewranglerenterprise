@@ -758,6 +758,18 @@ class OperationsApi {
               .data!
               .map((row) => Map<String, dynamic>.from(row as Map))
               .toList()));
+  Future<List<Map<String, dynamic>>> hospitalityMenuItems(
+          String venueId) async =>
+      (await _cachedGet(
+          'hospitality.menu.$venueId',
+          () async => (await _request((token) => _dio.get<List<dynamic>>(
+                    '/api/v1/venues/$venueId/hospitality/menu-items',
+                    options:
+                        Options(headers: {'Authorization': 'Bearer $token'}),
+                  )))
+              .data!
+              .map((row) => Map<String, dynamic>.from(row as Map))
+              .toList()));
   Future<List<Map<String, dynamic>>> hospitalityDrafts(String eventId) async {
     final scope = await _auth.offlineCacheScope();
     if (scope == null) return const [];
@@ -1235,6 +1247,9 @@ final eventStockTransfersProvider = FutureProvider.autoDispose
 final eventHospitalityOrdersProvider = FutureProvider.autoDispose
     .family<List<Map<String, dynamic>>, String>(
         (ref, id) => ref.watch(operationsApiProvider).hospitalityOrders(id));
+final venueHospitalityMenuItemsProvider = FutureProvider.autoDispose
+    .family<List<Map<String, dynamic>>, String>(
+        (ref, id) => ref.watch(operationsApiProvider).hospitalityMenuItems(id));
 final eventHospitalityDraftsProvider = FutureProvider.autoDispose
     .family<List<Map<String, dynamic>>, String>(
         (ref, id) => ref.watch(operationsApiProvider).hospitalityDrafts(id));

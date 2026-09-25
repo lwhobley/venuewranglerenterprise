@@ -72,6 +72,8 @@ try {
   let closeoutFollowupBId;
   let vendorRequestAId;
   let vendorRequestBId;
+  let hospitalityMenuItemAId;
+  let hospitalityMenuItemBId;
   try {
     await prisma.$transaction(async (tx) => {
       await setTenant(tx, tenantA);
@@ -133,11 +135,14 @@ try {
         VALUES (${tenantA}::uuid,${stockItemA.id}::uuid,${stockCountA.id}::uuid,'tenant-isolation-test','COUNT_ADJUSTMENT',-1,'isolation fixture')`;
       await tx.$executeRaw`INSERT INTO stock_count_audit(organization_id,count_id,actor_id,action)
         VALUES (${tenantA}::uuid,${stockCountA.id}::uuid,'tenant-isolation-test','started')`;
-      const [hospitalityOrderA] = await tx.$queryRaw`INSERT INTO hospitality_orders(organization_id,venue_id,event_id,location_id,requested_by,service_at)
-        VALUES (${tenantA}::uuid,${venueA}::uuid,${eventA}::uuid,${locationA}::uuid,'tenant-isolation-test',now()) RETURNING id`;
+      const [menuItemA] = await tx.$queryRaw`INSERT INTO hospitality_menu_items(organization_id,venue_id,name,category,default_unit,unit_price)
+        VALUES (${tenantA}::uuid,${venueA}::uuid,'Tenant A Platter','Food','tray',150.00) RETURNING id`;
+      hospitalityMenuItemAId = menuItemA.id;
+      const [hospitalityOrderA] = await tx.$queryRaw`INSERT INTO hospitality_orders(organization_id,venue_id,event_id,location_id,requested_by,service_at,beo_reference)
+        VALUES (${tenantA}::uuid,${venueA}::uuid,${eventA}::uuid,${locationA}::uuid,'tenant-isolation-test',now(),'BEO-2026-A1') RETURNING id`;
       hospitalityOrderAId = hospitalityOrderA.id;
-      const [hospitalityOrderLineA] = await tx.$queryRaw`INSERT INTO hospitality_order_lines(organization_id,order_id,item_name,quantity,unit)
-        VALUES (${tenantA}::uuid,${hospitalityOrderA.id}::uuid,'Water bottles',24,'each') RETURNING id`;
+      const [hospitalityOrderLineA] = await tx.$queryRaw`INSERT INTO hospitality_order_lines(organization_id,order_id,item_name,quantity,unit,menu_item_id)
+        VALUES (${tenantA}::uuid,${hospitalityOrderA.id}::uuid,'Water bottles',24,'each',${menuItemA.id}::uuid) RETURNING id`;
       hospitalityOrderLineAId = hospitalityOrderLineA.id;
       await tx.$executeRaw`INSERT INTO hospitality_order_fulfillments(organization_id,event_id,order_id,line_id,actor_id,quantity)
         VALUES (${tenantA}::uuid,${eventA}::uuid,${hospitalityOrderA.id}::uuid,${hospitalityOrderLineAId}::uuid,'tenant-isolation-test',1)`;
@@ -210,11 +215,14 @@ try {
         VALUES (${tenantB}::uuid,${stockItemB.id}::uuid,${stockCountB.id}::uuid,'tenant-isolation-test','COUNT_ADJUSTMENT',-1,'isolation fixture')`;
       await tx.$executeRaw`INSERT INTO stock_count_audit(organization_id,count_id,actor_id,action)
         VALUES (${tenantB}::uuid,${stockCountB.id}::uuid,'tenant-isolation-test','started')`;
-      const [hospitalityOrderB] = await tx.$queryRaw`INSERT INTO hospitality_orders(organization_id,venue_id,event_id,location_id,requested_by,service_at)
-        VALUES (${tenantB}::uuid,${venueB}::uuid,${eventB}::uuid,${locationB}::uuid,'tenant-isolation-test',now()) RETURNING id`;
+      const [menuItemB] = await tx.$queryRaw`INSERT INTO hospitality_menu_items(organization_id,venue_id,name,category,default_unit,unit_price)
+        VALUES (${tenantB}::uuid,${venueB}::uuid,'Tenant B Drinks','Beverage','case',75.00) RETURNING id`;
+      hospitalityMenuItemBId = menuItemB.id;
+      const [hospitalityOrderB] = await tx.$queryRaw`INSERT INTO hospitality_orders(organization_id,venue_id,event_id,location_id,requested_by,service_at,beo_reference)
+        VALUES (${tenantB}::uuid,${venueB}::uuid,${eventB}::uuid,${locationB}::uuid,'tenant-isolation-test',now(),'BEO-2026-B1') RETURNING id`;
       hospitalityOrderBId = hospitalityOrderB.id;
-      const [hospitalityOrderLineB] = await tx.$queryRaw`INSERT INTO hospitality_order_lines(organization_id,order_id,item_name,quantity,unit)
-        VALUES (${tenantB}::uuid,${hospitalityOrderB.id}::uuid,'Water bottles',18,'each') RETURNING id`;
+      const [hospitalityOrderLineB] = await tx.$queryRaw`INSERT INTO hospitality_order_lines(organization_id,order_id,item_name,quantity,unit,menu_item_id)
+        VALUES (${tenantB}::uuid,${hospitalityOrderB.id}::uuid,'Water bottles',18,'each',${menuItemB.id}::uuid) RETURNING id`;
       hospitalityOrderLineBId = hospitalityOrderLineB.id;
       await tx.$executeRaw`INSERT INTO hospitality_order_fulfillments(organization_id,event_id,order_id,line_id,actor_id,quantity)
         VALUES (${tenantB}::uuid,${eventB}::uuid,${hospitalityOrderB.id}::uuid,${hospitalityOrderLineBId}::uuid,'tenant-isolation-test',1)`;
@@ -314,6 +322,15 @@ try {
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeouts WHERE id=${closeoutAId}::uuid`)[0].count, 1, 'tenant A sees its event closeout');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeout_followups WHERE closeout_id=${closeoutAId}::uuid`)[0].count, 1, 'tenant A sees its closeout follow-up');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeout_audit WHERE closeout_id=${closeoutAId}::uuid`)[0].count, 1, 'tenant A sees its closeout audit');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_menu_items WHERE id=${hospitalityMenuItemAId}::uuid`)[0].count, 1, 'tenant A sees its hospitality menu item');
+      await tx.$executeRawUnsafe('SAVEPOINT menu_item_rls_insert_probe');
+      let crossTenantMenuItemError;
+      try {
+        await tx.$executeRaw`INSERT INTO hospitality_menu_items(organization_id,venue_id,name,category,default_unit,unit_price)
+          VALUES (${tenantB}::uuid,${venueB}::uuid,'Cross Tenant Food','Food','tray',50.00)`;
+      } catch (error) { crossTenantMenuItemError = error; }
+      await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT menu_item_rls_insert_probe');
+      assert.equal(crossTenantMenuItemError?.meta?.code, '42501', 'cross-tenant menu item insert must fail RLS WITH CHECK');
       assert.equal((await tx.$executeRaw`UPDATE stock_transfers SET request_note='cross tenant write' WHERE id=${stockTransferBId}::uuid`), 0, 'tenant A cannot update tenant B transfers');
       await tx.$executeRawUnsafe('SAVEPOINT stock_transfer_rls_insert_probe');
       let crossTenantInsertError;
@@ -426,6 +443,8 @@ try {
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_order_fulfillments WHERE order_id=${hospitalityOrderAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A fulfillment records');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_delivery_receipts WHERE order_id=${hospitalityOrderAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A delivery receipts');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_delivery_receipts WHERE order_id=${hospitalityOrderBId}::uuid`)[0].count, 1, 'tenant B sees its own hospitality delivery receipt');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_menu_items WHERE id=${hospitalityMenuItemBId}::uuid`)[0].count, 1, 'tenant B sees its own hospitality menu item');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_menu_items WHERE id=${hospitalityMenuItemAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A hospitality menu items');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_order_audit WHERE order_id=${hospitalityOrderAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A hospitality order audit');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeouts WHERE id=${closeoutAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A event closeout');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeout_followups WHERE id=${closeoutFollowupAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A closeout follow-up');
@@ -560,6 +579,7 @@ async function assertTenantCannotRead(tx, visibleTenant, hiddenTenant, hiddenIss
   assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_count_audit WHERE count_id=${hiddenStockCountId}::uuid`)[0].count, 0, `${visibleTenant} stock count audit isolation`);
   assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_orders WHERE id=${hiddenHospitalityOrderId}::uuid`)[0].count, 0, `${visibleTenant} hospitality order isolation`);
   assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_order_lines WHERE order_id=${hiddenHospitalityOrderId}::uuid`)[0].count, 0, `${visibleTenant} hospitality line isolation`);
+  assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_menu_items WHERE organization_id=${hiddenTenant}::uuid`)[0].count, 0, `${visibleTenant} hospitality menu items isolation`);
   assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_order_fulfillments WHERE order_id=${hiddenHospitalityOrderId}::uuid`)[0].count, 0, `${visibleTenant} hospitality fulfillment isolation`);
   assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_order_audit WHERE order_id=${hiddenHospitalityOrderId}::uuid`)[0].count, 0, `${visibleTenant} hospitality audit isolation`);
   assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeouts WHERE id=${hiddenCloseoutId}::uuid`)[0].count, 0, `${visibleTenant} event closeout isolation`);
