@@ -1516,7 +1516,10 @@ class _CoveragePlanningPanel extends ConsumerWidget {
         leading: const Icon(Icons.groups_2_outlined),
         title: const Text('Coverage plan'),
         subtitle: const Text('Set role demand, see scheduled capacity, and create draft open shifts for gaps.'),
-        trailing: IconButton(tooltip: 'Add coverage requirement', onPressed: () => _add(context, ref), icon: const Icon(Icons.add_circle_outline)),
+        trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+          IconButton(tooltip: 'Suggest from past event plans', onPressed: () => _forecast(context, ref), icon: const Icon(Icons.auto_graph_outlined)),
+          IconButton(tooltip: 'Add coverage requirement', onPressed: () => _add(context, ref), icon: const Icon(Icons.add_circle_outline)),
+        ]),
       ),
       ref.watch(staffingCoverageProvider(eventId)).when(
         loading: () => const LinearProgressIndicator(),
@@ -1559,12 +1562,52 @@ class _CoveragePlanningPanel extends ConsumerWidget {
     ]),
   );
 
-  Future<void> _add(BuildContext context, WidgetRef ref) async {
-    final role = TextEditingController();
-    final headcount = TextEditingController(text: '1');
-    DateTime startsAt = initialDate;
-    DateTime endsAt = initialDate.add(const Duration(hours: 4));
-    String? locationId;
+  Future<void> _forecast(BuildContext context, WidgetRef ref) async {
+    try {
+      final rows = await ref.read(operationsApiProvider).coverageForecast(eventId);
+      if (!context.mounted) return;
+      if (rows.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No earlier event plans are available to forecast this venue yet.')));
+        return;
+      }
+      final selected = await showDialog<Map<String, dynamic>>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Planning history'),
+          content: SizedBox(width: 480, height: 360, child: Column(children: [
+            const Text('These suggestions summarize prior staffing plans. They are not forecasts from attendance, ticket sales, or live venue data.'),
+            const SizedBox(height: 8),
+            Expanded(child: ListView(children: rows.map((raw) {
+              final row = Map<String, dynamic>.from(raw as Map);
+              final start = initialDate.add(Duration(minutes: row['startsOffsetMinutes'] as int));
+              final end = initialDate.add(Duration(minutes: row['endsOffsetMinutes'] as int));
+              final area = locations.where((item) => item['id'] == row['locationId']).firstOrNull;
+              final areaName = area?['name'] as String? ?? 'All areas';
+              return ListTile(
+                leading: const Icon(Icons.history),
+                title: Text('${row['role']} · $areaName · ${row['requiredHeadcount']} staff'),
+                subtitle: Text('${_shiftTimeLabel(start, end)} · ${row['sampleCount']} plans across ${row['sampleEventCount']} earlier events · ${row['confidence'] == 'LIMITED_HISTORY' ? 'limited history' : 'historical baseline'}'),
+                onTap: () => Navigator.pop(dialogContext, row),
+              );
+            }).toList())),
+          ])),
+          actions: [TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel'))],
+        ),
+      );
+      if (selected != null && context.mounted) await _add(context, ref, forecast: selected);
+    } catch (error) {
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not load planning history: $error')));
+    }
+  }
+
+  Future<void> _add(BuildContext context, WidgetRef ref, {Map<String, dynamic>? forecast}) async {
+    final role = TextEditingController(text: forecast?['role'] as String? ?? '');
+    final headcount = TextEditingController(text: '${forecast?['requiredHeadcount'] ?? 1}');
+    DateTime startsAt = initialDate.add(Duration(minutes: forecast?['startsOffsetMinutes'] as int? ?? 0));
+    DateTime endsAt = forecast == null
+        ? initialDate.add(const Duration(hours: 4))
+        : initialDate.add(Duration(minutes: forecast['endsOffsetMinutes'] as int));
+    String? locationId = forecast?['locationId'] as String?;
     final demand = await showDialog<Map<String, Object?>>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(builder: (context, setState) => AlertDialog(
@@ -1572,6 +1615,12 @@ class _CoveragePlanningPanel extends ConsumerWidget {
         content: SizedBox(width: 440, child: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
           TextField(controller: role, maxLength: 120, decoration: const InputDecoration(labelText: 'Role', hintText: 'e.g. Concourse usher')),
           TextField(controller: headcount, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'People required')),
+          if (forecast != null) ...[
+            const SizedBox(height: 8),
+            Text('Suggested from ${forecast['sampleEventCount']} earlier event plans. Review and adjust before saving.'),
+            if ((forecast['requiredQualificationCodes'] as List? ?? const []).isNotEmpty)
+              Text('Common qualifications: ${(forecast['requiredQualificationCodes'] as List).join(', ')}'),
+          ],
           const SizedBox(height: 8),
           DropdownButtonFormField<String?>(
             initialValue: locationId,
@@ -1598,6 +1647,8 @@ class _CoveragePlanningPanel extends ConsumerWidget {
               if (locationId != null) 'locationId': locationId,
               'role': role.text.trim(), 'startsAt': startsAt.toUtc().toIso8601String(),
               'endsAt': endsAt.toUtc().toIso8601String(), 'requiredHeadcount': count,
+              if (forecast != null && (forecast['requiredQualificationCodes'] as List? ?? const []).isNotEmpty)
+                'requiredQualificationCodes': List<String>.from(forecast['requiredQualificationCodes'] as List),
             });
           }, child: const Text('Save target')),
         ],

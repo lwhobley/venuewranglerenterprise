@@ -18,7 +18,7 @@ function harness(current?: Record<string, unknown>, restMinutes: number | null =
       ? Promise.resolve([{ minimum_rest_minutes: restMinutes }])
       : Promise.resolve([])),
     commandReceipt: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
-    event: { findFirst: vi.fn().mockResolvedValue({ id: 'event-1' }) },
+    event: { findFirst: vi.fn().mockResolvedValue({ id: 'event-1' }), findMany: vi.fn().mockResolvedValue([]) },
     staffingDemand: {
       create: vi.fn().mockImplementation(({ data }) => ({ id: 'demand-1', ...data })),
       findFirst: vi.fn().mockResolvedValue(null),
@@ -58,6 +58,27 @@ function harness(current?: Record<string, unknown>, restMinutes: number | null =
 }
 
 describe('event staffing workflow', () => {
+  it('forecasts role demand from tenant and venue scoped earlier event plans', async () => {
+    const { service, tx } = harness();
+    tx.event.findFirst.mockResolvedValue({ id: 'event-1', venueId: 'venue-1', startsAt: new Date('2026-10-10T17:00:00Z') });
+    tx.event.findMany.mockResolvedValue([
+      { id: 'past-1', startsAt: new Date('2026-09-26T17:00:00Z') },
+      { id: 'past-2', startsAt: new Date('2026-10-03T17:00:00Z') },
+    ]);
+    tx.staffingDemand.findMany.mockResolvedValue([
+      { eventId: 'past-1', role: 'Usher', locationId: 'location-1', startsAt: new Date('2026-09-26T17:00:00Z'), endsAt: new Date('2026-09-26T22:00:00Z'), requiredHeadcount: 4, requiredQualificationCodes: ['SAFETY'] },
+      { eventId: 'past-2', role: 'Usher', locationId: 'location-1', startsAt: new Date('2026-10-03T17:30:00Z'), endsAt: new Date('2026-10-03T22:30:00Z'), requiredHeadcount: 6, requiredQualificationCodes: ['SAFETY', 'CROWD'] },
+      { eventId: 'past-2', role: 'Usher', locationId: 'location-1', startsAt: new Date('2026-10-03T17:00:00Z'), endsAt: new Date('2026-10-03T22:00:00Z'), requiredHeadcount: 5, requiredQualificationCodes: ['SAFETY'] },
+    ]);
+
+    const forecasts = await service.forecastCoverage(manager, 'event-1');
+
+    expect(forecasts).toHaveLength(2);
+    expect(forecasts[0]).toMatchObject({ role: 'Usher', requiredHeadcount: 5, sampleEventCount: 2, confidence: 'LIMITED_HISTORY', requiredQualificationCodes: ['SAFETY'], source: 'HISTORICAL_PLANNED_DEMAND' });
+    expect(tx.event.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ startsAt: { lt: new Date('2026-10-10T17:00:00Z') } }) }));
+    expect(tx.staffingDemand.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ eventId: { in: ['past-1', 'past-2'] }, organizationId: 'tenant-1', venueId: 'venue-1', OR: [{ locationId: null }, { locationId: { in: ['location-1'] } }] }) }));
+  });
+
   it('reports unfilled slots separately from assigned, published, and acknowledged coverage', async () => {
     const { service, tx } = harness();
     tx.event.findFirst.mockResolvedValue({ id: 'event-1', venueId: 'venue-1' });

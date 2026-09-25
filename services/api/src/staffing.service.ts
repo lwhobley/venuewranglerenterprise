@@ -60,6 +60,90 @@ export class StaffingService {
     });
   }
 
+  async forecastCoverage(identity: Identity, eventId: string) {
+    assertScope(identity, 'operations:write', eventId);
+    return this.prisma.withTenant(identity, async (tx) => {
+      const event = await tx.event.findFirst({
+        where: { id: eventId, organizationId: identity.tenantId },
+        select: { id: true, venueId: true, startsAt: true },
+      });
+      if (!event) throw new NotFoundException('Event not found.');
+      assertScope(identity, 'operations:write', eventId, event.venueId);
+      const history = await tx.event.findMany({
+        where: {
+          organizationId: identity.tenantId,
+          venueId: event.venueId,
+          startsAt: { lt: event.startsAt },
+        },
+        orderBy: { startsAt: 'desc' },
+        take: 20,
+        select: { id: true, startsAt: true },
+      });
+      if (history.length === 0) return [];
+      const startsByEvent = new Map(history.map((row) => [row.id, row.startsAt]));
+      const demands = await tx.staffingDemand.findMany({
+        where: {
+          organizationId: identity.tenantId,
+          venueId: event.venueId,
+          eventId: { in: history.map((row) => row.id) },
+          ...(!identity.capabilities.includes('tenant:admin')
+            ? { OR: [{ locationId: null }, { locationId: { in: identity.locationIds } }] }
+            : {}),
+        },
+        orderBy: [{ role: 'asc' }, { startsAt: 'asc' }],
+      });
+      type Sample = { eventId: string; startsOffset: number; endsOffset: number; headcount: number; qualifications: string[] };
+      const groups = new Map<string, { role: string; locationId: string | null; samples: Map<string, Sample> }>();
+      for (const demand of demands) {
+        const historicalStart = startsByEvent.get(demand.eventId);
+        if (!historicalStart) continue;
+        const startsOffset = Math.round((demand.startsAt.getTime() - historicalStart.getTime()) / 1_800_000) * 30;
+        const durationMinutes = (demand.endsAt.getTime() - demand.startsAt.getTime()) / 60_000;
+        const durationBucket = Math.round(durationMinutes / 60);
+        const key = `${demand.role.trim().toLocaleLowerCase()}|${demand.locationId ?? ''}|${startsOffset}|${durationBucket}`;
+        const group = groups.get(key) ?? { role: demand.role, locationId: demand.locationId, samples: new Map<string, Sample>() };
+        const sample: Sample = {
+          eventId: demand.eventId,
+          startsOffset,
+          endsOffset: startsOffset + durationBucket * 60,
+          headcount: demand.requiredHeadcount,
+          qualifications: demand.requiredQualificationCodes,
+        };
+        const existing = group.samples.get(demand.eventId);
+        if (existing) {
+          existing.headcount = Math.max(existing.headcount, sample.headcount);
+          existing.qualifications = existing.qualifications.filter((code) => sample.qualifications.includes(code));
+        } else group.samples.set(demand.eventId, sample);
+        groups.set(key, group);
+      }
+      const median = (values: number[]) => {
+        const sorted = [...values].sort((a, b) => a - b);
+        const middle = Math.floor(sorted.length / 2);
+        return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+      };
+      return [...groups.values()].map((group) => {
+        const samples = [...group.samples.values()];
+        const sampleEventCount = new Set(samples.map((sample) => sample.eventId)).size;
+        const qualificationSets = samples.map((sample) => new Set(sample.qualifications));
+        const commonQualifications = [...(qualificationSets[0] ?? new Set<string>())]
+          .filter((code) => qualificationSets.every((codes) => codes.has(code)))
+          .sort();
+        return {
+          role: group.role,
+          locationId: group.locationId,
+          startsOffsetMinutes: Math.round(median(samples.map((sample) => sample.startsOffset))),
+          endsOffsetMinutes: Math.round(median(samples.map((sample) => sample.endsOffset))),
+          requiredHeadcount: Math.ceil(median(samples.map((sample) => sample.headcount))),
+          requiredQualificationCodes: commonQualifications,
+          sampleCount: samples.length,
+          sampleEventCount,
+          confidence: sampleEventCount < 3 ? 'LIMITED_HISTORY' : 'HISTORICAL_BASELINE',
+          source: 'HISTORICAL_PLANNED_DEMAND',
+        };
+      }).sort((a, b) => a.startsOffsetMinutes - b.startsOffsetMinutes || a.role.localeCompare(b.role));
+    });
+  }
+
   async createCoverageRequirement(identity: Identity, eventId: string, dto: CreateStaffingDemandDto, key: string) {
     assertScope(identity, 'operations:write', eventId, dto.venueId, dto.locationId);
     const role = dto.role.trim();

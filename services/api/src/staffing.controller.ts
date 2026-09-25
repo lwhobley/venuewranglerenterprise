@@ -21,6 +21,9 @@ export class StaffingController {
   @Get('events/:eventId/coverage/requirements') coverage(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string) {
     return this.staffing.coverageRequirements(req.identity, eventId);
   }
+  @Get('events/:eventId/coverage/forecast') forecastCoverage(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string) {
+    return this.staffing.forecastCoverage(req.identity, eventId);
+  }
   @Post('events/:eventId/coverage/requirements') createCoverageRequirement(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Body() dto: CreateStaffingDemandDto, @Headers('idempotency-key') key: string) {
     return this.staffing.createCoverageRequirement(req.identity, eventId, dto, this.key(key));
   }

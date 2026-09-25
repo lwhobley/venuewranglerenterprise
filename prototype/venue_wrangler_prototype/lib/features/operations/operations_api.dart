@@ -222,6 +222,10 @@ class OperationsApi {
       (await _request((token) => _dio.get<List<dynamic>>(
         '/api/v1/events/$eventId/coverage/requirements',
         options: Options(headers: {'Authorization': 'Bearer $token'})))).data ?? const [];
+  Future<List<dynamic>> coverageForecast(String eventId) async =>
+      (await _request((token) => _dio.get<List<dynamic>>(
+        '/api/v1/events/$eventId/coverage/forecast',
+        options: Options(headers: {'Authorization': 'Bearer $token'})))).data ?? const [];
   Future<void> createCoverageRequirement(String eventId, Map<String, Object?> demand) async =>
       _command<void>({'eventId': eventId, ...demand}, (token, key) => _dio.post<void>(
         '/api/v1/events/$eventId/coverage/requirements', data: demand,
