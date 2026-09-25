@@ -3,7 +3,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { JwtIdentityGuard } from './auth';
 import { CloseoutService } from './closeout.service';
-import { UpdateCloseoutFollowupDto, UpdateCloseoutSummaryDto } from './closeout.dto';
+import { CreatePostCloseCorrectionDto, UpdateCloseoutFollowupDto, UpdateCloseoutSummaryDto } from './closeout.dto';
 
 @Controller('v1/events/:eventId/closeout')
 @UseGuards(JwtIdentityGuard)
@@ -26,6 +26,9 @@ export class CloseoutController {
   }
   @Post('finalize') finalize(@Req() request: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Headers('idempotency-key') key: string) {
     return this.closeout.finalize(request.identity, eventId, this.key(key));
+  }
+  @Post('corrections') createCorrection(@Req() request: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Body() dto: CreatePostCloseCorrectionDto, @Headers('idempotency-key') key: string) {
+    return this.closeout.createCorrection(request.identity, eventId, dto, this.key(key));
   }
 
   private key(key?: string) {

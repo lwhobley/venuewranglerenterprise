@@ -2,7 +2,7 @@ import { ConflictException, ForbiddenException, Injectable, NotFoundException } 
 import { Prisma } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { assertScope, Identity } from './auth';
-import { UpdateCloseoutFollowupDto } from './closeout.dto';
+import { CreatePostCloseCorrectionDto, UpdateCloseoutFollowupDto } from './closeout.dto';
 import { PrismaService } from './prisma.service';
 import { PushNotificationsService } from './push-notifications.service';
 
@@ -21,17 +21,19 @@ export class CloseoutService {
         where: { eventId_organizationId: { eventId, organizationId: identity.tenantId } },
         include: {
           followups: { orderBy: [{ state: 'asc' }, { createdAt: 'asc' }] },
+          corrections: { orderBy: { createdAt: 'desc' }, take: 100 },
           auditEvents: { orderBy: { createdAt: 'desc' }, take: 50, select: { id: true, actorId: true, action: true, reason: true, createdAt: true } },
         },
       });
       const exceptions = await this.exceptions(tx, identity.tenantId, eventId);
       const followups = closeout?.followups ?? [];
+      const corrections = closeout?.corrections ?? [];
       const followupKeys = new Map(followups.map((item) => [`${item.sourceType}:${item.sourceId}`, item]));
       const blockers = exceptions.filter((item) => {
         const handling = followupKeys.get(`${item.sourceType}:${item.sourceId}`);
         return !handling || !['FOLLOW_UP', 'ACCEPTED'].includes(handling.state);
       });
-      return { event, closeout, exceptions, followups, blockers, canFinalize: closeout?.state === 'OPEN' && blockers.length === 0 };
+      return { event, closeout, exceptions, followups, corrections, blockers, canFinalize: closeout?.state === 'OPEN' && blockers.length === 0 };
     });
   }
 
@@ -121,6 +123,44 @@ export class CloseoutService {
       await tx.eventCloseoutAudit.create({ data: { organizationId: identity.tenantId, closeoutId: closeout.id, actorId: identity.subject, action: 'finalized', before: closeout as unknown as Prisma.InputJsonValue, after: finalized as unknown as Prisma.InputJsonValue } });
       return finalized;
     });
+  }
+
+  async createCorrection(identity: Identity, eventId: string, dto: CreatePostCloseCorrectionDto, key: string) {
+    assertScope(identity, 'event:closeout', eventId);
+    return this.command(identity, key, 'event.closeout.correction', { eventId, dto }, async (tx) => {
+      const closeout = await tx.eventCloseout.findFirst({ where: { eventId, organizationId: identity.tenantId } });
+      if (!closeout || closeout.state !== 'CLOSED') throw new ConflictException('Post-close corrections can only be added to a closed event.');
+      if (dto.sourceType === 'EVENT') {
+        if (dto.sourceId !== eventId) throw new NotFoundException('The selected source record does not belong to this event.');
+      } else {
+        const source = await this.correctionSourceExists(tx, identity.tenantId, eventId, dto.sourceType, dto.sourceId);
+        if (!source) throw new NotFoundException('The selected source record does not belong to this event.');
+      }
+      const data = {
+        organizationId: identity.tenantId, eventId, sourceType: dto.sourceType, sourceId: dto.sourceId.trim(),
+        headline: dto.headline.trim(), correction: dto.correction.trim(), reason: dto.reason.trim(), createdBy: identity.subject,
+      };
+      const correction = await tx.eventPostCloseCorrection.create({ data });
+      await tx.eventCloseoutAudit.create({ data: {
+        organizationId: identity.tenantId, closeoutId: closeout.id, actorId: identity.subject,
+        action: 'post_close_correction_recorded', reason: data.reason,
+        after: { id: correction.id, sourceType: correction.sourceType, sourceId: correction.sourceId, headline: correction.headline } as Prisma.InputJsonValue,
+      } });
+      return correction;
+    });
+  }
+
+  private async correctionSourceExists(tx: Prisma.TransactionClient, tenantId: string, eventId: string, sourceType: string, sourceId: string): Promise<boolean> {
+    switch (sourceType) {
+      case 'ISSUE': return !!await tx.issue.findFirst({ where: { id: sourceId, eventId, organizationId: tenantId }, select: { id: true } });
+      case 'TASK': return !!await tx.operationalTask.findFirst({ where: { id: sourceId, eventId, organizationId: tenantId }, select: { id: true } });
+      case 'ATTENDANCE': return !!await tx.staffAttendanceClaim.findFirst({ where: { id: sourceId, eventId, organizationId: tenantId }, select: { id: true } });
+      case 'HOSPITALITY': return !!await tx.hospitalityOrder.findFirst({ where: { id: sourceId, eventId, organizationId: tenantId }, select: { id: true } });
+      case 'VENDOR_REQUEST': return !!await tx.staffingVendorRequest.findFirst({ where: { id: sourceId, eventId, organizationId: tenantId }, select: { id: true } });
+      case 'STOCK_COUNT': return (await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM stock_counts WHERE id = ${sourceId}::uuid AND event_id = ${eventId}::uuid AND organization_id = ${tenantId}::uuid`).length > 0;
+      case 'STOCK_TRANSFER': return (await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM stock_transfers WHERE id = ${sourceId}::uuid AND event_id = ${eventId}::uuid AND organization_id = ${tenantId}::uuid`).length > 0;
+      default: return false;
+    }
   }
 
   private async exceptions(tx: Prisma.TransactionClient, tenantId: string, eventId: string): Promise<Exception[]> {

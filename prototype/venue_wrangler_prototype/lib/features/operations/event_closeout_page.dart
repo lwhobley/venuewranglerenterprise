@@ -39,6 +39,10 @@ class EventCloseoutPage extends ConsumerWidget {
             .map((row) => Map<String, dynamic>.from(row))
             .toList();
         final isClosed = closeout?['state'] == 'CLOSED';
+        final corrections = (data['corrections'] as List? ?? const [])
+            .whereType<Map>()
+            .map((row) => Map<String, dynamic>.from(row))
+            .toList();
         return Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 920),
@@ -107,12 +111,42 @@ class EventCloseoutPage extends ConsumerWidget {
                           .map((row) => Map<String, dynamic>.from(row))
                           .toList()),
                   const SizedBox(height: 12),
-                  if (isClosed)
-                    const _MessagePanel(
-                        title: 'Event closed',
-                        message:
-                            'Ordinary changes to this event are locked. Controlled post-close corrections are not available yet.')
-                  else
+                  if (isClosed) ...[
+                    Card(
+                        child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Post-close correction journal',
+                                style: Theme.of(context).textTheme.titleMedium),
+                            const SizedBox(height: 6),
+                            const Text(
+                                'Corrections append an audited addendum. Original event and source records remain locked.'),
+                            const SizedBox(height: 8),
+                            if (corrections.isEmpty)
+                              const Text('No corrections recorded.'),
+                            for (final item in corrections)
+                              ListTile(
+                                contentPadding: EdgeInsets.zero,
+                                leading: const Icon(Icons.post_add_outlined),
+                                title: Text(item['headline'] as String? ??
+                                    'Correction'),
+                                subtitle: Text(
+                                    '${item['sourceType']} · ${item['sourceId']}\n${item['correction']}\nReason: ${item['reason']} · ${item['createdBy']}'),
+                                isThreeLine: true,
+                              ),
+                            Align(
+                                alignment: Alignment.centerRight,
+                                child: FilledButton.icon(
+                                  onPressed: () => _addCorrection(context, ref,
+                                      eventId, [...exceptions, ...followups]),
+                                  icon: const Icon(Icons.add),
+                                  label: const Text('Add correction'),
+                                )),
+                          ]),
+                    )),
+                  ] else
                     FilledButton.icon(
                       onPressed: data['canFinalize'] == true
                           ? () => _confirmFinalize(context, ref, eventId)
@@ -156,6 +190,28 @@ class EventCloseoutPage extends ConsumerWidget {
     }
   }
 
+  Future<void> _addCorrection(BuildContext context, WidgetRef ref,
+      String eventId, List<Map<String, dynamic>> exceptions) async {
+    final uniqueSources = <String, Map<String, dynamic>>{};
+    for (final source in exceptions) {
+      uniqueSources['${source['sourceType']}|${source['sourceId']}'] = source;
+    }
+    final result = await showDialog<Map<String, Object?>>(
+      context: context,
+      builder: (_) => _CorrectionDialog(
+        eventId: eventId,
+        exceptions: uniqueSources.values.toList(),
+      ),
+    );
+    if (result != null && context.mounted) {
+      await _run(context, ref, eventId, () async {
+        await ref
+            .read(operationsApiProvider)
+            .recordPostCloseCorrection(eventId, result);
+      });
+    }
+  }
+
   Future<void> _run(BuildContext context, WidgetRef ref, String eventId,
       Future<void> Function() action) async {
     try {
@@ -194,6 +250,111 @@ class EventCloseoutPage extends ConsumerWidget {
         'STOCK_COUNT' || 'STOCK_TRANSFER' => 'Stock',
         _ => 'Today',
       };
+}
+
+class _CorrectionDialog extends StatefulWidget {
+  const _CorrectionDialog({required this.eventId, required this.exceptions});
+  final String eventId;
+  final List<Map<String, dynamic>> exceptions;
+  @override
+  State<_CorrectionDialog> createState() => _CorrectionDialogState();
+}
+
+class _CorrectionDialogState extends State<_CorrectionDialog> {
+  final _headline = TextEditingController();
+  final _correction = TextEditingController();
+  final _reason = TextEditingController();
+  String _sourceType = 'EVENT';
+  String? _sourceId;
+  @override
+  void dispose() {
+    _headline.dispose();
+    _correction.dispose();
+    _reason.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final sources = <Map<String, dynamic>>[
+      {
+        'sourceType': 'EVENT',
+        'sourceId': widget.eventId,
+        'title': 'Event record'
+      },
+      ...widget.exceptions,
+    ];
+    return AlertDialog(
+      title: const Text('Add post-close correction'),
+      content: SizedBox(
+          width: 480,
+          child: SingleChildScrollView(
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+            DropdownButtonFormField<String>(
+              initialValue: '$_sourceType|${_sourceId ?? widget.eventId}',
+              decoration: const InputDecoration(
+                  labelText: 'Record this correction against'),
+              items: [
+                for (final row in sources)
+                  DropdownMenuItem<String>(
+                      value: '${row['sourceType']}|${row['sourceId']}',
+                      child: Text(row['title'] as String? ??
+                          row['sourceType'] as String))
+              ],
+              onChanged: (value) {
+                if (value == null) return;
+                final parts = value.split('|');
+                setState(() {
+                  _sourceType = parts.first;
+                  _sourceId = parts.last;
+                });
+              },
+            ),
+            const SizedBox(height: 8),
+            TextField(
+                controller: _headline,
+                onChanged: (_) => setState(() {}),
+                maxLength: 240,
+                decoration: const InputDecoration(labelText: 'Short title')),
+            TextField(
+                controller: _correction,
+                onChanged: (_) => setState(() {}),
+                minLines: 2,
+                maxLines: 5,
+                maxLength: 4000,
+                decoration:
+                    const InputDecoration(labelText: 'Correction addendum')),
+            TextField(
+                controller: _reason,
+                onChanged: (_) => setState(() {}),
+                minLines: 2,
+                maxLines: 4,
+                maxLength: 500,
+                decoration: const InputDecoration(
+                    labelText: 'Reason for recording this correction')),
+          ]))),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel')),
+        FilledButton(
+            onPressed: _headline.text.trim().isEmpty ||
+                    _correction.text.trim().isEmpty ||
+                    _reason.text.trim().length < 3
+                ? null
+                : () {
+                    Navigator.pop(context, <String, Object?>{
+                      'sourceType': _sourceType,
+                      'sourceId': _sourceId ?? widget.eventId,
+                      'headline': _headline.text.trim(),
+                      'correction': _correction.text.trim(),
+                      'reason': _reason.text.trim(),
+                    });
+                  },
+            child: const Text('Record correction')),
+      ],
+    );
+  }
 }
 
 class _Header extends StatelessWidget {

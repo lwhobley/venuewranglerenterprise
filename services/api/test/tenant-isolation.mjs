@@ -364,6 +364,7 @@ try {
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeouts WHERE id=${closeoutAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A event closeout');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeout_followups WHERE id=${closeoutFollowupAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A closeout follow-up');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeout_audit WHERE closeout_id=${closeoutAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A closeout audit');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_post_close_corrections WHERE event_id=${eventA}::uuid`)[0].count, 0, 'tenant B cannot read tenant A post-close corrections');
       await assertTenantCannotRead(tx, tenantB, tenantA, issueA.id, taskA.id, shiftA.id, breakAId, attendanceClaimAId, demandAId, demandAuditAId, stockTransferAId, stockCountAId, hospitalityOrderAId, closeoutAId);
       await setTenant(tx, tenantB, 'unrelated-recipient');
       assert.equal(await tx.userNotification.count({ where: { organizationId: tenantB } }), 0, 'notifications must only be visible to their recipient subject');
@@ -397,6 +398,19 @@ try {
       }
       await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT closed_event_child_write_probe');
       assert.equal(closedEventChildWriteError?.meta?.code, '23514', 'inventory detail writes must be rejected after closeout finalization');
+      await tx.$executeRawUnsafe('SAVEPOINT post_close_correction_rls_probe');
+      await tx.$executeRaw`UPDATE event_closeouts SET state='CLOSED',finalized_by='tenant-isolation-test',finalized_at=now() WHERE id=${closeoutAId}::uuid`;
+      const [correctionA] = await tx.$queryRaw`INSERT INTO event_post_close_corrections(organization_id,event_id,source_type,source_id,headline,correction,reason,created_by)
+        VALUES (${tenantA}::uuid,${eventA}::uuid,'EVENT',${eventA},'Post-close correction','Verified event record addendum.','Checked against the signed supervisor log.','tenant-isolation-test') RETURNING id`;
+      await setTenant(tx, tenantB);
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_post_close_corrections WHERE id=${correctionA.id}::uuid`)[0].count, 0, 'tenant B cannot read tenant A post-close correction');
+      await setTenant(tx, tenantA);
+      let immutableCorrectionError;
+      try {
+        await tx.$executeRaw`UPDATE event_post_close_corrections SET headline='forbidden rewrite' WHERE id=${correctionA.id}::uuid`;
+      } catch (error) { immutableCorrectionError = error; }
+      assert.equal(immutableCorrectionError?.meta?.code, '23514', 'post-close corrections must be immutable');
+      await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT post_close_correction_rls_probe');
       throw rollback;
     });
     assert.fail('The fixture transaction should roll back.');
@@ -422,7 +436,7 @@ try {
     await tx.organization.create({ data: { id: tenantC, name: 'forbidden cross-tenant organization' } });
   }), 'tenant A must not insert out-of-scope organization rows');
 
-  process.stdout.write('Tenant isolation passed: reads, updates, deletes, inserts, closeout write lock, audit/event/device visibility, and location-to-venue integrity.\n');
+  process.stdout.write('Tenant isolation passed: reads, updates, deletes, inserts, closeout write lock, append-only corrections, audit/event/device visibility, and location-to-venue integrity.\n');
 } finally {
   await prisma.$disconnect();
 }

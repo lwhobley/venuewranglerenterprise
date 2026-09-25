@@ -79,4 +79,38 @@ describe('CloseoutService', () => {
     expect(tx.eventCloseout.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ state: 'CLOSED' }) }));
     expect(tx.eventCloseoutAudit.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ action: 'finalized' }) }));
   });
+
+  it('records a scoped append-only correction and audits it without changing source records', async () => {
+    const correction = { id: closeoutId, eventId, sourceType: 'EVENT', sourceId: eventId, headline: 'Attendance total', correction: 'Updated count in closeout note.', reason: 'Supervisor verified paper tally.', createdBy: identity.subject };
+    const tx = {
+      $queryRaw: vi.fn().mockResolvedValue([]),
+      commandReceipt: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn() },
+      eventCloseout: { findFirst: vi.fn().mockResolvedValue({ id: closeoutId, state: 'CLOSED' }) },
+      eventPostCloseCorrection: { create: vi.fn().mockResolvedValue(correction) },
+      eventCloseoutAudit: { create: vi.fn() },
+    };
+    const service = serviceFor(tx);
+    await expect(service.createCorrection(identity, eventId, {
+      sourceType: 'EVENT', sourceId: eventId, headline: 'Attendance total', correction: 'Updated count in closeout note.', reason: 'Supervisor verified paper tally.',
+    }, 'post-close-correction-idempotency-key')).resolves.toEqual(correction);
+    expect(tx.eventPostCloseCorrection.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ organizationId: tenantId, eventId, createdBy: identity.subject }) }));
+    expect(tx.eventCloseoutAudit.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ action: 'post_close_correction_recorded' }) }));
+    expect(tx.commandReceipt.create).toHaveBeenCalled();
+    expect(tx.eventCloseout).not.toHaveProperty('update');
+  });
+
+  it('does not allow correction entries before event closeout is finalized', async () => {
+    const tx = {
+      $queryRaw: vi.fn().mockResolvedValue([]),
+      commandReceipt: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn() },
+      eventCloseout: { findFirst: vi.fn().mockResolvedValue({ id: closeoutId, state: 'OPEN' }) },
+      eventPostCloseCorrection: { create: vi.fn() },
+      eventCloseoutAudit: { create: vi.fn() },
+    };
+    const service = serviceFor(tx);
+    await expect(service.createCorrection(identity, eventId, {
+      sourceType: 'EVENT', sourceId: eventId, headline: 'Correction', correction: 'Add the verified detail.', reason: 'The paper log was checked.',
+    }, 'post-close-correction-idempotency-key')).rejects.toThrow('Post-close corrections can only be added to a closed event.');
+    expect(tx.eventPostCloseCorrection.create).not.toHaveBeenCalled();
+  });
 });

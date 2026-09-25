@@ -251,6 +251,17 @@ class OperationsApi {
             'Authorization': 'Bearer $token',
             'Idempotency-Key': key
           })));
+  Future<void> recordPostCloseCorrection(
+          String eventId, Map<String, Object?> input) async =>
+      _command<void>(
+          {'action': 'event.closeout.correction', 'eventId': eventId, ...input},
+          (token, key) => _dio.post<void>(
+              '/api/v1/events/$eventId/closeout/corrections',
+              data: input,
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key
+              })));
   Future<List<dynamic>> shifts(String eventId) => _cachedGet(
       'shifts.$eventId',
       () async =>
