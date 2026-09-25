@@ -957,6 +957,32 @@ class OperationsApi {
                 options: Options(headers: {'Authorization': 'Bearer $token'}),
               )))
           .data!;
+  Future<List<dynamic>> availabilityChecksForShift(String eventId, String shiftId) async =>
+      (await _request((token) => _dio.get<List<dynamic>>(
+              '/api/v1/events/$eventId/shifts/$shiftId/availability-checks',
+              options: Options(headers: {'Authorization': 'Bearer $token'}))))
+          .data ??
+      const [];
+  Future<void> requestShiftAvailability(String eventId, String shiftId, List<String> subjects) async =>
+      _command<void>(
+          {'action': 'staff-availability-check.request', 'eventId': eventId, 'shiftId': shiftId, 'subjects': subjects},
+          (token, key) => _dio.post<void>(
+              '/api/v1/events/$eventId/shifts/$shiftId/availability-checks',
+              data: {'subjects': subjects},
+              options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
+  Future<List<dynamic>> myAvailabilityChecks() async =>
+      (await _request((token) => _dio.get<List<dynamic>>(
+              '/api/v1/me/availability-checks',
+              options: Options(headers: {'Authorization': 'Bearer $token'}))))
+          .data ??
+      const [];
+  Future<void> respondToAvailabilityCheck(String checkId, String response) async =>
+      _command<void>(
+          {'action': 'staff-availability-check.$response', 'checkId': checkId},
+          (token, key) => _dio.post<void>(
+              '/api/v1/me/availability-checks/$checkId/respond',
+              data: {'response': response},
+              options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
   Future<void> shiftCommand(String eventId, String shiftId, String action,
       {Map<String, Object?>? data}) async {
     await _command<void>(
@@ -1379,6 +1405,8 @@ final eventHospitalityDraftsProvider = FutureProvider.autoDispose
 final eventShiftsProvider = FutureProvider.autoDispose
     .family<List<dynamic>, String>(
         (ref, id) => ref.watch(operationsApiProvider).shifts(id));
+final myAvailabilityChecksProvider = FutureProvider.autoDispose<List<dynamic>>(
+    (ref) => ref.watch(operationsApiProvider).myAvailabilityChecks());
 final staffingCoverageProvider = FutureProvider.autoDispose
     .family<List<dynamic>, String>(
         (ref, id) => ref.watch(operationsApiProvider).coverageRequirements(id));

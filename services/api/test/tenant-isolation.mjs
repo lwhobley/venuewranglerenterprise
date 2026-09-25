@@ -93,6 +93,8 @@ try {
   let vendorRequestBId;
   let hospitalityMenuItemAId;
   let hospitalityMenuItemBId;
+  let availabilityCheckAId;
+  let availabilityCheckBId;
   try {
     await prisma.$transaction(async (tx) => {
       await setTenant(tx, tenantA);
@@ -125,6 +127,14 @@ try {
       await tx.operationalTaskAudit.create({ data: { organizationId: tenantA, taskId: taskA.id, actorId: 'tenant-isolation-test', action: 'created' } });
       const shiftA = await tx.staffShift.create({ data: { organizationId: tenantA, venueId: venueA, eventId: eventA, locationId: locationA, assignedSubject: subjectA, role: 'Usher', startsAt: new Date('2026-10-01T17:00:00Z'), endsAt: new Date('2026-10-01T22:00:00Z'), state: 'PUBLISHED', response: 'ACKNOWLEDGED', responseRevision: 1, attendance: 'CHECKED_IN', checkedInAt: new Date('2026-10-01T17:00:00Z'), createdBy: 'tenant-isolation-test', updatedBy: 'tenant-isolation-test' } });
       await tx.staffShiftAuditEvent.create({ data: { organizationId: tenantA, shiftId: shiftA.id, actorId: 'tenant-isolation-test', action: 'created' } });
+      const availabilityShiftA = await tx.staffShift.create({ data: { organizationId: tenantA, venueId: venueA, eventId: eventA, locationId: locationA, role: 'Availability fixture', startsAt: new Date('2026-10-02T17:00:00Z'), endsAt: new Date('2026-10-02T22:00:00Z'), createdBy: 'tenant-isolation-test', updatedBy: 'tenant-isolation-test' } });
+      const availabilityCheckA = await tx.staffAvailabilityCheck.create({ data: { organizationId: tenantA, eventId: eventA, shiftId: availabilityShiftA.id, workerSubject: subjectA, shiftRevision: 1, requestedBy: 'tenant-isolation-test' } });
+      availabilityCheckAId = availabilityCheckA.id;
+      await tx.staffAvailabilityCheckAudit.create({ data: { organizationId: tenantA, availabilityCheckId: availabilityCheckA.id, actorId: 'tenant-isolation-test', action: 'requested' } });
+      await setTenant(tx, tenantA, subjectA);
+      await tx.staffAvailabilityCheck.update({ where: { id: availabilityCheckA.id }, data: { response: 'AVAILABLE', respondedAt: new Date() } });
+      await tx.staffAvailabilityCheckAudit.create({ data: { organizationId: tenantA, availabilityCheckId: availabilityCheckA.id, actorId: subjectA, action: 'available' } });
+      await setTenant(tx, tenantA);
       const demandA = await tx.staffingDemand.create({ data: { organizationId: tenantA, venueId: venueA, eventId: eventA, locationId: locationA, role: 'Usher', startsAt: shiftA.startsAt, endsAt: shiftA.endsAt, requiredHeadcount: 2, createdBy: 'tenant-isolation-test', updatedBy: 'tenant-isolation-test' } });
       demandAId = demandA.id;
       const demandAuditA = await tx.staffingDemandAudit.create({ data: { organizationId: tenantA, demandId: demandA.id, actorId: 'tenant-isolation-test', action: 'created' } });
@@ -205,6 +215,10 @@ try {
       await tx.operationalTaskAudit.create({ data: { organizationId: tenantB, taskId: taskB.id, actorId: 'tenant-isolation-test', action: 'created' } });
       const shiftB = await tx.staffShift.create({ data: { organizationId: tenantB, venueId: venueB, eventId: eventB, locationId: locationB, assignedSubject: subjectB, role: 'Usher', startsAt: new Date('2026-10-01T17:00:00Z'), endsAt: new Date('2026-10-01T22:00:00Z'), state: 'PUBLISHED', response: 'ACKNOWLEDGED', responseRevision: 1, attendance: 'CHECKED_IN', checkedInAt: new Date('2026-10-01T17:00:00Z'), createdBy: 'tenant-isolation-test', updatedBy: 'tenant-isolation-test' } });
       await tx.staffShiftAuditEvent.create({ data: { organizationId: tenantB, shiftId: shiftB.id, actorId: 'tenant-isolation-test', action: 'created' } });
+      const availabilityShiftB = await tx.staffShift.create({ data: { organizationId: tenantB, venueId: venueB, eventId: eventB, locationId: locationB, role: 'Availability fixture', startsAt: new Date('2026-10-02T17:00:00Z'), endsAt: new Date('2026-10-02T22:00:00Z'), createdBy: 'tenant-isolation-test', updatedBy: 'tenant-isolation-test' } });
+      const availabilityCheckB = await tx.staffAvailabilityCheck.create({ data: { organizationId: tenantB, eventId: eventB, shiftId: availabilityShiftB.id, workerSubject: subjectB, shiftRevision: 1, requestedBy: 'tenant-isolation-test' } });
+      availabilityCheckBId = availabilityCheckB.id;
+      await tx.staffAvailabilityCheckAudit.create({ data: { organizationId: tenantB, availabilityCheckId: availabilityCheckB.id, actorId: 'tenant-isolation-test', action: 'requested' } });
       const demandB = await tx.staffingDemand.create({ data: { organizationId: tenantB, venueId: venueB, eventId: eventB, locationId: locationB, role: 'Usher', startsAt: shiftB.startsAt, endsAt: shiftB.endsAt, requiredHeadcount: 2, createdBy: 'tenant-isolation-test', updatedBy: 'tenant-isolation-test' } });
       demandBId = demandB.id;
       const demandAuditB = await tx.staffingDemandAudit.create({ data: { organizationId: tenantB, demandId: demandB.id, actorId: 'tenant-isolation-test', action: 'created' } });
@@ -276,6 +290,8 @@ try {
       assert.equal(await tx.staffingDemandAudit.count({ where: { organizationId: tenantA } }), 1, 'tenant A sees its staffing demand audit');
       assert.equal(await tx.staffingVendorRequest.count({ where: { organizationId: tenantA } }), 1, 'tenant A sees its vendor request');
       assert.equal(await tx.staffingVendorRequestAudit.count({ where: { organizationId: tenantA } }), 1, 'tenant A sees its vendor request audit');
+      assert.equal(await tx.staffAvailabilityCheck.count({ where: { organizationId: tenantA } }), 1, 'tenant A sees its explicit worker availability response');
+      assert.equal(await tx.staffAvailabilityCheckAudit.count({ where: { organizationId: tenantA } }), 2, 'tenant A sees the immutable availability request and response audit');
       await tx.$executeRawUnsafe('SAVEPOINT vendor_request_rls_insert_probe');
       let crossTenantVendorRequestError;
       try {
@@ -423,6 +439,7 @@ try {
       const updatedBreak = await tx.staffBreak.updateMany({ where: { id: breakBId }, data: { workerSubject: subjectA } });
       const updatedClaim = await tx.staffAttendanceClaim.updateMany({ where: { id: attendanceClaimBId }, data: { workerSubject: subjectA } });
       const updatedDemand = await tx.staffingDemand.updateMany({ where: { id: demandBId }, data: { requiredHeadcount: 9 } });
+      const updatedAvailability = await tx.staffAvailabilityCheck.updateMany({ where: { id: availabilityCheckBId }, data: { response: 'AVAILABLE', respondedAt: new Date() } });
       assert.equal(updated.count, 0, 'tenant A must not update tenant B issues');
       assert.equal(deleted.count, 0, 'tenant A must not delete tenant B issues');
       assert.equal(updatedTask.count, 0, 'tenant A must not update tenant B operational tasks');
@@ -430,6 +447,7 @@ try {
       assert.equal(updatedBreak.count, 0, 'tenant A must not update tenant B break evidence');
       assert.equal(updatedClaim.count, 0, 'tenant A must not update tenant B attendance claims');
       assert.equal(updatedDemand.count, 0, 'tenant A must not update tenant B staffing demands');
+      assert.equal(updatedAvailability.count, 0, 'tenant A must not update tenant B availability responses');
 
       await setTenant(tx, tenantB);
       assert.equal(await tx.staffUnavailability.count({ where: { organizationId: tenantA } }), 0, 'tenant B cannot read tenant A availability');
@@ -439,6 +457,8 @@ try {
       assert.equal(await tx.staffAttendanceClaim.count({ where: { organizationId: tenantA } }), 0, 'tenant B cannot read tenant A attendance claims');
       assert.equal(await tx.staffingDemand.count({ where: { organizationId: tenantA } }), 0, 'tenant B cannot read tenant A staffing demands');
       assert.equal(await tx.staffingDemandAudit.count({ where: { organizationId: tenantA } }), 0, 'tenant B cannot read tenant A staffing demand audit');
+      assert.equal(await tx.staffAvailabilityCheck.count({ where: { organizationId: tenantA } }), 0, 'tenant B cannot read tenant A availability responses');
+      assert.equal(await tx.staffAvailabilityCheckAudit.count({ where: { organizationId: tenantA } }), 0, 'tenant B cannot read tenant A availability audit');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_items WHERE organization_id=${tenantB}::uuid`)[0].count, 1, 'tenant B sees its stock catalog item');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_counts WHERE id=${stockCountBId}::uuid`)[0].count, 1, 'tenant B sees its stock count');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_count_lines WHERE count_id=${stockCountBId}::uuid`)[0].count, 1, 'tenant B sees its stock count line');

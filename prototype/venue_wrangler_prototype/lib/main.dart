@@ -2007,6 +2007,7 @@ class _LiveStaffingPage extends ConsumerWidget {
               textAlign: TextAlign.center)),
       data: (rows) => Column(children: [
             const _MyUnavailabilityPanel(),
+            const _MyAvailabilityChecksPanel(),
             if (queuedAttendance.any((item) => item['eventId'] == eventId))
               Card(child: ListTile(
                 leading: const Icon(Icons.sync_problem_outlined, color: _brass),
@@ -2097,6 +2098,8 @@ class _LiveStaffingPage extends ConsumerWidget {
                             OutlinedButton(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'publish'), child: const Text('Publish')),
                           if (canWrite && state == 'DRAFT' && attendance == 'NOT_STARTED')
                             OutlinedButton.icon(onPressed: () => _suggestShiftAssignee(context, ref, eventId, shift), icon: const Icon(Icons.auto_awesome_outlined), label: const Text('Suggest staff')),
+                          if (canWrite && state == 'DRAFT' && attendance == 'NOT_STARTED')
+                            TextButton.icon(onPressed: () => _showAvailabilityChecks(context, ref, eventId, shift['id'] as String), icon: const Icon(Icons.how_to_reg_outlined), label: const Text('Availability responses')),
                           if (canWrite && state == 'PUBLISHED' && attendance == 'NOT_STARTED')
                             TextButton(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'cancel'), child: const Text('Cancel shift')),
                           if (canWrite && attendance != 'NOT_STARTED')
@@ -2136,6 +2139,47 @@ class _LiveStaffingPage extends ConsumerWidget {
           ]),
     );
   }
+}
+
+class _MyAvailabilityChecksPanel extends ConsumerWidget {
+  const _MyAvailabilityChecksPanel();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) =>
+      ref.watch(myAvailabilityChecksProvider).when(
+        loading: () => const SizedBox.shrink(),
+        error: (error, _) => Card(child: ListTile(
+          leading: const Icon(Icons.sync_problem_outlined),
+          title: const Text('Availability requests unavailable'),
+          subtitle: Text('$error'),
+          trailing: IconButton(tooltip: 'Retry', onPressed: () => ref.invalidate(myAvailabilityChecksProvider), icon: const Icon(Icons.refresh)),
+        )),
+        data: (raw) {
+          final checks = raw.whereType<Map>().map((row) => Map<String, dynamic>.from(row)).toList();
+          if (checks.isEmpty) return const SizedBox.shrink();
+          return Card(
+            child: Column(children: [
+              const ListTile(
+                leading: Icon(Icons.how_to_reg_outlined),
+                title: Text('Availability requests'),
+                subtitle: Text('Your response helps managers plan. It does not assign you to a shift.'),
+              ),
+              for (final check in checks)
+                ListTile(
+                  title: Text('${check['shift']?['role'] ?? 'Event shift'} · ${check['shift']?['event']?['name'] ?? 'Event'}'),
+                  subtitle: Text(_shiftTimeLabel(
+                    DateTime.tryParse(check['shift']?['startsAt'] as String? ?? '')?.toLocal(),
+                    DateTime.tryParse(check['shift']?['endsAt'] as String? ?? '')?.toLocal(),
+                  )),
+                  trailing: Wrap(spacing: 4, children: [
+                    TextButton(onPressed: () => _respondToAvailabilityCheck(context, ref, check, 'UNAVAILABLE'), child: const Text('Unavailable')),
+                    FilledButton(onPressed: () => _respondToAvailabilityCheck(context, ref, check, 'AVAILABLE'), child: const Text('Available')),
+                  ]),
+                ),
+            ]),
+          );
+        },
+      );
 }
 
 class _TeamAvailabilityPanel extends ConsumerStatefulWidget {
@@ -2635,6 +2679,45 @@ Future<void> _respondToShift(BuildContext context, WidgetRef ref, String eventId
   }
 }
 
+Future<void> _respondToAvailabilityCheck(BuildContext context, WidgetRef ref, Map<String, dynamic> check, String response) async {
+  try {
+    await ref.read(operationsApiProvider).respondToAvailabilityCheck(check['id'] as String, response);
+    ref.invalidate(myAvailabilityChecksProvider);
+    ref.invalidate(userNotificationsProvider);
+    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(response == 'AVAILABLE' ? 'Availability confirmed for this draft shift.' : 'Unavailable response sent to the manager.')));
+  } catch (error) {
+    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not send availability response: $error')));
+  }
+}
+
+Future<void> _showAvailabilityChecks(BuildContext context, WidgetRef ref, String eventId, String shiftId) async {
+  try {
+    final rows = await ref.read(operationsApiProvider).availabilityChecksForShift(eventId, shiftId);
+    if (!context.mounted) return;
+    await showDialog<void>(context: context, builder: (dialogContext) => AlertDialog(
+      title: const Text('Availability responses'),
+      content: SizedBox(
+        width: 420,
+        child: rows.isEmpty
+            ? const Text('No availability requests have been sent for this draft shift.')
+            : Column(mainAxisSize: MainAxisSize.min, children: rows.map((raw) {
+                final row = Map<String, dynamic>.from(raw as Map);
+                final current = row['current'] == true;
+                final response = row['response'] as String? ?? 'PENDING';
+                return ListTile(
+                  title: Text(row['displayName'] as String? ?? 'Roster member'),
+                  subtitle: Text(!current ? 'Stale · shift changed after request' : response == 'AVAILABLE' ? 'Confirmed available for this shift' : response == 'UNAVAILABLE' ? 'Unavailable' : 'Waiting for response'),
+                  trailing: Icon(current && response == 'AVAILABLE' ? Icons.check_circle : response == 'UNAVAILABLE' ? Icons.cancel_outlined : Icons.schedule, color: current && response == 'AVAILABLE' ? Colors.green : response == 'UNAVAILABLE' ? Theme.of(context).colorScheme.error : null),
+                );
+              }).toList()),
+      ),
+      actions: [TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Close'))],
+    ));
+  } catch (error) {
+    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not load availability responses: $error')));
+  }
+}
+
 Future<void> _suggestShiftAssignee(BuildContext context, WidgetRef ref, String eventId, Map<String, dynamic> shift) async {
   try {
     final result = await ref.read(operationsApiProvider).shiftAssignmentSuggestions(eventId, shift['id'] as String);
@@ -2656,7 +2739,7 @@ Future<void> _suggestShiftAssignee(BuildContext context, WidgetRef ref, String e
           width: 460,
           height: MediaQuery.sizeOf(context).height * 0.55,
           child: Column(children: [
-            const Text('Ranked by lowest scheduled minutes in this event. “No recorded conflict” does not mean the worker explicitly confirmed availability.'),
+              const Text('Ranked by scheduled workload after conflict and qualification checks. A worker marked confirmed has explicitly replied; no recorded conflict alone is not confirmation.'),
             const SizedBox(height: 8),
             Expanded(child: ListView.builder(
               itemCount: recommendations.length,
@@ -2667,8 +2750,13 @@ Future<void> _suggestShiftAssignee(BuildContext context, WidgetRef ref, String e
                 return ListTile(
                   leading: const CircleAvatar(child: Icon(Icons.person_outline)),
                   title: Text(candidate['displayName'] as String? ?? 'Roster member'),
-                  subtitle: Text('${(minutes / 60).toStringAsFixed(1)} scheduled hours · $shifts event shifts · no recorded schedule conflict'),
-                  onTap: () => Navigator.pop(dialogContext, candidate),
+                  subtitle: Text('${(minutes / 60).toStringAsFixed(1)} scheduled hours · $shifts event shifts · ${candidate['availabilitySignal'] == 'CONFIRMED_AVAILABLE' ? 'confirmed available' : 'no schedule conflict recorded; not confirmed'}'),
+                  onTap: () => Navigator.pop(dialogContext, {'action': 'assign', 'candidate': candidate}),
+                  trailing: IconButton(
+                    tooltip: 'Ask this worker to confirm availability',
+                    icon: const Icon(Icons.how_to_reg_outlined),
+                    onPressed: () => Navigator.pop(dialogContext, {'action': 'request', 'candidate': candidate}),
+                  ),
                 );
               },
             )),
@@ -2678,9 +2766,16 @@ Future<void> _suggestShiftAssignee(BuildContext context, WidgetRef ref, String e
       ),
     );
     if (selected == null || !context.mounted) return;
-    await ref.read(operationsApiProvider).updateShift(eventId, shift['id'] as String, {'assignedSubject': selected['subject'] as String});
+    final candidate = Map<String, dynamic>.from(selected['candidate'] as Map);
+    if (selected['action'] == 'request') {
+      await ref.read(operationsApiProvider).requestShiftAvailability(eventId, shift['id'] as String, [candidate['subject'] as String]);
+      ref.invalidate(eventShiftsProvider(eventId));
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Availability request sent to ${candidate['displayName']}.')));
+      return;
+    }
+    await ref.read(operationsApiProvider).updateShift(eventId, shift['id'] as String, {'assignedSubject': candidate['subject'] as String});
     ref.invalidate(eventShiftsProvider(eventId));
-    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${selected['displayName']} assigned to the draft. Publish it when ready.')));
+    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${candidate['displayName']} assigned to the draft. Publish it when ready.')));
   } catch (error) {
     if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not suggest or assign staff: $error')));
   }

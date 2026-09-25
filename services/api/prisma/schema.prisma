@@ -63,6 +63,14 @@ enum StaffShiftResponse {
   @@map("staff_shift_response")
 }
 
+enum StaffAvailabilityCheckResponse {
+  PENDING
+  AVAILABLE
+  UNAVAILABLE
+
+  @@map("staff_availability_check_response")
+}
+
 enum StaffAttendanceState {
   NOT_STARTED
   CHECKED_IN
@@ -144,6 +152,8 @@ model Organization {
   setupAuditEvents             TenantSetupAuditEvent[]
   staffShifts                  StaffShift[]
   staffShiftAuditEvents        StaffShiftAuditEvent[]
+  staffAvailabilityChecks      StaffAvailabilityCheck[]
+  staffAvailabilityCheckAudits StaffAvailabilityCheckAudit[]
   staffingDemands              StaffingDemand[]
   staffingDemandAudits         StaffingDemandAudit[]
   staffUnavailability          StaffUnavailability[]
@@ -666,6 +676,7 @@ model StaffShift {
   event                      Event                  @relation(fields: [eventId], references: [id])
   location                   Location?              @relation(fields: [locationId, venueId], references: [id, venueId], map: "staff_shifts_location_venue_fk")
   auditEvents                StaffShiftAuditEvent[]
+  availabilityChecks         StaffAvailabilityCheck[]
   notifications              UserNotification[]
   breaks                     StaffBreak[]
   attendanceClaims           StaffAttendanceClaim[]
@@ -837,6 +848,44 @@ model StaffShiftAuditEvent {
 
   @@index([organizationId, shiftId, createdAt])
   @@map("staff_shift_audit_events")
+}
+
+model StaffAvailabilityCheck {
+  id             String                         @id @default(uuid()) @db.Uuid
+  organizationId String                         @map("organization_id") @db.Uuid
+  eventId        String                         @map("event_id") @db.Uuid
+  shiftId        String                         @map("shift_id") @db.Uuid
+  workerSubject  String                         @map("worker_subject")
+  shiftRevision  Int                            @map("shift_revision")
+  response       StaffAvailabilityCheckResponse @default(PENDING)
+  requestedBy    String                         @map("requested_by")
+  requestedAt    DateTime                       @default(now()) @map("requested_at")
+  respondedAt    DateTime?                      @map("responded_at")
+  organization   Organization                   @relation(fields: [organizationId], references: [id])
+  shift          StaffShift                     @relation(fields: [shiftId, eventId, organizationId], references: [id, eventId, organizationId], map: "staff_availability_checks_shift_scope_fk")
+  auditEvents    StaffAvailabilityCheckAudit[]
+
+  @@unique([id, organizationId])
+  @@unique([organizationId, shiftId, workerSubject, shiftRevision])
+  @@index([organizationId, workerSubject, response, requestedAt])
+  @@map("staff_availability_checks")
+}
+
+model StaffAvailabilityCheckAudit {
+  id                  String                 @id @default(uuid()) @db.Uuid
+  organizationId      String                 @map("organization_id") @db.Uuid
+  availabilityCheckId String                 @map("availability_check_id") @db.Uuid
+  actorId             String                 @map("actor_id")
+  action              String
+  before              Json?                  @db.JsonB
+  after               Json?                  @db.JsonB
+  reason              String?
+  createdAt           DateTime               @default(now()) @map("created_at")
+  organization        Organization           @relation(fields: [organizationId], references: [id])
+  availabilityCheck   StaffAvailabilityCheck @relation(fields: [availabilityCheckId, organizationId], references: [id, organizationId], map: "staff_availability_check_audit_tenant_fk")
+
+  @@index([organizationId, availabilityCheckId, createdAt])
+  @@map("staff_availability_check_audits")
 }
 
 model UserNotification {

@@ -34,6 +34,14 @@ function harness(current?: Record<string, unknown>, restMinutes: number | null =
     },
     personQualification: { findMany: vi.fn().mockResolvedValue([]) },
     staffUnavailability: { findFirst: vi.fn().mockResolvedValue(null), findMany: vi.fn().mockResolvedValue([]) },
+    staffAvailabilityCheck: {
+      create: vi.fn().mockImplementation(({ data }) => ({ id: 'availability-check-1', response: 'PENDING', ...data })),
+      findFirst: vi.fn().mockResolvedValue(null),
+      findUnique: vi.fn().mockResolvedValue(null),
+      findMany: vi.fn().mockResolvedValue([]),
+      update: vi.fn().mockImplementation(({ data }) => ({ id: 'availability-check-1', ...data })),
+    },
+    staffAvailabilityCheckAudit: { create: vi.fn().mockResolvedValue({}) },
     staffShift: {
       create: vi.fn().mockImplementation(({ data }) => ({ id: 'shift-1', state: 'DRAFT', response: 'PENDING', attendance: 'NOT_STARTED', revision: 1, ...data })),
       findFirst: vi.fn().mockImplementation(({ where }) => Promise.resolve(typeof where?.id === 'object' ? null : current ?? null)),
@@ -59,6 +67,35 @@ function harness(current?: Record<string, unknown>, restMinutes: number | null =
 }
 
 describe('event staffing workflow', () => {
+  it('requests explicit availability only from scoped active workers and creates durable notices', async () => {
+    const shift = { id: 'shift-1', eventId: 'event-1', organizationId: 'tenant-1', venueId: 'venue-1', locationId: 'location-1', assignedSubject: null, state: 'DRAFT', attendance: 'NOT_STARTED', revision: 2, requiredQualificationCodes: [], startsAt: new Date(Date.now() + 60 * 60_000), endsAt: new Date(Date.now() + 4 * 60 * 60_000) };
+    const { service, tx, push } = harness(shift);
+    tx.person.findMany.mockResolvedValue([{ id: 'person-1', externalSubject: workerSubject }]);
+
+    const rows = await service.requestAvailabilityChecks(manager, 'event-1', 'shift-1', { subjects: [workerSubject] }, 'availability-request-key-1');
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ workerSubject, shiftRevision: 2, response: 'PENDING' });
+    expect(tx.staffAvailabilityCheckAudit.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ action: 'requested' }) }));
+    expect(tx.userNotification.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ recipientSubject: workerSubject, kind: 'staffing.availability.requested' }) }));
+    expect(push.deliver).toHaveBeenCalledOnce();
+  });
+
+  it('lets only the requested worker respond once to an unchanged future draft shift', async () => {
+    const check = { id: 'availability-check-1', organizationId: 'tenant-1', eventId: 'event-1', shiftId: 'shift-1', workerSubject, shiftRevision: 2, response: 'PENDING' };
+    const shift = { id: 'shift-1', eventId: 'event-1', venueId: 'venue-1', locationId: 'location-1', assignedSubject: null, state: 'DRAFT', revision: 2, startsAt: new Date(Date.now() + 60 * 60_000) };
+    const { service, tx } = harness();
+    tx.staffAvailabilityCheck.findFirst.mockResolvedValue(check);
+    tx.staffShift.findFirst.mockResolvedValue(shift);
+    tx.staffAvailabilityCheck.update.mockImplementation(({ data }) => ({ ...check, ...data }));
+
+    const response = await service.respondToAvailabilityCheck(worker, check.id, { response: 'AVAILABLE' }, 'availability-response-key-1');
+
+    expect(response).toMatchObject({ response: 'AVAILABLE' });
+    expect(response.respondedAt).toBeInstanceOf(Date);
+    expect(tx.staffAvailabilityCheckAudit.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ actorId: workerSubject, action: 'available' }) }));
+  });
+
   it('forecasts role demand from tenant and venue scoped earlier event plans', async () => {
     const { service, tx } = harness();
     tx.event.findFirst.mockResolvedValue({ id: 'event-1', venueId: 'venue-1', startsAt: new Date('2026-10-10T17:00:00Z') });
@@ -136,7 +173,7 @@ describe('event staffing workflow', () => {
     const current = {
       id: 'shift-1', eventId: 'event-1', organizationId: 'tenant-1', venueId: 'venue-1', locationId: 'location-1',
       assignedSubject: null, role: 'Usher', startsAt: new Date('2026-10-01T17:00:00Z'), endsAt: new Date('2026-10-01T22:00:00Z'),
-      requiredQualificationCodes: ['FOOD_HANDLER'], state: 'DRAFT', attendance: 'NOT_STARTED',
+      requiredQualificationCodes: ['FOOD_HANDLER'], state: 'DRAFT', attendance: 'NOT_STARTED', revision: 1,
     };
     const { service, tx } = harness(current);
     const secondSubject = 'https://idp.example|worker-2';
@@ -148,7 +185,11 @@ describe('event staffing workflow', () => {
       { id: 'person-3', externalSubject: thirdSubject, displayName: 'Casey' },
       { id: 'person-4', externalSubject: fourthSubject, displayName: 'Drew' },
     ]);
-    tx.staffUnavailability.findMany.mockResolvedValue([{ subject: secondSubject }]);
+    tx.staffUnavailability.findMany.mockResolvedValue([]);
+    tx.staffAvailabilityCheck.findMany.mockResolvedValue([
+      { workerSubject, response: 'AVAILABLE' },
+      { workerSubject: secondSubject, response: 'UNAVAILABLE' },
+    ]);
     tx.staffShift.findMany
       .mockResolvedValueOnce([{ assignedSubject: fourthSubject }])
       .mockResolvedValueOnce([{ assignedSubject: workerSubject, startsAt: new Date('2026-10-01T10:00:00Z'), endsAt: new Date('2026-10-01T11:30:00Z') }]);
@@ -157,7 +198,7 @@ describe('event staffing workflow', () => {
     const result = await service.assignmentSuggestions({ ...manager, assignableUserIds: [workerSubject, secondSubject, thirdSubject, fourthSubject] }, 'event-1', 'shift-1');
 
     expect(result).toMatchObject({ availabilitySignal: 'NO_RECORDED_CONFLICT_ONLY', eligibleCount: 1, excludedCount: 3 });
-    expect(result.recommendations).toEqual([{ subject: workerSubject, displayName: 'Avery', eventAssignedMinutes: 90, eventAssignedShifts: 1, availabilitySignal: 'NO_RECORDED_CONFLICT_ONLY' }]);
+    expect(result.recommendations).toEqual([{ subject: workerSubject, displayName: 'Avery', eventAssignedMinutes: 90, eventAssignedShifts: 1, availabilitySignal: 'CONFIRMED_AVAILABLE' }]);
     expect(tx.person.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ organizationId: 'tenant-1', externalSubject: { in: [thirdSubject, secondSubject, workerSubject, fourthSubject].sort() } }) }));
   });
 

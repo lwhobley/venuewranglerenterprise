@@ -1,8 +1,8 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma, StaffShiftResponse } from '@prisma/client';
 import { createHash } from 'node:crypto';
-import { assertScope, type Identity } from './auth';
-import { CreateStaffingDemandDto, CreateStaffShiftDto, OfflineAttendanceClaimDto, RespondToShiftDto, ReviewAttendanceClaimDto, StaffAttendanceCorrectionDto, UpdateStaffingDemandDto, UpdateStaffShiftDto } from './staffing.dto';
+import { assertCapability, assertScope, type Identity } from './auth';
+import { CreateStaffingDemandDto, CreateStaffShiftDto, OfflineAttendanceClaimDto, RequestShiftAvailabilityDto, RespondToAvailabilityCheckDto, RespondToShiftDto, ReviewAttendanceClaimDto, StaffAttendanceCorrectionDto, UpdateStaffingDemandDto, UpdateStaffShiftDto } from './staffing.dto';
 import { PrismaService } from './prisma.service';
 import { PushNotificationsService } from './push-notifications.service';
 
@@ -275,14 +275,16 @@ export class StaffingService {
       const restMs = (policy?.minimum_rest_minutes ?? 0) * 60_000;
       const restStart = new Date(shift.startsAt.getTime() - restMs);
       const restEnd = new Date(shift.endsAt.getTime() + restMs);
-      const [unavailable, conflicts, workload, qualifications] = await Promise.all([
+      const [unavailable, conflicts, workload, qualifications, responses] = await Promise.all([
         tx.staffUnavailability.findMany({ where: { organizationId: identity.tenantId, subject: { in: people.map((person) => person.externalSubject) }, deletedAt: null, startsAt: { lt: shift.endsAt }, endsAt: { gt: shift.startsAt } }, select: { subject: true } }),
         tx.staffShift.findMany({ where: { organizationId: identity.tenantId, assignedSubject: { in: people.map((person) => person.externalSubject) }, state: 'PUBLISHED', id: { not: shiftId }, startsAt: { lt: restEnd }, endsAt: { gt: restStart } }, select: { assignedSubject: true } }),
         tx.staffShift.findMany({ where: { organizationId: identity.tenantId, eventId, assignedSubject: { in: people.map((person) => person.externalSubject) }, state: { in: ['DRAFT', 'PUBLISHED'] }, id: { not: shiftId } }, select: { assignedSubject: true, startsAt: true, endsAt: true } }),
         shift.requiredQualificationCodes.length === 0 ? Promise.resolve([]) : tx.personQualification.findMany({ where: { organizationId: identity.tenantId, personId: { in: people.map((person) => person.id) }, code: { in: shift.requiredQualificationCodes }, revokedAt: null, evidenceStatus: { in: ['NONE', 'VERIFIED'] }, OR: [{ expiresAt: null }, { expiresAt: { gte: new Date(Date.UTC(shift.endsAt.getUTCFullYear(), shift.endsAt.getUTCMonth(), shift.endsAt.getUTCDate())) } }] }, select: { personId: true, code: true } }),
+        tx.staffAvailabilityCheck.findMany({ where: { organizationId: identity.tenantId, eventId, shiftId, shiftRevision: shift.revision, workerSubject: { in: people.map((person) => person.externalSubject) } }, select: { workerSubject: true, response: true } }),
       ]);
       const unavailableSubjects = new Set(unavailable.map((row) => row.subject));
       const conflictingSubjects = new Set(conflicts.map((row) => row.assignedSubject).filter((subject): subject is string => subject !== null));
+      const availabilityBySubject = new Map(responses.map((row) => [row.workerSubject, row.response]));
       const qualifiedByPerson = new Map<string, Set<string>>();
       for (const qualification of qualifications) {
         const codes = qualifiedByPerson.get(qualification.personId) ?? new Set<string>();
@@ -303,13 +305,15 @@ export class StaffingService {
         const reasons: string[] = [];
         if (policy?.minimum_rest_minutes === null || policy === undefined) reasons.push('Tenant rest policy is not configured.');
         if (unavailableSubjects.has(person.externalSubject)) reasons.push('Worker has recorded unavailable time during this shift.');
+        if (availabilityBySubject.get(person.externalSubject) === 'UNAVAILABLE') reasons.push('Worker explicitly reported unavailable for this draft shift.');
         if (conflictingSubjects.has(person.externalSubject)) reasons.push('Worker has a published shift inside this shift or its required rest window.');
         const validCodes = qualifiedByPerson.get(person.id) ?? new Set<string>();
         const missing = shift.requiredQualificationCodes.filter((code) => !validCodes.has(code));
         if (missing.length > 0) reasons.push(`Missing current qualifications: ${missing.join(', ')}.`);
         if (reasons.length > 0) { excludedCount += 1; continue; }
         const load = workloadBySubject.get(person.externalSubject) ?? { minutes: 0, shifts: 0 };
-        recommendations.push({ subject: person.externalSubject, displayName: person.displayName, eventAssignedMinutes: Math.round(load.minutes), eventAssignedShifts: load.shifts, availabilitySignal: 'NO_RECORDED_CONFLICT_ONLY' });
+        const availabilityResponse = availabilityBySubject.get(person.externalSubject);
+        recommendations.push({ subject: person.externalSubject, displayName: person.displayName, eventAssignedMinutes: Math.round(load.minutes), eventAssignedShifts: load.shifts, availabilitySignal: availabilityResponse === 'AVAILABLE' ? 'CONFIRMED_AVAILABLE' : 'NO_RECORDED_CONFLICT_ONLY' });
       }
       recommendations.sort((left, right) => left.eventAssignedMinutes - right.eventAssignedMinutes || left.eventAssignedShifts - right.eventAssignedShifts || left.displayName.localeCompare(right.displayName));
       return {
@@ -321,6 +325,114 @@ export class StaffingService {
         message: recommendations.length === 0 ? 'No eligible assignable workers were found. Review the venue rest policy, qualifications, availability records, and identity assignment scope.' : 'Ranked by lowest scheduled minutes in this event. A manager must select a worker; the assignment endpoint rechecks all rules.',
       };
     });
+  }
+
+  async requestAvailabilityChecks(identity: Identity, eventId: string, shiftId: string, dto: RequestShiftAvailabilityDto, key: string) {
+    assertScope(identity, 'operations:write', eventId);
+    const subjects = [...new Set(dto.subjects)].sort();
+    const result = await this.command(identity, key, 'staff-availability-check.request', { eventId, shiftId, subjects }, async (tx) => {
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`staff-shift:${identity.tenantId}:${shiftId}`}, 0))`;
+      const shift = await tx.staffShift.findFirst({ where: { id: shiftId, eventId, organizationId: identity.tenantId } });
+      if (!shift) throw new NotFoundException('Shift not found.');
+      assertScope(identity, 'operations:write', eventId, shift.venueId, shift.locationId ?? undefined);
+      if (shift.state !== 'DRAFT' || shift.assignedSubject !== null || shift.attendance !== 'NOT_STARTED') {
+        throw new ConflictException('Availability can only be requested for an unassigned draft shift.');
+      }
+      if (subjects.some((subject) => !identity.assignableUserIds.includes(subject))) {
+        throw new ForbiddenException('One or more workers are outside your signed assignment scope.');
+      }
+      const people = await tx.person.findMany({
+        where: { organizationId: identity.tenantId, active: true, externalSubject: { in: subjects } },
+        select: { id: true, externalSubject: true },
+      });
+      if (people.length !== subjects.length) throw new NotFoundException('One or more selected workers are not active in this organization.');
+      for (const person of people) {
+        await this.lockScheduleSubjects(tx, identity.tenantId, [person.externalSubject]);
+        await this.assertQualified(tx, identity.tenantId, person.externalSubject, shift.requiredQualificationCodes, shift.endsAt);
+        await this.assertAvailable(tx, identity.tenantId, person.externalSubject, shift.startsAt, shift.endsAt);
+        await this.assertNoOverlap(tx, identity.tenantId, person.externalSubject, shift.startsAt, shift.endsAt, shift.id);
+      }
+      const checks = [];
+      const notifications = [];
+      for (const subject of subjects) {
+        const existing = await tx.staffAvailabilityCheck.findUnique({
+          where: { organizationId_shiftId_workerSubject_shiftRevision: { organizationId: identity.tenantId, shiftId, workerSubject: subject, shiftRevision: shift.revision } },
+        });
+        if (existing) { checks.push(existing); continue; }
+        const check = await tx.staffAvailabilityCheck.create({ data: {
+          organizationId: identity.tenantId, eventId, shiftId, workerSubject: subject,
+          shiftRevision: shift.revision, requestedBy: identity.subject,
+        } });
+        await this.auditAvailabilityCheck(tx, identity, check.id, 'requested', undefined, check);
+        checks.push(check);
+        if (subject !== identity.subject) notifications.push(await tx.userNotification.create({ data: {
+          organizationId: identity.tenantId, eventId, shiftId, recipientSubject: subject,
+          kind: 'staffing.availability.requested', title: 'Availability requested',
+          body: 'A manager is checking your availability for a draft event shift.',
+        } }));
+      }
+      return { checks, notifications };
+    });
+    for (const notification of result.notifications) this.deliver(identity, notification);
+    return result.checks;
+  }
+
+  async availabilityChecksForShift(identity: Identity, eventId: string, shiftId: string) {
+    assertScope(identity, 'operations:write', eventId);
+    return this.prisma.withTenant(identity, async (tx) => {
+      const shift = await tx.staffShift.findFirst({ where: { id: shiftId, eventId, organizationId: identity.tenantId } });
+      if (!shift) throw new NotFoundException('Shift not found.');
+      assertScope(identity, 'operations:write', eventId, shift.venueId, shift.locationId ?? undefined);
+      const rows = await tx.staffAvailabilityCheck.findMany({
+        where: { organizationId: identity.tenantId, eventId, shiftId },
+        orderBy: [{ requestedAt: 'desc' }, { workerSubject: 'asc' }],
+      });
+      const people = await tx.person.findMany({ where: { organizationId: identity.tenantId, externalSubject: { in: rows.map((row) => row.workerSubject) } }, select: { externalSubject: true, displayName: true } });
+      const names = new Map(people.map((person) => [person.externalSubject, person.displayName]));
+      const currentShiftCanAcceptResponses = shift.state === 'DRAFT' && shift.assignedSubject === null;
+      return rows.map((row) => ({ ...row, displayName: names.get(row.workerSubject) ?? 'Roster member', current: currentShiftCanAcceptResponses && row.shiftRevision === shift.revision }));
+    });
+  }
+
+  async myAvailabilityChecks(identity: Identity) {
+    assertCapability(identity, 'operations:read');
+    return this.prisma.withTenant(identity, async (tx) => {
+      const rows = await tx.staffAvailabilityCheck.findMany({
+        where: { organizationId: identity.tenantId, workerSubject: identity.subject, response: 'PENDING' },
+        include: { shift: { select: { id: true, eventId: true, venueId: true, locationId: true, role: true, instructions: true, startsAt: true, endsAt: true, state: true, revision: true, event: { select: { name: true } } } } },
+        orderBy: { requestedAt: 'asc' },
+      });
+      return rows.filter((row) => row.shift.state === 'DRAFT' && row.shift.revision === row.shiftRevision && row.shift.startsAt > new Date()
+        && identity.eventIds.includes(row.eventId) && identity.venueIds.includes(row.shift.venueId)
+        && (row.shift.locationId === null || identity.locationIds.includes(row.shift.locationId)));
+    });
+  }
+
+  async respondToAvailabilityCheck(identity: Identity, checkId: string, dto: RespondToAvailabilityCheckDto, key: string) {
+    assertCapability(identity, 'operations:read');
+    const reason = dto.reason?.trim() ?? '';
+    const result = await this.command(identity, key, `staff-availability-check.${dto.response.toLowerCase()}`, { checkId, response: dto.response, reason }, async (tx) => {
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`staff-availability-check:${identity.tenantId}:${checkId}`}, 0))`;
+      const current = await tx.staffAvailabilityCheck.findFirst({ where: { id: checkId, organizationId: identity.tenantId, workerSubject: identity.subject } });
+      if (!current) throw new NotFoundException('Availability request not found.');
+      const shift = await tx.staffShift.findFirst({ where: { id: current.shiftId, eventId: current.eventId, organizationId: identity.tenantId } });
+      if (!shift) throw new NotFoundException('Shift not found.');
+      assertScope(identity, 'operations:read', current.eventId, shift.venueId, shift.locationId ?? undefined);
+      if (current.response !== 'PENDING') throw new ConflictException('This availability request has already been answered.');
+      if (shift.state !== 'DRAFT' || shift.assignedSubject !== null || shift.revision !== current.shiftRevision || shift.startsAt <= new Date()) {
+        throw new ConflictException('This availability request is stale because the draft shift changed, was assigned, or started.');
+      }
+      const updated = await tx.staffAvailabilityCheck.update({ where: { id: checkId }, data: { response: dto.response, respondedAt: new Date() } });
+      await this.auditAvailabilityCheck(tx, identity, checkId, dto.response.toLowerCase(), current, updated, reason);
+      const notification = current.requestedBy === identity.subject ? null : await tx.userNotification.create({ data: {
+        organizationId: identity.tenantId, eventId: current.eventId, shiftId: current.shiftId,
+        recipientSubject: current.requestedBy, kind: `staffing.availability.${dto.response.toLowerCase()}`,
+        title: 'Availability response received', body: 'A worker responded to a draft event shift availability request.',
+      } });
+      return { check: updated, notification };
+    });
+    this.deliver(identity, result.notification);
+    return result.check;
   }
 
   async teamAvailability(identity: Identity, eventId: string, fromInput: string, toInput: string) {
@@ -413,6 +525,7 @@ export class StaffingService {
       const nextSubject = dto.assignedSubject === undefined ? current.assignedSubject : dto.assignedSubject;
       const nextQualifications = normalized.requiredQualificationCodes ?? current.requiredQualificationCodes;
       if (current.state !== 'PUBLISHED') await this.lockScheduleSubjects(tx, identity.tenantId, [nextSubject]);
+      if (nextSubject) await this.assertNotExplicitlyUnavailable(tx, identity.tenantId, current.id, current.revision, nextSubject);
       await this.assertQualified(tx, identity.tenantId, nextSubject, nextQualifications, end);
       await this.assertAvailable(tx, identity.tenantId, nextSubject, start, end);
       await this.assertNoOverlap(tx, identity.tenantId, nextSubject, start, end, shiftId);
@@ -423,7 +536,8 @@ export class StaffingService {
         requiredQualificationCodes: normalized.requiredQualificationCodes,
         startsAt: dto.startsAt ? start : undefined,
         endsAt: dto.endsAt ? end : undefined,
-        ...(current.state === 'PUBLISHED' ? { revision: { increment: 1 }, response: StaffShiftResponse.PENDING, responseRevision: null } : {}),
+        revision: { increment: 1 },
+        ...(current.state === 'PUBLISHED' ? { response: StaffShiftResponse.PENDING, responseRevision: null } : {}),
         updatedBy: identity.subject,
       };
       const updated = await tx.staffShift.update({ where: { id: shiftId }, data: patchData });
@@ -447,6 +561,7 @@ export class StaffingService {
       assertScope(identity, 'operations:write', eventId, current.venueId, current.locationId ?? undefined);
       if (current.state !== 'DRAFT') throw new ConflictException('Only a draft shift can be published.');
       await this.assertAssignable(tx, identity, current.assignedSubject ?? undefined);
+      await this.assertNotExplicitlyUnavailable(tx, identity.tenantId, current.id, current.revision, current.assignedSubject);
       await this.assertQualified(tx, identity.tenantId, current.assignedSubject, current.requiredQualificationCodes, current.endsAt);
       await this.lockScheduleSubjects(tx, identity.tenantId, [current.assignedSubject]);
       await this.assertAvailable(tx, identity.tenantId, current.assignedSubject, current.startsAt, current.endsAt);
@@ -716,6 +831,15 @@ export class StaffingService {
     if (!person) throw new NotFoundException('The selected person is not an active user in this organization.');
   }
 
+  private async assertNotExplicitlyUnavailable(tx: Prisma.TransactionClient, tenantId: string, shiftId: string, revision: number, subject?: string | null) {
+    if (!subject) return;
+    const response = await tx.staffAvailabilityCheck.findFirst({
+      where: { organizationId: tenantId, shiftId, workerSubject: subject, shiftRevision: revision, response: 'UNAVAILABLE' },
+      select: { id: true },
+    });
+    if (response) throw new ConflictException('This worker explicitly reported unavailable for the current draft shift. Request a new response after revising the shift or choose another worker.');
+  }
+
   private async lockScheduleSubjects(tx: Prisma.TransactionClient, tenantId: string, subjects: Array<string | null | undefined>) {
     for (const subject of [...new Set(subjects.filter((value): value is string => Boolean(value)))].sort()) {
       await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`staff-schedule:${tenantId}:${subject}`}, 0))`;
@@ -786,6 +910,13 @@ export class StaffingService {
       organizationId: identity.tenantId, demandId, actorId: identity.subject, action, reason,
       before: before === undefined ? undefined : JSON.parse(JSON.stringify(before)) as Prisma.InputJsonValue,
       after: after === undefined ? undefined : JSON.parse(JSON.stringify(after)) as Prisma.InputJsonValue,
+    } });
+  }
+
+  private auditAvailabilityCheck(tx: Prisma.TransactionClient, identity: Identity, availabilityCheckId: string, action: string, before?: unknown, after?: unknown, reason?: string) {
+    return tx.staffAvailabilityCheckAudit.create({ data: {
+      organizationId: identity.tenantId, availabilityCheckId, actorId: identity.subject, action, reason,
+      before: before as Prisma.InputJsonValue | undefined, after: after as Prisma.InputJsonValue | undefined,
     } });
   }
 

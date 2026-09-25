@@ -3,7 +3,7 @@ import { ApiBearerAuth, ApiQuery, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { JwtIdentityGuard } from './auth';
 import { StaffingService } from './staffing.service';
-import { CreateStaffingDemandDto, CreateStaffShiftDto, OfflineAttendanceClaimDto, RespondToShiftDto, ReviewAttendanceClaimDto, StaffAttendanceCorrectionDto, StartStaffBreakDto, UpdateStaffingDemandDto, UpdateStaffShiftDto } from './staffing.dto';
+import { CreateStaffingDemandDto, CreateStaffShiftDto, OfflineAttendanceClaimDto, RequestShiftAvailabilityDto, RespondToAvailabilityCheckDto, RespondToShiftDto, ReviewAttendanceClaimDto, StaffAttendanceCorrectionDto, StartStaffBreakDto, UpdateStaffingDemandDto, UpdateStaffShiftDto } from './staffing.dto';
 
 @Controller('v1')
 @UseGuards(JwtIdentityGuard)
@@ -17,6 +17,18 @@ export class StaffingController {
   }
   @Get('events/:eventId/shifts/:shiftId/assignment-suggestions') assignmentSuggestions(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Param('shiftId', new ParseUUIDPipe()) shiftId: string) {
     return this.staffing.assignmentSuggestions(req.identity, eventId, shiftId);
+  }
+  @Get('events/:eventId/shifts/:shiftId/availability-checks') availabilityChecks(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Param('shiftId', new ParseUUIDPipe()) shiftId: string) {
+    return this.staffing.availabilityChecksForShift(req.identity, eventId, shiftId);
+  }
+  @Post('events/:eventId/shifts/:shiftId/availability-checks') requestAvailabilityChecks(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Param('shiftId', new ParseUUIDPipe()) shiftId: string, @Body() dto: RequestShiftAvailabilityDto, @Headers('idempotency-key') key: string) {
+    return this.staffing.requestAvailabilityChecks(req.identity, eventId, shiftId, dto, this.key(key));
+  }
+  @Get('me/availability-checks') myAvailabilityChecks(@Req() req: Request) {
+    return this.staffing.myAvailabilityChecks(req.identity);
+  }
+  @Post('me/availability-checks/:checkId/respond') respondToAvailabilityCheck(@Req() req: Request, @Param('checkId', new ParseUUIDPipe()) checkId: string, @Body() dto: RespondToAvailabilityCheckDto, @Headers('idempotency-key') key: string) {
+    return this.staffing.respondToAvailabilityCheck(req.identity, checkId, dto, this.key(key));
   }
   @Get('events/:eventId/coverage/requirements') coverage(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string) {
     return this.staffing.coverageRequirements(req.identity, eventId);

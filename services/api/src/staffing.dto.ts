@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { ArrayMaxSize, ArrayUnique, IsArray, IsDateString, IsIn, IsInt, IsOptional, IsString, IsUUID, Length, Matches, Max, Min, ValidateIf } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, ArrayUnique, IsArray, IsDateString, IsIn, IsInt, IsOptional, IsString, IsUUID, Length, Matches, Max, Min, ValidateIf } from 'class-validator';
 
 export class CreateStaffShiftDto {
   @ApiProperty() @IsUUID() venueId!: string;
@@ -24,6 +24,17 @@ export class UpdateStaffShiftDto {
 
 export class RespondToShiftDto {
   @ApiProperty({ enum: ['ACKNOWLEDGED', 'DECLINED'] }) @IsIn(['ACKNOWLEDGED', 'DECLINED']) response!: 'ACKNOWLEDGED' | 'DECLINED';
+  @ApiPropertyOptional() @IsOptional() @IsString() @Length(0, 500) reason?: string;
+}
+
+export class RequestShiftAvailabilityDto {
+  @ApiProperty({ type: [String], minItems: 1, maxItems: 100, description: 'Active worker subjects from the caller’s signed assignment scope.' })
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(100) @ArrayUnique() @IsString({ each: true }) @Length(1, 240, { each: true })
+  subjects!: string[];
+}
+
+export class RespondToAvailabilityCheckDto {
+  @ApiProperty({ enum: ['AVAILABLE', 'UNAVAILABLE'] }) @IsIn(['AVAILABLE', 'UNAVAILABLE']) response!: 'AVAILABLE' | 'UNAVAILABLE';
   @ApiPropertyOptional() @IsOptional() @IsString() @Length(0, 500) reason?: string;
 }
 
