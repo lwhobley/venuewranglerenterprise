@@ -599,10 +599,10 @@ class OperationsApi {
       _command<void>({'action': 'hospitality.order.create', 'eventId': eventId, ...order},
         (token, key) => _dio.post<void>('/api/v1/events/$eventId/hospitality/orders', data: order,
           options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
-  Future<void> hospitalityOrderAction(String eventId, String orderId, String action, {String? reason}) async =>
-      _command<void>({'action': 'hospitality.order.$action', 'eventId': eventId, 'orderId': orderId, 'reason': reason},
+  Future<void> hospitalityOrderAction(String eventId, String orderId, String action, {String? reason, List<Map<String, Object?>>? fulfillments}) async =>
+      _command<void>({'action': 'hospitality.order.$action', 'eventId': eventId, 'orderId': orderId, 'reason': reason, 'fulfillments': fulfillments},
         (token, key) => _dio.post<void>('/api/v1/events/$eventId/hospitality/orders/$orderId/actions',
-          data: {'action': action, if (reason != null) 'reason': reason},
+          data: {'action': action, if (reason != null) 'reason': reason, if (fulfillments != null) 'fulfillments': fulfillments},
           options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
   Future<Map<String, dynamic>> shiftAssignmentSuggestions(String eventId, String shiftId) async =>
       (await _request((token) => _dio.get<Map<String, dynamic>>(

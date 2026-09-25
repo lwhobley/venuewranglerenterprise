@@ -40,11 +40,13 @@ class _StatusAdapter implements HttpClientAdapter {
   final int status;
   final bool failTransport;
   int requests = 0;
+  RequestOptions? lastRequest;
 
   @override
   Future<ResponseBody> fetch(RequestOptions options,
       Stream<Uint8List>? requestStream, Future<void>? cancelFuture) async {
     requests++;
+    lastRequest = options;
     if (failTransport) throw DioException(requestOptions: options);
     return ResponseBody.fromString('', status);
   }
@@ -80,6 +82,46 @@ data: {"issueId":"issue-1","action":"reported"}
     expect(adapter.lastRequest?.headers['Authorization'],
         'Bearer test-access-token');
     expect(adapter.lastRequest?.headers['Last-Event-ID'], '0');
+  });
+
+  test('submits hospitality fulfillment batches with idempotency and reasons',
+      () async {
+    final adapter = _StatusAdapter(204);
+    final dio = Dio(BaseOptions(baseUrl: 'https://venue.example'))
+      ..httpClientAdapter = adapter;
+    final api = OperationsApi(_FixedTokenAuth(), const FlutterSecureStorage(),
+        dio: dio);
+
+    await api.hospitalityOrderAction(
+      'event-1',
+      'order-1',
+      'fulfill',
+      reason: 'Two cases remain unavailable.',
+      fulfillments: [
+        {
+          'lineId': 'line-1',
+          'quantity': 3,
+          'substituteItemName': 'Still water',
+          'reason': 'Sparkling stock is out.',
+        }
+      ],
+    );
+
+    expect(adapter.lastRequest?.data, {
+      'action': 'fulfill',
+      'reason': 'Two cases remain unavailable.',
+      'fulfillments': [
+        {
+          'lineId': 'line-1',
+          'quantity': 3,
+          'substituteItemName': 'Still water',
+          'reason': 'Sparkling stock is out.',
+        }
+      ],
+    });
+    expect(adapter.lastRequest?.headers['Idempotency-Key'], isNotEmpty);
+    expect(adapter.lastRequest?.headers['Authorization'],
+        'Bearer test-access-token');
   });
 
   test(

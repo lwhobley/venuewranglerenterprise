@@ -27,7 +27,7 @@ export class HospitalityService {
             OR: [{ locationId: null }, { locationId: { in: identity.locationIds } }],
           } : {}),
         },
-        include: { lines: { orderBy: { itemName: 'asc' } } },
+        include: { lines: { orderBy: { itemName: 'asc' }, include: { fulfillments: { orderBy: { createdAt: 'asc' } } } } },
         orderBy: [{ serviceAt: 'asc' }, { createdAt: 'desc' }],
       });
     });
@@ -52,7 +52,7 @@ export class HospitalityService {
         requestedBy: identity.subject, assignedTo: dto.assignedTo, serviceAt: new Date(dto.serviceAt),
         instructions: dto.instructions?.trim() ?? '', state: 'SUBMITTED',
         lines: { create: input.lines },
-      }, include: { lines: { orderBy: { itemName: 'asc' } } } });
+      }, include: { lines: { orderBy: { itemName: 'asc' }, include: { fulfillments: { orderBy: { createdAt: 'asc' } } } } } });
       await this.audit(tx, identity, order.id, 'submitted', null, order);
       const notification = dto.assignedTo && dto.assignedTo !== identity.subject
         ? await this.notification(tx, identity, order, dto.assignedTo, 'hospitality.order.submitted', 'New hospitality order') : null;
@@ -65,10 +65,10 @@ export class HospitalityService {
   async act(identity: Identity, eventId: string, orderId: string, dto: HospitalityOrderActionDto, key: string) {
     const result = await this.command(identity, key, `hospitality.order.${dto.action}`, { eventId, orderId, ...dto }, async tx => {
       await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`hospitality-order:${identity.tenantId}:${orderId}`}, 0))`;
-      const current = await tx.hospitalityOrder.findFirst({ where: { id: orderId, eventId, organizationId: identity.tenantId }, include: { lines: { orderBy: { itemName: 'asc' } } } });
+      const current = await tx.hospitalityOrder.findFirst({ where: { id: orderId, eventId, organizationId: identity.tenantId }, include: { lines: { orderBy: { itemName: 'asc' }, include: { fulfillments: { orderBy: { createdAt: 'asc' } } } } } });
       if (!current) throw new NotFoundException('Hospitality order not found.');
       if (identity.capabilities.includes('hospitality:fulfill') && current.assignedTo && current.assignedTo !== identity.subject && !identity.capabilities.includes('tenant:admin')) throw new ForbiddenException('This order is assigned to another kitchen operator.');
-      const mustFulfill = ['accept', 'preparing', 'ready', 'distribute', 'reject'].includes(dto.action);
+      const mustFulfill = ['accept', 'preparing', 'ready', 'distribute', 'fulfill', 'reject'].includes(dto.action);
       if (mustFulfill) {
         const fulfillCapability = identity.capabilities.includes('hospitality:fulfill') ? 'hospitality:fulfill' : 'tenant:admin';
         assertCapability(identity, fulfillCapability);
@@ -79,12 +79,33 @@ export class HospitalityService {
         const capability = identity.subject === current.requestedBy ? this.orderCapability(identity) : identity.capabilities.includes('tenant:admin') ? 'tenant:admin' : 'hospitality:fulfill';
         assertScope(identity, capability, eventId, current.venueId, current.locationId ?? undefined);
       }
+      if (dto.action === 'fulfill' || dto.action === 'distribute') {
+        const input = dto.action === 'fulfill'
+            ? dto
+            : {
+                reason: dto.reason,
+                fulfillments: current.lines
+                    .map(line => ({ lineId: line.id, quantity: Number(line.quantity) - Number(line.fulfilledQuantity) }))
+                    .filter(line => line.quantity > 0),
+              };
+        const updated = await this.recordFulfillment(tx, identity, current, input);
+        const recipient = identity.subject === current.requestedBy ? current.assignedTo : current.requestedBy;
+        const notification = await this.notification(
+            tx,
+            identity,
+            updated,
+            recipient,
+            'hospitality.order.fulfillment',
+            updated.state === 'DISTRIBUTED' ? 'Hospitality order fully fulfilled' : 'Hospitality order partially fulfilled',
+        );
+        return { order: updated, notification };
+      }
       const nextState = this.nextState(current.state, dto.action, identity.subject === current.requestedBy, Boolean(identity.capabilities.includes('hospitality:fulfill') || identity.capabilities.includes('tenant:admin')));
       if (['reject', 'cancel'].includes(dto.action) && !dto.reason?.trim()) throw new ConflictException('A reason is required to reject or cancel an order.');
       const updated = await tx.hospitalityOrder.update({ where: { id: orderId }, data: {
         state: nextState,
         rejectionReason: dto.action === 'reject' ? dto.reason!.trim() : dto.action === 'cancel' ? dto.reason!.trim() : current.rejectionReason,
-      }, include: { lines: { orderBy: { itemName: 'asc' } } } });
+      }, include: { lines: { orderBy: { itemName: 'asc' }, include: { fulfillments: { orderBy: { createdAt: 'asc' } } } } } });
       await this.audit(tx, identity, orderId, dto.action, current, updated, dto.reason?.trim());
       const recipient = identity.subject === current.requestedBy ? current.assignedTo : current.requestedBy;
       const title = dto.action === 'ready' ? 'Hospitality order ready' : dto.action === 'reject' ? 'Hospitality order rejected' : dto.action === 'cancel' ? 'Hospitality order cancelled' : `Hospitality order ${nextState.toLowerCase().replace('_', ' ')}`;
@@ -101,6 +122,7 @@ export class HospitalityService {
       'ACCEPTED:preparing': 'PREPARING', 'ACCEPTED:cancel': 'CANCELLED',
       'PREPARING:ready': 'READY', 'PREPARING:cancel': 'CANCELLED',
       'READY:distribute': 'DISTRIBUTED', 'READY:cancel': 'CANCELLED',
+      'PARTIALLY_DISTRIBUTED:distribute': 'DISTRIBUTED',
       'DISTRIBUTED:pickup': 'PICKED_UP',
     };
     const next = transitions[`${state}:${action}`];
@@ -108,6 +130,71 @@ export class HospitalityService {
     if (action === 'cancel' && ((!isRequester && !canFulfill) || (isRequester && state !== 'SUBMITTED'))) throw new ForbiddenException('Requesters can cancel only before kitchen acceptance; kitchen staff may cancel later with a reason.');
     if (action === 'pickup' && !isRequester && !canFulfill) throw new ForbiddenException('Only the requester or kitchen team can confirm pickup.');
     return next;
+  }
+
+  private async recordFulfillment(
+      tx: Prisma.TransactionClient,
+      identity: Identity,
+      current: Prisma.HospitalityOrderGetPayload<{ include: { lines: { include: { fulfillments: true } } } }>,
+      dto: Pick<HospitalityOrderActionDto, 'fulfillments' | 'reason'>,
+  ) {
+    if (!['READY', 'PARTIALLY_DISTRIBUTED'].includes(current.state)) {
+      throw new ConflictException('Items can be fulfilled only after the order is ready.');
+    }
+    const entries = dto.fulfillments;
+    if (!entries?.length) throw new ConflictException('Enter at least one delivered item quantity.');
+    const lines = new Map(current.lines.map(line => [line.id, line]));
+    const seen = new Set<string>();
+    const normalized = entries.map(entry => {
+      if (seen.has(entry.lineId)) throw new ConflictException('Each order line can appear only once in a fulfillment batch.');
+      seen.add(entry.lineId);
+      const line = lines.get(entry.lineId);
+      if (!line) throw new ConflictException('A fulfillment line does not belong to this order.');
+      const fulfilledMilli = Math.round(Number(line.fulfilledQuantity) * 1000);
+      const requestedMilli = Math.round(Number(line.quantity) * 1000);
+      const batchMilli = Math.round(entry.quantity * 1000);
+      if (batchMilli <= 0 || fulfilledMilli + batchMilli > requestedMilli) {
+        throw new ConflictException(`Delivered quantity for ${line.itemName} must be positive and cannot exceed the remaining ${((requestedMilli - fulfilledMilli) / 1000).toFixed(3)} ${line.unit}.`);
+      }
+      const substituteItemName = entry.substituteItemName?.trim() || null;
+      const reason = entry.reason?.trim() || null;
+      if (substituteItemName && (!reason || reason.length < 3)) {
+        throw new ConflictException(`A reason is required when ${line.itemName} is substituted.`);
+      }
+      return { line, batchMilli, fulfilledMilli, requestedMilli, substituteItemName, reason };
+    });
+    const deliveredMilli = normalized.reduce((total, row) => total + row.batchMilli, 0);
+    if (deliveredMilli === 0) throw new ConflictException('At least one delivered quantity is required.');
+    const complete = current.lines.every(line => {
+      const row = normalized.find(item => item.line.id === line.id);
+      const fulfilledMilli = Math.round(Number(line.fulfilledQuantity) * 1000) + (row?.batchMilli ?? 0);
+      return fulfilledMilli >= Math.round(Number(line.quantity) * 1000);
+    });
+    if (!complete && (!dto.reason?.trim() || dto.reason.trim().length < 3)) {
+      throw new ConflictException('Explain why this fulfillment is partial so the remaining items can be followed up.');
+    }
+
+    for (const row of normalized) {
+      await tx.hospitalityOrderFulfillment.create({
+        data: {
+          organizationId: identity.tenantId,
+          eventId: current.eventId,
+          orderId: current.id,
+          lineId: row.line.id,
+          actorId: identity.subject,
+          quantity: row.batchMilli / 1000,
+          substituteItemName: row.substituteItemName,
+          reason: row.reason ?? (complete ? null : dto.reason!.trim()),
+        },
+      });
+    }
+    const updated = await tx.hospitalityOrder.update({
+      where: { id: current.id },
+      data: { state: complete ? 'DISTRIBUTED' : 'PARTIALLY_DISTRIBUTED' },
+      include: { lines: { orderBy: { itemName: 'asc' }, include: { fulfillments: { orderBy: { createdAt: 'asc' } } } } },
+    });
+    await this.audit(tx, identity, current.id, complete ? 'fulfilled' : 'partially_fulfilled', current, updated, dto.reason?.trim());
+    return updated;
   }
 
   private assertCanView(identity: Identity, eventId: string) {

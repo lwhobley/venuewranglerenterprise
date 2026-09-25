@@ -195,10 +195,10 @@ class _HospitalityOrderCard extends ConsumerWidget {
       if (state == 'PREPARING') {
         actions.add(('ready', 'Mark ready'));
       }
-      if (state == 'READY') {
-        actions.add(('distribute', 'Mark distributed'));
+      if (state == 'READY' || state == 'PARTIALLY_DISTRIBUTED') {
+        actions.add(('fulfill', 'Record items delivered'));
       }
-      if (state == 'ACCEPTED' || state == 'PREPARING' || state == 'READY') {
+      if (state == 'ACCEPTED' || state == 'PREPARING' || state == 'READY' || state == 'PARTIALLY_DISTRIBUTED') {
         actions.add(('cancel', 'Cancel order'));
       }
     }
@@ -223,10 +223,16 @@ class _HospitalityOrderCard extends ConsumerWidget {
           ListTile(
             dense: true,
             title: Text(
-                '${line['quantity']} ${line['unit']} · ${line['itemName']}'),
-            subtitle: (line['note'] as String? ?? '').isEmpty
-                ? null
-                : Text(line['note'] as String),
+                '${line['itemName']} · ${line['quantity']} ${line['unit']}'),
+            subtitle: Text([
+              'Delivered ${line['fulfilledQuantity'] ?? 0} of ${line['quantity']} ${line['unit']}',
+              if ((line['note'] as String? ?? '').isNotEmpty) line['note'] as String,
+              for (final fulfillment in (line['fulfillments'] as List? ?? const []).whereType<Map>())
+                if (fulfillment['substituteItemName'] is String)
+                  '${fulfillment['quantity']} substituted with ${fulfillment['substituteItemName']}${fulfillment['reason'] is String ? ' · ${fulfillment['reason']}' : ''}'
+                else if (fulfillment['reason'] is String)
+                  '${fulfillment['quantity']} delivered · ${fulfillment['reason']}',
+            ].join('\n')),
           ),
         if ((order['instructions'] as String? ?? '').isNotEmpty)
           Padding(
@@ -243,7 +249,7 @@ class _HospitalityOrderCard extends ConsumerWidget {
                   children: actions
                       .map((action) => OutlinedButton(
                             onPressed: () =>
-                                _act(context, ref, orderId, action.$1),
+                                _act(context, ref, orderId, action.$1, lines),
                             child: Text(action.$2),
                           ))
                       .toList())),
@@ -253,7 +259,7 @@ class _HospitalityOrderCard extends ConsumerWidget {
 
   IconData _icon(String state) => switch (state) {
         'READY' => Icons.notifications_active_outlined,
-        'DISTRIBUTED' => Icons.local_shipping_outlined,
+        'DISTRIBUTED' || 'PARTIALLY_DISTRIBUTED' => Icons.local_shipping_outlined,
         'PICKED_UP' => Icons.task_alt,
         'REJECTED' || 'CANCELLED' => Icons.block_outlined,
         'PREPARING' => Icons.soup_kitchen_outlined,
@@ -261,8 +267,21 @@ class _HospitalityOrderCard extends ConsumerWidget {
       };
 
   Future<void> _act(BuildContext context, WidgetRef ref, String orderId,
-      String action) async {
+      String action, List<Map<String, dynamic>> lines) async {
     String? reason;
+    List<Map<String, Object?>>? fulfillments;
+    if (action == 'fulfill') {
+      final result = await showDialog<Map<String, Object?>>(
+        context: context,
+        builder: (_) => _FulfillmentComposer(lines: lines),
+      );
+      if (!context.mounted || result == null) return;
+      reason = result['reason'] as String?;
+      fulfillments = (result['fulfillments'] as List)
+          .whereType<Map>()
+          .map((entry) => Map<String, Object?>.from(entry))
+          .toList();
+    }
     if (action == 'reject' || action == 'cancel') {
       reason = await showDialog<String>(
           context: context,
@@ -296,7 +315,8 @@ class _HospitalityOrderCard extends ConsumerWidget {
     try {
       await ref
           .read(operationsApiProvider)
-          .hospitalityOrderAction(eventId, orderId, action, reason: reason);
+          .hospitalityOrderAction(eventId, orderId, action,
+              reason: reason, fulfillments: fulfillments);
       ref.invalidate(eventHospitalityOrdersProvider(eventId));
     } catch (error) {
       if (context.mounted) {
@@ -305,6 +325,143 @@ class _HospitalityOrderCard extends ConsumerWidget {
       }
     }
   }
+}
+
+class _FulfillmentComposer extends StatefulWidget {
+  const _FulfillmentComposer({required this.lines});
+  final List<Map<String, dynamic>> lines;
+
+  @override
+  State<_FulfillmentComposer> createState() => _FulfillmentComposerState();
+}
+
+class _FulfillmentComposerState extends State<_FulfillmentComposer> {
+  final _reason = TextEditingController();
+  late final List<TextEditingController> _quantities;
+  late final List<TextEditingController> _substitutions;
+  late final List<TextEditingController> _substitutionReasons;
+  String? _error;
+
+  double _amount(Object? value) =>
+      value is num ? value.toDouble() : double.tryParse('$value') ?? 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _quantities = widget.lines.map((line) {
+      final remaining = (_amount(line['quantity']) -
+              _amount(line['fulfilledQuantity']))
+          .clamp(0, double.infinity);
+      return TextEditingController(text: remaining.toStringAsFixed(3));
+    }).toList();
+    _substitutions = List.generate(widget.lines.length, (_) => TextEditingController());
+    _substitutionReasons = List.generate(widget.lines.length, (_) => TextEditingController());
+  }
+
+  @override
+  void dispose() {
+    _reason.dispose();
+    for (final controller in [..._quantities, ..._substitutions, ..._substitutionReasons]) {
+      controller.dispose();
+    }
+    super.dispose();
+  }
+
+  void _submit() {
+    final fulfillments = <Map<String, Object?>>[];
+    var remainingTotal = 0.0;
+    var batchTotal = 0.0;
+    for (var index = 0; index < widget.lines.length; index++) {
+      final line = widget.lines[index];
+      final remaining = (_amount(line['quantity']) - _amount(line['fulfilledQuantity']))
+          .clamp(0, double.infinity);
+      remainingTotal += remaining;
+      final quantity = double.tryParse(_quantities[index].text.trim());
+      if (quantity == null || quantity < 0 || quantity > remaining) {
+        setState(() => _error = 'Enter a valid quantity up to the remaining amount for each item.');
+        return;
+      }
+      if (quantity == 0) continue;
+      batchTotal += quantity;
+      final substitute = _substitutions[index].text.trim();
+      final substituteReason = _substitutionReasons[index].text.trim();
+      if (substitute.isNotEmpty && substituteReason.length < 3) {
+        setState(() => _error = 'Add a reason for each item substitution.');
+        return;
+      }
+      fulfillments.add({
+        'lineId': line['id'] as String,
+        'quantity': quantity,
+        if (substitute.isNotEmpty) 'substituteItemName': substitute,
+        if (substitute.isNotEmpty) 'reason': substituteReason,
+      });
+    }
+    if (fulfillments.isEmpty) {
+      setState(() => _error = 'Enter at least one delivered quantity.');
+      return;
+    }
+    if (batchTotal < remainingTotal && _reason.text.trim().length < 3) {
+      setState(() => _error = 'Explain why the remaining items were not delivered.');
+      return;
+    }
+    Navigator.pop(context, {
+      'fulfillments': fulfillments,
+      if (_reason.text.trim().isNotEmpty) 'reason': _reason.text.trim(),
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('Record delivered items'),
+        content: SizedBox(
+          width: 520,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Enter the quantity delivered in this batch. Leave an item at 0 when none was delivered.'),
+                const SizedBox(height: 12),
+                for (var index = 0; index < widget.lines.length; index++) ...[
+                  Text('${widget.lines[index]['itemName']} · ${widget.lines[index]['unit']}',
+                      style: const TextStyle(fontWeight: FontWeight.w700)),
+                  Text('Remaining ${(_amount(widget.lines[index]['quantity']) - _amount(widget.lines[index]['fulfilledQuantity'])).clamp(0, double.infinity)}'),
+                  TextField(
+                    controller: _quantities[index],
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(labelText: 'Delivered now'),
+                  ),
+                  TextField(
+                    controller: _substitutions[index],
+                    decoration: const InputDecoration(labelText: 'Substitute item (optional)'),
+                  ),
+                  TextField(
+                    controller: _substitutionReasons[index],
+                    decoration: const InputDecoration(labelText: 'Substitution reason'),
+                  ),
+                  const Divider(height: 24),
+                ],
+                TextField(
+                  controller: _reason,
+                  maxLength: 500,
+                  minLines: 2,
+                  maxLines: 3,
+                  decoration: const InputDecoration(labelText: 'Reason for remaining quantities (required for partial fulfillment)'),
+                ),
+                if (_error != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Back')),
+          FilledButton(onPressed: _submit, child: const Text('Save fulfillment')),
+        ],
+      );
 }
 
 class _OrderComposer extends StatefulWidget {

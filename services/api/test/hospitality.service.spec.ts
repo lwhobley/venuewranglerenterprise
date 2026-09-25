@@ -25,6 +25,8 @@ function harness(order: Record<string, unknown> = {}) {
       update: vi.fn().mockImplementation(({ data }) => ({ id: 'order-1', ...order, ...data, eventId, venueId, locationId: null, requestedBy: requester.subject, assignedTo: 'kitchen-1', lines: [] })),
     },
     hospitalityOrderAudit: { create: vi.fn().mockResolvedValue({}) },
+    hospitalityOrderLine: { update: vi.fn().mockResolvedValue({}) },
+    hospitalityOrderFulfillment: { create: vi.fn().mockResolvedValue({}) },
     userNotification: { create: vi.fn().mockResolvedValue({ id: 'notice-1', kind: 'hospitality.order.submitted', recipientSubject: 'kitchen-1' }) },
   };
   const prisma = { withTenant: vi.fn((_identity: Identity, action: (transaction: never) => Promise<unknown>) => action(tx as never)) } as unknown as PrismaService;
@@ -59,6 +61,49 @@ describe('hospitality order lifecycle', () => {
     expect(order).toMatchObject({ state: 'ACCEPTED' });
     expect(tx.hospitalityOrder.update).toHaveBeenCalledWith(expect.objectContaining({ data: { state: 'ACCEPTED', rejectionReason: null } }));
     expect(tx.hospitalityOrderAudit.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ action: 'accept' }) }));
+  });
+
+  it('records a reasoned partial fulfillment, substitution, and immutable line records', async () => {
+    const line = { id: 'line-1', itemName: 'Sparkling water', quantity: 5, fulfilledQuantity: 0, unit: 'case', fulfillments: [] };
+    const { service, tx } = harness({ state: 'READY', lines: [line] });
+    await service.act(kitchen, eventId, '00000000-0000-0000-0000-000000000099', {
+      action: 'fulfill',
+      reason: 'Two cases remain unavailable from the storeroom.',
+      fulfillments: [{ lineId: 'line-1', quantity: 3, substituteItemName: 'Still water', reason: 'The sparkling stock is out.' }],
+    }, 'hospitality-fulfillment-key-001');
+
+    expect(tx.hospitalityOrderLine.update).not.toHaveBeenCalled();
+    expect(tx.hospitalityOrderFulfillment.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        organizationId: tenantId, eventId, lineId: 'line-1', actorId: kitchen.subject,
+        quantity: 3, substituteItemName: 'Still water', reason: 'The sparkling stock is out.',
+      }),
+    });
+    expect(tx.hospitalityOrder.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: { state: 'PARTIALLY_DISTRIBUTED' },
+    }));
+    expect(tx.hospitalityOrderAudit.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ action: 'partially_fulfilled' }),
+    }));
+  });
+
+  it('rejects over-delivery before writing any fulfillment record', async () => {
+    const line = { id: 'line-1', itemName: 'Sparkling water', quantity: 5, fulfilledQuantity: 4, unit: 'case', fulfillments: [] };
+    const { service, tx } = harness({ state: 'PARTIALLY_DISTRIBUTED', lines: [line] });
+    await expect(service.act(kitchen, eventId, '00000000-0000-0000-0000-000000000099', {
+      action: 'fulfill', fulfillments: [{ lineId: 'line-1', quantity: 2 }],
+    }, 'hospitality-fulfillment-key-002')).rejects.toBeInstanceOf(ConflictException);
+    expect(tx.hospitalityOrderLine.update).not.toHaveBeenCalled();
+    expect(tx.hospitalityOrderFulfillment.create).not.toHaveBeenCalled();
+  });
+
+  it('requires a reason when a fulfillment leaves quantities outstanding', async () => {
+    const line = { id: 'line-1', itemName: 'Sparkling water', quantity: 5, fulfilledQuantity: 0, unit: 'case', fulfillments: [] };
+    const { service, tx } = harness({ state: 'READY', lines: [line] });
+    await expect(service.act(kitchen, eventId, '00000000-0000-0000-0000-000000000099', {
+      action: 'fulfill', fulfillments: [{ lineId: 'line-1', quantity: 2 }],
+    }, 'hospitality-fulfillment-key-003')).rejects.toBeInstanceOf(ConflictException);
+    expect(tx.hospitalityOrderLine.update).not.toHaveBeenCalled();
   });
 
   it('prevents a kitchen user from acting on another assigned operator’s order', async () => {

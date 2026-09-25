@@ -42,7 +42,7 @@ For every incident, record UTC start time, reporter, impact, tenants/events affe
 
 - Review the CI run and dependency advisory output for the exact commit.
 - Apply database migrations using the approved migrator identity, after a backup and staging replay. Do not run migrations with the application runtime role.
-- Verify the health endpoint reports all 43 protected tables with RLS and FORCE RLS, and the runtime role is neither superuser nor `BYPASSRLS`.
+- Verify the health endpoint reports all 44 protected tables with RLS and FORCE RLS, and the runtime role is neither superuser nor `BYPASSRLS`.
 - Run tenant-isolation checks in a disposable staging database. A green compile or unit test does not prove database isolation.
 - Deploy as a candidate revision with no customer traffic first. Perform health and SSO acceptance checks before shifting traffic.
 

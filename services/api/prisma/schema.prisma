@@ -105,6 +105,7 @@ enum HospitalityOrderState {
   ACCEPTED
   PREPARING
   READY
+  PARTIALLY_DISTRIBUTED
   DISTRIBUTED
   PICKED_UP
   REJECTED
@@ -126,45 +127,46 @@ enum VendorStaffingRequestState {
 }
 
 model Organization {
-  id                    String                     @id @default(uuid()) @db.Uuid
-  slug                  String?                    @unique
-  name                  String
-  minimumRestMinutes    Int?                       @map("minimum_rest_minutes") @db.SmallInt
-  createdAt             DateTime                   @default(now()) @map("created_at")
-  venues                Venue[]
-  people                Person[]
-  tasks                 OperationalTask[]
-  taskAuditEvents       OperationalTaskAudit[]
-  notifications         UserNotification[]
-  attachments           IssueAttachment[]
-  integrationEvents     ExternalIntegrationEvent[]
-  pushDevices           PushDevice[]
-  setupAuditEvents      TenantSetupAuditEvent[]
-  staffShifts           StaffShift[]
-  staffShiftAuditEvents StaffShiftAuditEvent[]
-  staffingDemands       StaffingDemand[]
-  staffingDemandAudits  StaffingDemandAudit[]
-  staffUnavailability  StaffUnavailability[]
-  staffUnavailabilityAudits StaffUnavailabilityAudit[]
-  qualifications        PersonQualification[]
-  hospitalityOrders    HospitalityOrder[]
-  hospitalityOrderAudits HospitalityOrderAudit[]
-  staffingVendorRequests StaffingVendorRequest[]
+  id                           String                        @id @default(uuid()) @db.Uuid
+  slug                         String?                       @unique
+  name                         String
+  minimumRestMinutes           Int?                          @map("minimum_rest_minutes") @db.SmallInt
+  createdAt                    DateTime                      @default(now()) @map("created_at")
+  venues                       Venue[]
+  people                       Person[]
+  tasks                        OperationalTask[]
+  taskAuditEvents              OperationalTaskAudit[]
+  notifications                UserNotification[]
+  attachments                  IssueAttachment[]
+  integrationEvents            ExternalIntegrationEvent[]
+  pushDevices                  PushDevice[]
+  setupAuditEvents             TenantSetupAuditEvent[]
+  staffShifts                  StaffShift[]
+  staffShiftAuditEvents        StaffShiftAuditEvent[]
+  staffingDemands              StaffingDemand[]
+  staffingDemandAudits         StaffingDemandAudit[]
+  staffUnavailability          StaffUnavailability[]
+  staffUnavailabilityAudits    StaffUnavailabilityAudit[]
+  qualifications               PersonQualification[]
+  hospitalityOrders            HospitalityOrder[]
+  hospitalityOrderAudits       HospitalityOrderAudit[]
+  hospitalityOrderFulfillments HospitalityOrderFulfillment[]
+  staffingVendorRequests       StaffingVendorRequest[]
 
   @@map("organizations")
 }
 
 model Venue {
-  id             String            @id @default(uuid()) @db.Uuid
-  organizationId String            @map("organization_id") @db.Uuid
-  name           String
-  organization   Organization      @relation(fields: [organizationId], references: [id])
-  events         Event[]
-  locations      Location[]
-  tasks          OperationalTask[]
-  staffShifts    StaffShift[]
-  staffingDemands StaffingDemand[]
-  hospitalityOrders HospitalityOrder[]
+  id                     String                  @id @default(uuid()) @db.Uuid
+  organizationId         String                  @map("organization_id") @db.Uuid
+  name                   String
+  organization           Organization            @relation(fields: [organizationId], references: [id])
+  events                 Event[]
+  locations              Location[]
+  tasks                  OperationalTask[]
+  staffShifts            StaffShift[]
+  staffingDemands        StaffingDemand[]
+  hospitalityOrders      HospitalityOrder[]
   vendorStaffingRequests StaffingVendorRequest[]
 
   @@unique([id, organizationId])
@@ -173,21 +175,21 @@ model Venue {
 }
 
 model Event {
-  id                String                     @id @default(uuid()) @db.Uuid
-  organizationId    String                     @map("organization_id") @db.Uuid
-  venueId           String                     @map("venue_id") @db.Uuid
-  name              String
-  startsAt          DateTime                   @map("starts_at")
-  venue             Venue                      @relation(fields: [venueId], references: [id])
-  issues            Issue[]
-  tasks             OperationalTask[]
-  notifications     UserNotification[]
-  attachments       IssueAttachment[]
-  integrationEvents ExternalIntegrationEvent[]
-  staffShifts       StaffShift[]
-  staffingDemands   StaffingDemand[]
-  hospitalityOrders HospitalityOrder[]
-  closeout          EventCloseout?
+  id                     String                     @id @default(uuid()) @db.Uuid
+  organizationId         String                     @map("organization_id") @db.Uuid
+  venueId                String                     @map("venue_id") @db.Uuid
+  name                   String
+  startsAt               DateTime                   @map("starts_at")
+  venue                  Venue                      @relation(fields: [venueId], references: [id])
+  issues                 Issue[]
+  tasks                  OperationalTask[]
+  notifications          UserNotification[]
+  attachments            IssueAttachment[]
+  integrationEvents      ExternalIntegrationEvent[]
+  staffShifts            StaffShift[]
+  staffingDemands        StaffingDemand[]
+  hospitalityOrders      HospitalityOrder[]
+  closeout               EventCloseout?
   vendorStaffingRequests StaffingVendorRequest[]
 
   @@unique([id, venueId, organizationId])
@@ -196,17 +198,17 @@ model Event {
 }
 
 model EventCloseout {
-  id             String   @id @default(uuid()) @db.Uuid
-  organizationId String   @map("organization_id") @db.Uuid
-  venueId        String   @map("venue_id") @db.Uuid
-  eventId        String   @unique @map("event_id") @db.Uuid
-  state          String   @default("OPEN")
-  openedBy       String   @map("opened_by")
-  openedAt       DateTime @default(now()) @map("opened_at")
-  finalizedBy    String?  @map("finalized_by")
-  finalizedAt    DateTime? @map("finalized_at")
-  summary        String   @default("")
-  event          Event    @relation(fields: [eventId, venueId, organizationId], references: [id, venueId, organizationId])
+  id             String                     @id @default(uuid()) @db.Uuid
+  organizationId String                     @map("organization_id") @db.Uuid
+  venueId        String                     @map("venue_id") @db.Uuid
+  eventId        String                     @unique @map("event_id") @db.Uuid
+  state          String                     @default("OPEN")
+  openedBy       String                     @map("opened_by")
+  openedAt       DateTime                   @default(now()) @map("opened_at")
+  finalizedBy    String?                    @map("finalized_by")
+  finalizedAt    DateTime?                  @map("finalized_at")
+  summary        String                     @default("")
+  event          Event                      @relation(fields: [eventId, venueId, organizationId], references: [id, venueId, organizationId])
   followups      EventCloseoutFollowup[]
   auditEvents    EventCloseoutAudit[]
   corrections    EventPostCloseCorrection[]
@@ -219,18 +221,18 @@ model EventCloseout {
 }
 
 model EventCloseoutFollowup {
-  id             String   @id @default(uuid()) @db.Uuid
-  organizationId String   @map("organization_id") @db.Uuid
-  closeoutId     String   @map("closeout_id") @db.Uuid
-  sourceType     String   @map("source_type")
-  sourceId       String   @map("source_id")
+  id             String        @id @default(uuid()) @db.Uuid
+  organizationId String        @map("organization_id") @db.Uuid
+  closeoutId     String        @map("closeout_id") @db.Uuid
+  sourceType     String        @map("source_type")
+  sourceId       String        @map("source_id")
   title          String
-  state          String   @default("OPEN")
-  ownerSubject   String?  @map("owner_subject")
-  dueAt          DateTime? @map("due_at")
-  reason         String   @default("")
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  state          String        @default("OPEN")
+  ownerSubject   String?       @map("owner_subject")
+  dueAt          DateTime?     @map("due_at")
+  reason         String        @default("")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
   closeout       EventCloseout @relation(fields: [closeoutId, organizationId], references: [id, organizationId])
 
   @@unique([id, organizationId])
@@ -240,15 +242,15 @@ model EventCloseoutFollowup {
 }
 
 model EventCloseoutAudit {
-  id             String   @id @default(uuid()) @db.Uuid
-  organizationId String   @map("organization_id") @db.Uuid
-  closeoutId     String   @map("closeout_id") @db.Uuid
-  actorId        String   @map("actor_id")
+  id             String        @id @default(uuid()) @db.Uuid
+  organizationId String        @map("organization_id") @db.Uuid
+  closeoutId     String        @map("closeout_id") @db.Uuid
+  actorId        String        @map("actor_id")
   action         String
   before         Json?
   after          Json?
   reason         String?
-  createdAt      DateTime @default(now()) @map("created_at")
+  createdAt      DateTime      @default(now()) @map("created_at")
   closeout       EventCloseout @relation(fields: [closeoutId, organizationId], references: [id, organizationId])
 
   @@index([organizationId, closeoutId, createdAt])
@@ -256,16 +258,16 @@ model EventCloseoutAudit {
 }
 
 model EventPostCloseCorrection {
-  id             String   @id @default(uuid()) @db.Uuid
-  organizationId String   @map("organization_id") @db.Uuid
-  eventId        String   @map("event_id") @db.Uuid
-  sourceType     String   @map("source_type")
-  sourceId       String   @map("source_id")
+  id             String        @id @default(uuid()) @db.Uuid
+  organizationId String        @map("organization_id") @db.Uuid
+  eventId        String        @map("event_id") @db.Uuid
+  sourceType     String        @map("source_type")
+  sourceId       String        @map("source_id")
   headline       String
   correction     String
   reason         String
-  createdBy      String   @map("created_by")
-  createdAt      DateTime @default(now()) @map("created_at")
+  createdBy      String        @map("created_by")
+  createdAt      DateTime      @default(now()) @map("created_at")
   closeout       EventCloseout @relation(fields: [eventId, organizationId], references: [eventId, organizationId])
 
   @@index([organizationId, eventId, createdAt])
@@ -273,32 +275,32 @@ model EventPostCloseCorrection {
 }
 
 model StaffingVendorRequest {
-  id                  String                     @id @default(uuid()) @db.Uuid
-  organizationId      String                     @map("organization_id") @db.Uuid
-  venueId             String                     @map("venue_id") @db.Uuid
-  eventId             String                     @map("event_id") @db.Uuid
-  locationId          String?                    @map("location_id") @db.Uuid
-  demandId            String                     @map("demand_id") @db.Uuid
-  requesterSubject    String                     @map("requester_subject")
-  vendorSubject       String                     @map("vendor_subject")
-  requestedHeadcount  Int                        @map("requested_headcount") @db.SmallInt
-  committedHeadcount  Int                        @default(0) @map("committed_headcount") @db.SmallInt
-  responseDueAt       DateTime                   @map("response_due_at")
-  instructions        String                     @default("")
-  state               VendorStaffingRequestState @default(SENT)
-  responseReason      String                     @default("") @map("response_reason")
-  createdAt           DateTime                   @default(now()) @map("created_at")
-  updatedAt           DateTime                   @updatedAt @map("updated_at")
-  respondedAt         DateTime?                  @map("responded_at")
-  fulfilledAt         DateTime?                  @map("fulfilled_at")
-  cancelledAt         DateTime?                  @map("cancelled_at")
-  organization        Organization               @relation(fields: [organizationId], references: [id])
-  venue               Venue                      @relation(fields: [venueId, organizationId], references: [id, organizationId])
-  event               Event                      @relation(fields: [eventId, venueId, organizationId], references: [id, venueId, organizationId])
-  location            Location?                  @relation(fields: [locationId, venueId, organizationId], references: [id, venueId, organizationId])
-  demand              StaffingDemand             @relation(fields: [demandId, eventId, organizationId], references: [id, eventId, organizationId])
-  vendor              Person                     @relation(fields: [organizationId, vendorSubject], references: [organizationId, externalSubject])
-  auditEvents         StaffingVendorRequestAudit[]
+  id                 String                       @id @default(uuid()) @db.Uuid
+  organizationId     String                       @map("organization_id") @db.Uuid
+  venueId            String                       @map("venue_id") @db.Uuid
+  eventId            String                       @map("event_id") @db.Uuid
+  locationId         String?                      @map("location_id") @db.Uuid
+  demandId           String                       @map("demand_id") @db.Uuid
+  requesterSubject   String                       @map("requester_subject")
+  vendorSubject      String                       @map("vendor_subject")
+  requestedHeadcount Int                          @map("requested_headcount") @db.SmallInt
+  committedHeadcount Int                          @default(0) @map("committed_headcount") @db.SmallInt
+  responseDueAt      DateTime                     @map("response_due_at")
+  instructions       String                       @default("")
+  state              VendorStaffingRequestState   @default(SENT)
+  responseReason     String                       @default("") @map("response_reason")
+  createdAt          DateTime                     @default(now()) @map("created_at")
+  updatedAt          DateTime                     @updatedAt @map("updated_at")
+  respondedAt        DateTime?                    @map("responded_at")
+  fulfilledAt        DateTime?                    @map("fulfilled_at")
+  cancelledAt        DateTime?                    @map("cancelled_at")
+  organization       Organization                 @relation(fields: [organizationId], references: [id])
+  venue              Venue                        @relation(fields: [venueId, organizationId], references: [id, organizationId])
+  event              Event                        @relation(fields: [eventId, venueId, organizationId], references: [id, venueId, organizationId])
+  location           Location?                    @relation(fields: [locationId, venueId, organizationId], references: [id, venueId, organizationId])
+  demand             StaffingDemand               @relation(fields: [demandId, eventId, organizationId], references: [id, eventId, organizationId])
+  vendor             Person                       @relation(fields: [organizationId, vendorSubject], references: [organizationId, externalSubject])
+  auditEvents        StaffingVendorRequestAudit[]
 
   @@unique([id, organizationId])
   @@unique([id, eventId, organizationId])
@@ -324,16 +326,16 @@ model StaffingVendorRequestAudit {
 }
 
 model Location {
-  id             String            @id @default(uuid()) @db.Uuid
-  organizationId String            @map("organization_id") @db.Uuid
-  venueId        String            @map("venue_id") @db.Uuid
-  name           String
-  venue          Venue             @relation(fields: [venueId], references: [id])
-  issues         Issue[]
-  tasks          OperationalTask[]
-  staffShifts    StaffShift[]
-  staffingDemands StaffingDemand[]
-  hospitalityOrders HospitalityOrder[]
+  id                     String                  @id @default(uuid()) @db.Uuid
+  organizationId         String                  @map("organization_id") @db.Uuid
+  venueId                String                  @map("venue_id") @db.Uuid
+  name                   String
+  venue                  Venue                   @relation(fields: [venueId], references: [id])
+  issues                 Issue[]
+  tasks                  OperationalTask[]
+  staffShifts            StaffShift[]
+  staffingDemands        StaffingDemand[]
+  hospitalityOrders      HospitalityOrder[]
   vendorStaffingRequests StaffingVendorRequest[]
 
   @@unique([id, venueId])
@@ -343,18 +345,18 @@ model Location {
 }
 
 model Person {
-  id              String             @id @default(uuid()) @db.Uuid
-  organizationId  String             @map("organization_id") @db.Uuid
-  externalSubject String             @map("external_subject")
-  email           String
-  displayName     String             @map("display_name")
-  active          Boolean            @default(true)
-  createdAt       DateTime           @default(now()) @map("created_at")
-  updatedAt       DateTime           @updatedAt @map("updated_at")
-  auditEvents     PersonAuditEvent[]
-  qualifications  PersonQualification[]
+  id                     String                  @id @default(uuid()) @db.Uuid
+  organizationId         String                  @map("organization_id") @db.Uuid
+  externalSubject        String                  @map("external_subject")
+  email                  String
+  displayName            String                  @map("display_name")
+  active                 Boolean                 @default(true)
+  createdAt              DateTime                @default(now()) @map("created_at")
+  updatedAt              DateTime                @updatedAt @map("updated_at")
+  auditEvents            PersonAuditEvent[]
+  qualifications         PersonQualification[]
   vendorStaffingRequests StaffingVendorRequest[]
-  organization    Organization       @relation(fields: [organizationId], references: [id])
+  organization           Organization            @relation(fields: [organizationId], references: [id])
 
   @@unique([organizationId, externalSubject])
   @@unique([organizationId, email])
@@ -378,31 +380,31 @@ model PersonAuditEvent {
 }
 
 model Issue {
-  id             String             @id @default(uuid()) @db.Uuid
-  organizationId String             @map("organization_id") @db.Uuid
-  eventId        String             @map("event_id") @db.Uuid
-  venueId        String             @map("venue_id") @db.Uuid
-  locationId     String?            @map("location_id") @db.Uuid
-  latitude                Decimal?   @db.Decimal(8, 5)
-  longitude               Decimal?   @db.Decimal(8, 5)
-  locationAccuracyMeters  Decimal?   @map("location_accuracy_meters") @db.Decimal(7, 2)
-  locationCapturedAt      DateTime?  @map("location_captured_at") @db.Timestamptz(6)
-  title          String
-  description    String
-  category       String
-  severity       IssueSeverity
-  state          IssueState         @default(REPORTED)
-  reporterId     String             @map("reporter_id")
-  ownerId        String?            @map("owner_id")
-  escalationNote String?            @map("escalation_note")
-  resolutionNote String?            @map("resolution_note")
-  createdAt      DateTime           @default(now()) @map("created_at")
-  updatedAt      DateTime           @updatedAt @map("updated_at")
-  event          Event              @relation(fields: [eventId], references: [id])
-  location       Location?          @relation(fields: [locationId], references: [id])
-  auditEvents    IssueAuditEvent[]
-  notifications  UserNotification[]
-  attachments    IssueAttachment[]
+  id                     String             @id @default(uuid()) @db.Uuid
+  organizationId         String             @map("organization_id") @db.Uuid
+  eventId                String             @map("event_id") @db.Uuid
+  venueId                String             @map("venue_id") @db.Uuid
+  locationId             String?            @map("location_id") @db.Uuid
+  latitude               Decimal?           @db.Decimal(8, 5)
+  longitude              Decimal?           @db.Decimal(8, 5)
+  locationAccuracyMeters Decimal?           @map("location_accuracy_meters") @db.Decimal(7, 2)
+  locationCapturedAt     DateTime?          @map("location_captured_at") @db.Timestamptz(6)
+  title                  String
+  description            String
+  category               String
+  severity               IssueSeverity
+  state                  IssueState         @default(REPORTED)
+  reporterId             String             @map("reporter_id")
+  ownerId                String?            @map("owner_id")
+  escalationNote         String?            @map("escalation_note")
+  resolutionNote         String?            @map("resolution_note")
+  createdAt              DateTime           @default(now()) @map("created_at")
+  updatedAt              DateTime           @updatedAt @map("updated_at")
+  event                  Event              @relation(fields: [eventId], references: [id])
+  location               Location?          @relation(fields: [locationId], references: [id])
+  auditEvents            IssueAuditEvent[]
+  notifications          UserNotification[]
+  attachments            IssueAttachment[]
 
   @@index([organizationId, eventId, state])
   @@index([organizationId, ownerId])
@@ -487,26 +489,27 @@ model OperationalTask {
 }
 
 model HospitalityOrder {
-  id             String                @id @default(uuid()) @db.Uuid
-  organizationId String                @map("organization_id") @db.Uuid
-  venueId        String                @map("venue_id") @db.Uuid
-  eventId        String                @map("event_id") @db.Uuid
-  locationId     String?               @map("location_id") @db.Uuid
-  requestedBy    String                @map("requested_by")
-  assignedTo     String?               @map("assigned_to")
-  serviceAt      DateTime              @map("service_at")
-  instructions   String                @default("")
-  state          HospitalityOrderState @default(SUBMITTED)
-  rejectionReason String?              @map("rejection_reason")
-  createdAt      DateTime              @default(now()) @map("created_at")
-  updatedAt      DateTime              @updatedAt @map("updated_at")
-  organization   Organization          @relation(fields: [organizationId], references: [id])
-  venue          Venue                 @relation(fields: [venueId, organizationId], references: [id, organizationId], map: "hospitality_orders_venue_tenant_fk")
-  event          Event                 @relation(fields: [eventId, venueId, organizationId], references: [id, venueId, organizationId], map: "hospitality_orders_event_tenant_fk")
-  location       Location?             @relation(fields: [locationId, venueId, organizationId], references: [id, venueId, organizationId], map: "hospitality_orders_location_tenant_fk")
-  lines          HospitalityOrderLine[]
-  auditEvents    HospitalityOrderAudit[]
-  notifications  UserNotification[]
+  id                String                        @id @default(uuid()) @db.Uuid
+  organizationId    String                        @map("organization_id") @db.Uuid
+  venueId           String                        @map("venue_id") @db.Uuid
+  eventId           String                        @map("event_id") @db.Uuid
+  locationId        String?                       @map("location_id") @db.Uuid
+  requestedBy       String                        @map("requested_by")
+  assignedTo        String?                       @map("assigned_to")
+  serviceAt         DateTime                      @map("service_at")
+  instructions      String                        @default("")
+  state             HospitalityOrderState         @default(SUBMITTED)
+  rejectionReason   String?                       @map("rejection_reason")
+  createdAt         DateTime                      @default(now()) @map("created_at")
+  updatedAt         DateTime                      @updatedAt @map("updated_at")
+  organization      Organization                  @relation(fields: [organizationId], references: [id])
+  venue             Venue                         @relation(fields: [venueId, organizationId], references: [id, organizationId], map: "hospitality_orders_venue_tenant_fk")
+  event             Event                         @relation(fields: [eventId, venueId, organizationId], references: [id, venueId, organizationId], map: "hospitality_orders_event_tenant_fk")
+  location          Location?                     @relation(fields: [locationId, venueId, organizationId], references: [id, venueId, organizationId], map: "hospitality_orders_location_tenant_fk")
+  lines             HospitalityOrderLine[]
+  fulfillmentEvents HospitalityOrderFulfillment[]
+  auditEvents       HospitalityOrderAudit[]
+  notifications     UserNotification[]
 
   @@unique([id, organizationId])
   @@unique([id, eventId, organizationId])
@@ -515,17 +518,39 @@ model HospitalityOrder {
 }
 
 model HospitalityOrderLine {
-  id             String          @id @default(uuid()) @db.Uuid
-  organizationId String          @map("organization_id") @db.Uuid
-  orderId        String          @map("order_id") @db.Uuid
-  itemName       String          @map("item_name")
-  quantity       Decimal         @db.Decimal(10, 3)
-  unit           String
-  note           String          @default("")
-  order          HospitalityOrder @relation(fields: [orderId, organizationId], references: [id, organizationId], map: "hospitality_order_lines_order_tenant_fk")
+  id                String                        @id @default(uuid()) @db.Uuid
+  organizationId    String                        @map("organization_id") @db.Uuid
+  orderId           String                        @map("order_id") @db.Uuid
+  itemName          String                        @map("item_name")
+  quantity          Decimal                       @db.Decimal(10, 3)
+  unit              String
+  note              String                        @default("")
+  fulfilledQuantity Decimal                       @default(0) @map("fulfilled_quantity") @db.Decimal(10, 3)
+  order             HospitalityOrder              @relation(fields: [orderId, organizationId], references: [id, organizationId], map: "hospitality_order_lines_order_tenant_fk")
+  fulfillments      HospitalityOrderFulfillment[]
 
+  @@unique([id, orderId, organizationId])
   @@index([organizationId, orderId])
   @@map("hospitality_order_lines")
+}
+
+model HospitalityOrderFulfillment {
+  id                 String               @id @default(uuid()) @db.Uuid
+  organizationId     String               @map("organization_id") @db.Uuid
+  eventId            String               @map("event_id") @db.Uuid
+  orderId            String               @map("order_id") @db.Uuid
+  lineId             String               @map("line_id") @db.Uuid
+  actorId            String               @map("actor_id")
+  quantity           Decimal              @db.Decimal(10, 3)
+  substituteItemName String?              @map("substitute_item_name")
+  reason             String?
+  createdAt          DateTime             @default(now()) @map("created_at")
+  organization       Organization         @relation(fields: [organizationId], references: [id])
+  order              HospitalityOrder     @relation(fields: [orderId, eventId, organizationId], references: [id, eventId, organizationId], map: "hospitality_order_fulfillments_order_tenant_fk")
+  line               HospitalityOrderLine @relation(fields: [lineId, orderId, organizationId], references: [id, orderId, organizationId], map: "hospitality_order_fulfillments_line_tenant_fk")
+
+  @@index([organizationId, eventId, orderId, createdAt])
+  @@map("hospitality_order_fulfillments")
 }
 
 model HospitalityOrderAudit {
@@ -562,38 +587,38 @@ model OperationalTaskAudit {
 }
 
 model StaffShift {
-  id               String                 @id @default(uuid()) @db.Uuid
-  organizationId   String                 @map("organization_id") @db.Uuid
-  venueId          String                 @map("venue_id") @db.Uuid
-  eventId          String                 @map("event_id") @db.Uuid
-  locationId       String?                @map("location_id") @db.Uuid
-  assignedSubject  String?                @map("assigned_subject")
-  role             String
-  instructions     String                 @default("")
-  requiredQualificationCodes String[]     @default([]) @map("required_qualification_codes")
-  startsAt         DateTime               @map("starts_at")
-  endsAt           DateTime               @map("ends_at")
-  state            StaffShiftState        @default(DRAFT)
-  response         StaffShiftResponse     @default(PENDING)
-  attendance       StaffAttendanceState   @default(NOT_STARTED)
-  revision         Int                    @default(1)
-  responseRevision Int?                   @map("response_revision")
-  checkedInAt      DateTime?              @map("checked_in_at")
-  checkedOutAt     DateTime?              @map("checked_out_at")
-  createdBy        String                 @map("created_by")
-  updatedBy        String                 @map("updated_by")
-  createdAt        DateTime               @default(now()) @map("created_at")
-  updatedAt        DateTime               @updatedAt @map("updated_at")
-  organization     Organization           @relation(fields: [organizationId], references: [id])
-  venue            Venue                  @relation(fields: [venueId], references: [id])
-  event            Event                  @relation(fields: [eventId], references: [id])
-  location         Location?              @relation(fields: [locationId, venueId], references: [id, venueId], map: "staff_shifts_location_venue_fk")
-  auditEvents      StaffShiftAuditEvent[]
-  notifications    UserNotification[]
-  breaks           StaffBreak[]
-  attendanceClaims StaffAttendanceClaim[]
-  staffingDemand   StaffingDemand?        @relation(fields: [staffingDemandId, organizationId], references: [id, organizationId], map: "staff_shifts_demand_tenant_fk")
-  staffingDemandId String?                @map("staffing_demand_id") @db.Uuid
+  id                         String                 @id @default(uuid()) @db.Uuid
+  organizationId             String                 @map("organization_id") @db.Uuid
+  venueId                    String                 @map("venue_id") @db.Uuid
+  eventId                    String                 @map("event_id") @db.Uuid
+  locationId                 String?                @map("location_id") @db.Uuid
+  assignedSubject            String?                @map("assigned_subject")
+  role                       String
+  instructions               String                 @default("")
+  requiredQualificationCodes String[]               @default([]) @map("required_qualification_codes")
+  startsAt                   DateTime               @map("starts_at")
+  endsAt                     DateTime               @map("ends_at")
+  state                      StaffShiftState        @default(DRAFT)
+  response                   StaffShiftResponse     @default(PENDING)
+  attendance                 StaffAttendanceState   @default(NOT_STARTED)
+  revision                   Int                    @default(1)
+  responseRevision           Int?                   @map("response_revision")
+  checkedInAt                DateTime?              @map("checked_in_at")
+  checkedOutAt               DateTime?              @map("checked_out_at")
+  createdBy                  String                 @map("created_by")
+  updatedBy                  String                 @map("updated_by")
+  createdAt                  DateTime               @default(now()) @map("created_at")
+  updatedAt                  DateTime               @updatedAt @map("updated_at")
+  organization               Organization           @relation(fields: [organizationId], references: [id])
+  venue                      Venue                  @relation(fields: [venueId], references: [id])
+  event                      Event                  @relation(fields: [eventId], references: [id])
+  location                   Location?              @relation(fields: [locationId, venueId], references: [id, venueId], map: "staff_shifts_location_venue_fk")
+  auditEvents                StaffShiftAuditEvent[]
+  notifications              UserNotification[]
+  breaks                     StaffBreak[]
+  attendanceClaims           StaffAttendanceClaim[]
+  staffingDemand             StaffingDemand?        @relation(fields: [staffingDemandId, organizationId], references: [id, organizationId], map: "staff_shifts_demand_tenant_fk")
+  staffingDemandId           String?                @map("staffing_demand_id") @db.Uuid
 
   @@unique([id, organizationId])
   @@unique([id, eventId, organizationId], map: "staff_shifts_id_event_organization_key")
@@ -664,19 +689,19 @@ model StaffBreak {
 }
 
 model StaffAttendanceClaim {
-  id               String                     @id @default(uuid()) @db.Uuid
-  organizationId   String                     @map("organization_id") @db.Uuid
-  eventId          String                     @map("event_id") @db.Uuid
-  shiftId          String                     @map("shift_id") @db.Uuid
-  workerSubject    String                     @map("worker_subject")
-  action           StaffAttendanceAction
-  recordedAt       DateTime                   @map("recorded_at")
-  receivedAt       DateTime                   @default(now()) @map("received_at")
-  status           StaffAttendanceClaimStatus @default(PENDING_REVIEW)
-  reviewedBy       String?                    @map("reviewed_by")
-  reviewedAt       DateTime?                  @map("reviewed_at")
-  reviewReason     String?                    @map("review_reason")
-  shift            StaffShift                 @relation(fields: [shiftId, eventId, organizationId], references: [id, eventId, organizationId], map: "staff_attendance_claims_shift_scope_fk")
+  id             String                     @id @default(uuid()) @db.Uuid
+  organizationId String                     @map("organization_id") @db.Uuid
+  eventId        String                     @map("event_id") @db.Uuid
+  shiftId        String                     @map("shift_id") @db.Uuid
+  workerSubject  String                     @map("worker_subject")
+  action         StaffAttendanceAction
+  recordedAt     DateTime                   @map("recorded_at")
+  receivedAt     DateTime                   @default(now()) @map("received_at")
+  status         StaffAttendanceClaimStatus @default(PENDING_REVIEW)
+  reviewedBy     String?                    @map("reviewed_by")
+  reviewedAt     DateTime?                  @map("reviewed_at")
+  reviewReason   String?                    @map("review_reason")
+  shift          StaffShift                 @relation(fields: [shiftId, eventId, organizationId], references: [id, eventId, organizationId], map: "staff_attendance_claims_shift_scope_fk")
 
   @@unique([id, organizationId])
   @@index([organizationId, eventId, status, receivedAt])
@@ -684,16 +709,16 @@ model StaffAttendanceClaim {
 }
 
 model StaffUnavailability {
-  id             String   @id @default(uuid()) @db.Uuid
-  organizationId String   @map("organization_id") @db.Uuid
+  id             String                     @id @default(uuid()) @db.Uuid
+  organizationId String                     @map("organization_id") @db.Uuid
   subject        String
-  startsAt       DateTime @map("starts_at")
-  endsAt         DateTime @map("ends_at")
-  note           String   @default("")
-  deletedAt      DateTime? @map("deleted_at")
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
-  organization   Organization @relation(fields: [organizationId], references: [id])
+  startsAt       DateTime                   @map("starts_at")
+  endsAt         DateTime                   @map("ends_at")
+  note           String                     @default("")
+  deletedAt      DateTime?                  @map("deleted_at")
+  createdAt      DateTime                   @default(now()) @map("created_at")
+  updatedAt      DateTime                   @updatedAt @map("updated_at")
+  organization   Organization               @relation(fields: [organizationId], references: [id])
   auditEvents    StaffUnavailabilityAudit[]
 
   @@unique([id, organizationId])
@@ -702,42 +727,42 @@ model StaffUnavailability {
 }
 
 model StaffUnavailabilityAudit {
-  id                String   @id @default(uuid()) @db.Uuid
-  organizationId    String   @map("organization_id") @db.Uuid
-  unavailabilityId  String   @map("unavailability_id") @db.Uuid
-  actorId           String   @map("actor_id")
-  action            String
-  createdAt         DateTime @default(now()) @map("created_at")
-  organization      Organization @relation(fields: [organizationId], references: [id])
-  unavailability    StaffUnavailability @relation(fields: [unavailabilityId, organizationId], references: [id, organizationId], map: "staff_unavailability_audit_tenant_fk")
+  id               String              @id @default(uuid()) @db.Uuid
+  organizationId   String              @map("organization_id") @db.Uuid
+  unavailabilityId String              @map("unavailability_id") @db.Uuid
+  actorId          String              @map("actor_id")
+  action           String
+  createdAt        DateTime            @default(now()) @map("created_at")
+  organization     Organization        @relation(fields: [organizationId], references: [id])
+  unavailability   StaffUnavailability @relation(fields: [unavailabilityId, organizationId], references: [id, organizationId], map: "staff_unavailability_audit_tenant_fk")
 
   @@index([organizationId, unavailabilityId, createdAt])
   @@map("staff_unavailability_audit")
 }
 
 model PersonQualification {
-  id             String   @id @default(uuid()) @db.Uuid
-  organizationId String   @map("organization_id") @db.Uuid
-  personId       String   @map("person_id") @db.Uuid
-  code           String   @map("qualification_code")
-  name           String   @map("qualification_name")
-  expiresAt      DateTime? @map("expires_at") @db.Date
-  revokedAt      DateTime? @map("revoked_at")
-  evidenceStatus String   @default("NONE") @map("evidence_status")
-  evidenceObjectKey String? @map("evidence_object_key")
-  evidenceFileName String? @map("evidence_file_name")
-  evidenceContentType String? @map("evidence_content_type")
-  evidenceSizeBytes Int? @map("evidence_size_bytes")
-  evidenceSha256 String? @map("evidence_sha256")
-  evidenceUploadedAt DateTime? @map("evidence_uploaded_at")
-  evidenceReviewedBy String? @map("evidence_reviewed_by")
-  evidenceReviewedAt DateTime? @map("evidence_reviewed_at")
-  evidenceReviewReason String? @map("evidence_review_reason")
-  createdBy      String   @map("created_by")
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
-  organization   Organization @relation(fields: [organizationId], references: [id])
-  person         Person @relation(fields: [personId, organizationId], references: [id, organizationId], map: "person_qualifications_person_tenant_fk")
+  id                   String       @id @default(uuid()) @db.Uuid
+  organizationId       String       @map("organization_id") @db.Uuid
+  personId             String       @map("person_id") @db.Uuid
+  code                 String       @map("qualification_code")
+  name                 String       @map("qualification_name")
+  expiresAt            DateTime?    @map("expires_at") @db.Date
+  revokedAt            DateTime?    @map("revoked_at")
+  evidenceStatus       String       @default("NONE") @map("evidence_status")
+  evidenceObjectKey    String?      @map("evidence_object_key")
+  evidenceFileName     String?      @map("evidence_file_name")
+  evidenceContentType  String?      @map("evidence_content_type")
+  evidenceSizeBytes    Int?         @map("evidence_size_bytes")
+  evidenceSha256       String?      @map("evidence_sha256")
+  evidenceUploadedAt   DateTime?    @map("evidence_uploaded_at")
+  evidenceReviewedBy   String?      @map("evidence_reviewed_by")
+  evidenceReviewedAt   DateTime?    @map("evidence_reviewed_at")
+  evidenceReviewReason String?      @map("evidence_review_reason")
+  createdBy            String       @map("created_by")
+  createdAt            DateTime     @default(now()) @map("created_at")
+  updatedAt            DateTime     @updatedAt @map("updated_at")
+  organization         Organization @relation(fields: [organizationId], references: [id])
+  person               Person       @relation(fields: [personId, organizationId], references: [id, organizationId], map: "person_qualifications_person_tenant_fk")
 
   @@unique([organizationId, personId, code])
   @@unique([id, organizationId])
@@ -763,23 +788,23 @@ model StaffShiftAuditEvent {
 }
 
 model UserNotification {
-  id               String       @id @default(uuid()) @db.Uuid
-  organizationId   String       @map("organization_id") @db.Uuid
-  eventId          String       @map("event_id") @db.Uuid
-  issueId          String?      @map("issue_id") @db.Uuid
-  shiftId          String?      @map("shift_id") @db.Uuid
-  hospitalityOrderId String?    @map("hospitality_order_id") @db.Uuid
-  recipientSubject String       @map("recipient_subject")
-  kind             String
-  title            String
-  body             String
-  createdAt        DateTime     @default(now()) @map("created_at")
-  readAt           DateTime?    @map("read_at")
-  organization     Organization @relation(fields: [organizationId], references: [id])
-  event            Event        @relation(fields: [eventId], references: [id])
-  issue            Issue?       @relation(fields: [issueId], references: [id])
-  shift            StaffShift?  @relation(fields: [shiftId, eventId, organizationId], references: [id, eventId, organizationId], map: "user_notifications_shift_event_tenant_fk")
-  hospitalityOrder HospitalityOrder? @relation(fields: [hospitalityOrderId, eventId, organizationId], references: [id, eventId, organizationId], map: "user_notifications_hospitality_order_tenant_fk")
+  id                 String            @id @default(uuid()) @db.Uuid
+  organizationId     String            @map("organization_id") @db.Uuid
+  eventId            String            @map("event_id") @db.Uuid
+  issueId            String?           @map("issue_id") @db.Uuid
+  shiftId            String?           @map("shift_id") @db.Uuid
+  hospitalityOrderId String?           @map("hospitality_order_id") @db.Uuid
+  recipientSubject   String            @map("recipient_subject")
+  kind               String
+  title              String
+  body               String
+  createdAt          DateTime          @default(now()) @map("created_at")
+  readAt             DateTime?         @map("read_at")
+  organization       Organization      @relation(fields: [organizationId], references: [id])
+  event              Event             @relation(fields: [eventId], references: [id])
+  issue              Issue?            @relation(fields: [issueId], references: [id])
+  shift              StaffShift?       @relation(fields: [shiftId, eventId, organizationId], references: [id, eventId, organizationId], map: "user_notifications_shift_event_tenant_fk")
+  hospitalityOrder   HospitalityOrder? @relation(fields: [hospitalityOrderId, eventId, organizationId], references: [id, eventId, organizationId], map: "user_notifications_hospitality_order_tenant_fk")
 
   @@index([organizationId, recipientSubject, readAt, createdAt(sort: Desc)])
   @@map("user_notifications")
