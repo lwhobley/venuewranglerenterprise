@@ -261,8 +261,9 @@ describe('event staffing workflow', () => {
     };
     const { service, tx } = harness(current);
     await expect(service.publish(manager, 'event-1', 'shift-1', 'staff-shift-publish-qual-1'))
-      .rejects.toThrow('lacks current required qualification(s): FOOD_HANDLER');
+      .rejects.toThrow('lacks a current eligible qualification for: FOOD_HANDLER');
     expect(tx.personQualification.findMany).toHaveBeenCalledOnce();
+    expect(tx.personQualification.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ evidenceStatus: { in: ['NONE', 'VERIFIED'] } }) }));
     expect(tx.staffShift.update).not.toHaveBeenCalled();
   });
 

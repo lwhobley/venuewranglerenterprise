@@ -46,7 +46,7 @@ export class OperationsService {
       const venues = await tx.venue.findMany({ where: admin ? { organizationId: identity.tenantId } : { id: { in: identity.venueIds }, organizationId: identity.tenantId }, orderBy: { name: 'asc' } });
       const events = await tx.event.findMany({ where: admin ? { organizationId: identity.tenantId } : { id: { in: identity.eventIds }, venueId: { in: identity.venueIds }, organizationId: identity.tenantId }, orderBy: { startsAt: 'asc' } });
       const locations = await tx.location.findMany({ where: admin ? { organizationId: identity.tenantId } : { id: { in: identity.locationIds }, venueId: { in: identity.venueIds }, organizationId: identity.tenantId }, orderBy: { name: 'asc' } });
-      const people = await tx.person.findMany({ where: { organizationId: identity.tenantId, active: true, ...(!admin ? { externalSubject: { in: identity.assignableUserIds } } : {}) }, include: { qualifications: { where: { revokedAt: null }, orderBy: [{ code: 'asc' }] } }, orderBy: { displayName: 'asc' } });
+      const people = await tx.person.findMany({ where: { organizationId: identity.tenantId, active: true, ...(!admin ? { externalSubject: { in: identity.assignableUserIds } } : {}) }, include: { qualifications: { where: { revokedAt: null }, select: { id: true, code: true, name: true, expiresAt: true, revokedAt: true, ...(admin ? { evidenceStatus: true, evidenceFileName: true, evidenceContentType: true, evidenceSizeBytes: true, evidenceUploadedAt: true, evidenceReviewedAt: true, evidenceReviewReason: true } : {}) }, orderBy: [{ code: 'asc' }] } }, orderBy: { displayName: 'asc' } });
       return { organization: { id: org.id, slug: org.slug, name: org.name }, identity: { subject: identity.subject, capabilities: identity.capabilities, assignableUserIds: identity.assignableUserIds }, venues, events, locations, people };
     });
   }
@@ -122,7 +122,7 @@ export class OperationsService {
     return this.prisma.withTenant(identity, async (tx) => {
       const person = await tx.person.findFirst({ where: { id: personId, organizationId: identity.tenantId } });
       if (!person) throw new NotFoundException('Person not found in this organization.');
-      return tx.personQualification.findMany({ where: { personId, organizationId: identity.tenantId }, orderBy: [{ code: 'asc' }] });
+      return tx.personQualification.findMany({ where: { personId, organizationId: identity.tenantId }, select: { id: true, code: true, name: true, expiresAt: true, revokedAt: true, evidenceStatus: true, evidenceFileName: true, evidenceContentType: true, evidenceSizeBytes: true, evidenceUploadedAt: true, evidenceReviewedBy: true, evidenceReviewedAt: true, evidenceReviewReason: true }, orderBy: [{ code: 'asc' }] });
     });
   }
 

@@ -533,6 +533,40 @@ class OperationsApi {
           {'action': 'person-qualification.revoke', 'qualificationId': qualificationId},
           (token, key) => _dio.delete<void>('/api/v1/admin/qualifications/$qualificationId',
               options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
+  Future<Map<String, dynamic>> uploadQualificationEvidence(String qualificationId, String fileName, String contentType, List<int> bytes) async {
+    if (bytes.isEmpty || bytes.length > 10 * 1024 * 1024) throw StateError('Credential evidence must be 10 MiB or smaller.');
+    final digest = await Sha256().hash(bytes);
+    final token = await _auth.validAccessToken();
+    if (token == null || token.isEmpty) throw StateError('Sign in before uploading credential evidence.');
+    final headers = {'Authorization': 'Bearer $token'};
+    final response = await _dio.post<Map<String, dynamic>>('/api/v1/admin/qualifications/$qualificationId/evidence', data: {
+      'fileName': fileName,
+      'contentType': contentType,
+      'sizeBytes': bytes.length,
+      'sha256': digest.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join(),
+    }, options: Options(headers: headers));
+    final upload = response.data;
+    final uploadUrl = upload?['uploadUrl'];
+    if (uploadUrl is! String || uploadUrl.isEmpty) throw StateError('The evidence API did not return a private upload URL.');
+    final fields = Map<String, dynamic>.from(upload?['uploadFields'] as Map? ?? const {});
+    await Dio().post<void>(uploadUrl, data: FormData.fromMap({
+      ...fields,
+      'file': MultipartFile.fromBytes(bytes, filename: fileName, contentType: DioMediaType.parse(contentType)),
+    }));
+    final completed = await _dio.post<Map<String, dynamic>>('/api/v1/admin/qualifications/$qualificationId/evidence/complete', options: Options(headers: headers));
+    return completed.data ?? const {};
+  }
+  Future<void> reviewQualificationEvidence(String qualificationId, String status, String reason) async {
+    final token = await _auth.validAccessToken();
+    if (token == null || token.isEmpty) throw StateError('Sign in before reviewing credential evidence.');
+    await _dio.put<void>('/api/v1/admin/qualifications/$qualificationId/evidence/review', data: {'status': status, 'reason': reason.trim()}, options: Options(headers: {'Authorization': 'Bearer $token'}));
+  }
+  Future<String> qualificationEvidenceDownload(String qualificationId) async {
+    final response = await _request((token) => _dio.get<Map<String, dynamic>>('/api/v1/admin/qualifications/$qualificationId/evidence/download', options: Options(headers: {'Authorization': 'Bearer $token'})));
+    final url = response.data?['downloadUrl'];
+    if (url is! String || url.isEmpty) throw StateError('The evidence API did not return a download link.');
+    return url;
+  }
   Future<Map<String, dynamic>> staffingPolicy() async =>
       (await _request((token) => _dio.get<Map<String, dynamic>>(
               '/api/v1/admin/staffing-policy',

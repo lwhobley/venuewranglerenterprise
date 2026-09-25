@@ -595,12 +595,12 @@ export class StaffingService {
     if (!person) throw new NotFoundException('The selected person is not an active user in this organization.');
     const requiredThroughUtcDay = new Date(Date.UTC(shiftEndsAt.getUTCFullYear(), shiftEndsAt.getUTCMonth(), shiftEndsAt.getUTCDate()));
     const valid = await tx.personQualification.findMany({ where: {
-      organizationId: tenantId, personId: person.id, code: { in: requiredCodes }, revokedAt: null,
+      organizationId: tenantId, personId: person.id, code: { in: requiredCodes }, revokedAt: null, evidenceStatus: { in: ['NONE', 'VERIFIED'] },
       OR: [{ expiresAt: null }, { expiresAt: { gte: requiredThroughUtcDay } }],
     }, select: { code: true } });
     const validCodes = new Set(valid.map((qualification) => qualification.code));
     const missing = requiredCodes.filter((code) => !validCodes.has(code));
-    if (missing.length > 0) throw new ConflictException(`Worker lacks current required qualification(s): ${missing.join(', ')}. Update the roster credential or assign another eligible worker.`);
+    if (missing.length > 0) throw new ConflictException(`Worker lacks a current eligible qualification for: ${missing.join(', ')}. Credentials under review or rejected cannot be used for staffing.`);
   }
 
   private audit(tx: Prisma.TransactionClient, identity: Identity, shiftId: string, action: string, before?: unknown, after?: unknown, reason?: string) {

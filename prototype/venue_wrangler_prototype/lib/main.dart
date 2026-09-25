@@ -1,8 +1,11 @@
 import 'dart:async';
 
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:uuid/uuid.dart';
 import 'config/api_configuration.dart';
 import 'auth/auth.dart';
@@ -1919,20 +1922,28 @@ class _TenantSetupPage extends StatelessWidget {
             ...qualifications.map((qualification) {
               final expiry = DateTime.tryParse(qualification['expiresAt'] as String? ?? '');
               final expired = expiry != null && expiry.isBefore(DateTime.now());
-              return ListTile(
-                dense: true,
-                leading: Icon(expired ? Icons.warning_amber : Icons.verified_outlined),
-                title: Text('${qualification['name']} · ${qualification['code']}'),
-                subtitle: Text(expiry == null ? (expired ? 'Expired' : 'No expiry recorded') : '${expired ? 'Expired' : 'Valid through'} ${expiry.month}/${expiry.day}/${expiry.year}'),
-                trailing: IconButton(tooltip: 'Revoke qualification', icon: const Icon(Icons.remove_circle_outline), onPressed: () async {
-                  try {
-                    await api.revokeQualification(qualification['id'] as String);
-                    onSaved();
-                  } catch (error) {
-                    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not revoke credential: $error')));
-                  }
-                }),
-              );
+              final evidenceStatus = qualification['evidenceStatus'] as String? ?? 'NONE';
+              return Column(children: [
+                ListTile(
+                  dense: true,
+                  leading: Icon(expired || evidenceStatus == 'REJECTED' ? Icons.warning_amber : evidenceStatus == 'VERIFIED' ? Icons.verified : evidenceStatus == 'PENDING_REVIEW' ? Icons.pending_outlined : Icons.workspace_premium_outlined),
+                  title: Text('${qualification['name']} · ${qualification['code']}'),
+                  subtitle: Text('${expiry == null ? 'No expiry recorded' : '${expired ? 'Expired' : 'Valid through'} ${expiry.month}/${expiry.day}/${expiry.year}'} · Evidence: ${evidenceStatus.replaceAll('_', ' ').toLowerCase()}${qualification['evidenceFileName'] == null ? '' : '\n${qualification['evidenceFileName']}'}${qualification['evidenceReviewReason'] == null ? '' : '\nReview: ${qualification['evidenceReviewReason']}'}'),
+                  trailing: IconButton(tooltip: 'Revoke qualification', icon: const Icon(Icons.remove_circle_outline), onPressed: () async {
+                    try {
+                      await api.revokeQualification(qualification['id'] as String);
+                      onSaved();
+                    } catch (error) {
+                      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not revoke credential: $error')));
+                    }
+                  }),
+                ),
+                Align(alignment: Alignment.centerLeft, child: Wrap(spacing: 4, children: [
+                  if (evidenceStatus == 'NONE' || evidenceStatus == 'UPLOADING' || evidenceStatus == 'REJECTED') TextButton.icon(onPressed: () => _uploadQualificationEvidence(context, qualification), icon: const Icon(Icons.upload_file_outlined), label: Text(evidenceStatus == 'UPLOADING' ? 'Retry upload' : 'Upload photo')),
+                  if (evidenceStatus == 'PENDING_REVIEW' || evidenceStatus == 'VERIFIED' || evidenceStatus == 'REJECTED') TextButton.icon(onPressed: () => _openQualificationEvidence(context, qualification), icon: const Icon(Icons.open_in_new), label: const Text('Open evidence')),
+                  if (evidenceStatus == 'PENDING_REVIEW') FilledButton.tonalIcon(onPressed: () => _reviewQualificationEvidence(context, qualification), icon: const Icon(Icons.fact_check_outlined), label: const Text('Review')),
+                ])),
+              ]);
             }),
           ]));
         })
@@ -1998,6 +2009,60 @@ class _TenantSetupPage extends StatelessWidget {
     }
     code.dispose();
     name.dispose();
+  }
+  Future<void> _uploadQualificationEvidence(BuildContext context, Map<String, dynamic> qualification) async {
+    final source = await showModalBottomSheet<ImageSource>(context: context, builder: (context) => SafeArea(child: Wrap(children: [
+      ListTile(leading: const Icon(Icons.photo_library_outlined), title: const Text('Choose certification photo'), onTap: () => Navigator.pop(context, ImageSource.gallery)),
+      ListTile(leading: const Icon(Icons.photo_camera_outlined), title: const Text('Take certification photo'), onTap: () => Navigator.pop(context, ImageSource.camera)),
+    ])));
+    if (source == null || !context.mounted) return;
+    try {
+      final file = await ImagePicker().pickImage(source: source, imageQuality: 90);
+      if (file == null) return;
+      final bytes = await file.readAsBytes();
+      final ext = file.name.split('.').last.toLowerCase();
+      final contentType = switch (ext) { 'png' => 'image/png', 'webp' => 'image/webp', 'heic' || 'heif' => 'image/heic', 'jpg' || 'jpeg' => 'image/jpeg', _ => throw StateError('Choose a JPEG, PNG, WebP, or HEIC certification image.') };
+      await api.uploadQualificationEvidence(qualification['id'] as String, file.name, contentType, bytes);
+      onSaved();
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Certification uploaded. It must be reviewed before staffing can rely on it.')));
+    } catch (error) {
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not upload certification: $error')));
+    }
+  }
+  Future<void> _openQualificationEvidence(BuildContext context, Map<String, dynamic> qualification) async {
+    try {
+      final url = await api.qualificationEvidenceDownload(qualification['id'] as String);
+      final uri = Uri.parse(url);
+      if (uri.scheme != 'https' || uri.host.isEmpty) throw StateError('The evidence API returned an invalid private link.');
+      if (kIsWeb) {
+        await Clipboard.setData(ClipboardData(text: url));
+        if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Private download link copied. It expires in five minutes; paste it into a browser to review the document.')));
+      } else {
+        await const MethodChannel('app.venuewranglerenterprise/external_url').invokeMethod<void>('openUrl', url);
+      }
+    } catch (error) {
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not open certification evidence: $error')));
+    }
+  }
+  Future<void> _reviewQualificationEvidence(BuildContext context, Map<String, dynamic> qualification) async {
+    final reason = TextEditingController();
+    final decision = await showDialog<String>(context: context, builder: (dialogContext) => AlertDialog(
+      title: Text('Review ${qualification['name']} evidence'),
+      content: Column(mainAxisSize: MainAxisSize.min, children: [
+        const Text('Open the evidence first. Record the basis for accepting or rejecting this document.'),
+        TextField(controller: reason, minLines: 2, maxLines: 4, decoration: const InputDecoration(labelText: 'Review rationale (required)', hintText: 'Issuer and expiry checked…')),
+      ]),
+      actions: [TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')), TextButton(onPressed: () { if (reason.text.trim().length < 3) { ScaffoldMessenger.of(dialogContext).showSnackBar(const SnackBar(content: Text('Enter a review rationale of at least 3 characters.'))); return; } Navigator.pop(dialogContext, 'REJECTED'); }, child: const Text('Reject')), FilledButton(onPressed: () { if (reason.text.trim().length < 3) { ScaffoldMessenger.of(dialogContext).showSnackBar(const SnackBar(content: Text('Enter a review rationale of at least 3 characters.'))); return; } Navigator.pop(dialogContext, 'VERIFIED'); }, child: const Text('Verify'))],
+    ));
+    if (decision != null) {
+      try {
+        await api.reviewQualificationEvidence(qualification['id'] as String, decision, reason.text);
+        onSaved();
+      } catch (error) {
+        if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not save credential review: $error')));
+      }
+    }
+    reason.dispose();
   }
   Future<void> _create(BuildContext context, String type) async {
     final name = TextEditingController();
