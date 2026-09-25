@@ -1282,6 +1282,8 @@ class _LiveStaffingPage extends ConsumerWidget {
                         child: Wrap(spacing: 8, runSpacing: 4, children: [
                           if (canWrite && state == 'DRAFT')
                             OutlinedButton(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'publish'), child: const Text('Publish')),
+                          if (canWrite && state == 'DRAFT' && attendance == 'NOT_STARTED')
+                            OutlinedButton.icon(onPressed: () => _suggestShiftAssignee(context, ref, eventId, shift), icon: const Icon(Icons.auto_awesome_outlined), label: const Text('Suggest staff')),
                           if (canWrite && state == 'PUBLISHED' && attendance == 'NOT_STARTED')
                             TextButton(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'cancel'), child: const Text('Cancel shift')),
                           if (canWrite && attendance != 'NOT_STARTED')
@@ -1764,6 +1766,57 @@ Future<void> _respondToShift(BuildContext context, WidgetRef ref, String eventId
     ref.invalidate(eventShiftsProvider(eventId));
   } catch (error) {
     if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not update shift response: $error')));
+  }
+}
+
+Future<void> _suggestShiftAssignee(BuildContext context, WidgetRef ref, String eventId, Map<String, dynamic> shift) async {
+  try {
+    final result = await ref.read(operationsApiProvider).shiftAssignmentSuggestions(eventId, shift['id'] as String);
+    final recommendations = (result['recommendations'] as List? ?? const [])
+        .whereType<Map>()
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList();
+    if (!context.mounted) return;
+    if (recommendations.isEmpty) {
+      final message = result['message'] as String? ?? 'No eligible workers were found.';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+      return;
+    }
+    final selected = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Eligible staff suggestions'),
+        content: SizedBox(
+          width: 460,
+          height: MediaQuery.sizeOf(context).height * 0.55,
+          child: Column(children: [
+            const Text('Ranked by lowest scheduled minutes in this event. “No recorded conflict” does not mean the worker explicitly confirmed availability.'),
+            const SizedBox(height: 8),
+            Expanded(child: ListView.builder(
+              itemCount: recommendations.length,
+              itemBuilder: (context, index) {
+                final candidate = recommendations[index];
+                final minutes = candidate['eventAssignedMinutes'] as int? ?? 0;
+                final shifts = candidate['eventAssignedShifts'] as int? ?? 0;
+                return ListTile(
+                  leading: const CircleAvatar(child: Icon(Icons.person_outline)),
+                  title: Text(candidate['displayName'] as String? ?? 'Roster member'),
+                  subtitle: Text('${(minutes / 60).toStringAsFixed(1)} scheduled hours · $shifts event shifts · no recorded schedule conflict'),
+                  onTap: () => Navigator.pop(dialogContext, candidate),
+                );
+              },
+            )),
+          ]),
+        ),
+        actions: [TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel'))],
+      ),
+    );
+    if (selected == null || !context.mounted) return;
+    await ref.read(operationsApiProvider).updateShift(eventId, shift['id'] as String, {'assignedSubject': selected['subject'] as String});
+    ref.invalidate(eventShiftsProvider(eventId));
+    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${selected['displayName']} assigned to the draft. Publish it when ready.')));
+  } catch (error) {
+    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not suggest or assign staff: $error')));
   }
 }
 

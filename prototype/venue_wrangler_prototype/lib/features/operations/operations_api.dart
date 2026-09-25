@@ -381,6 +381,11 @@ class OperationsApi {
                 'Authorization': 'Bearer $token',
                 'Idempotency-Key': key,
               })));
+  Future<Map<String, dynamic>> shiftAssignmentSuggestions(String eventId, String shiftId) async =>
+      (await _request((token) => _dio.get<Map<String, dynamic>>(
+            '/api/v1/events/$eventId/shifts/$shiftId/assignment-suggestions',
+            options: Options(headers: {'Authorization': 'Bearer $token'}),
+          ))).data!;
   Future<void> shiftCommand(
       String eventId, String shiftId, String action, {Map<String, Object?>? data}) async {
     await _command<void>(

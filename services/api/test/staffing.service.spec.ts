@@ -95,6 +95,43 @@ describe('event staffing workflow', () => {
     expect(tx.staffShiftAuditEvent.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ action: 'created_from_coverage_demand' }) }));
   });
 
+  it('ranks only assignable workers without recorded schedule conflicts and required qualifications', async () => {
+    const current = {
+      id: 'shift-1', eventId: 'event-1', organizationId: 'tenant-1', venueId: 'venue-1', locationId: 'location-1',
+      assignedSubject: null, role: 'Usher', startsAt: new Date('2026-10-01T17:00:00Z'), endsAt: new Date('2026-10-01T22:00:00Z'),
+      requiredQualificationCodes: ['FOOD_HANDLER'], state: 'DRAFT', attendance: 'NOT_STARTED',
+    };
+    const { service, tx } = harness(current);
+    const secondSubject = 'https://idp.example|worker-2';
+    const thirdSubject = 'https://idp.example|worker-3';
+    const fourthSubject = 'https://idp.example|worker-4';
+    tx.person.findMany.mockResolvedValue([
+      { id: 'person-1', externalSubject: workerSubject, displayName: 'Avery' },
+      { id: 'person-2', externalSubject: secondSubject, displayName: 'Blake' },
+      { id: 'person-3', externalSubject: thirdSubject, displayName: 'Casey' },
+      { id: 'person-4', externalSubject: fourthSubject, displayName: 'Drew' },
+    ]);
+    tx.staffUnavailability.findMany.mockResolvedValue([{ subject: secondSubject }]);
+    tx.staffShift.findMany
+      .mockResolvedValueOnce([{ assignedSubject: fourthSubject }])
+      .mockResolvedValueOnce([{ assignedSubject: workerSubject, startsAt: new Date('2026-10-01T10:00:00Z'), endsAt: new Date('2026-10-01T11:30:00Z') }]);
+    tx.personQualification.findMany.mockResolvedValue([{ personId: 'person-1', code: 'FOOD_HANDLER' }, { personId: 'person-2', code: 'FOOD_HANDLER' }, { personId: 'person-4', code: 'FOOD_HANDLER' }]);
+
+    const result = await service.assignmentSuggestions({ ...manager, assignableUserIds: [workerSubject, secondSubject, thirdSubject, fourthSubject] }, 'event-1', 'shift-1');
+
+    expect(result).toMatchObject({ availabilitySignal: 'NO_RECORDED_CONFLICT_ONLY', eligibleCount: 1, excludedCount: 3 });
+    expect(result.recommendations).toEqual([{ subject: workerSubject, displayName: 'Avery', eventAssignedMinutes: 90, eventAssignedShifts: 1, availabilitySignal: 'NO_RECORDED_CONFLICT_ONLY' }]);
+    expect(tx.person.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ organizationId: 'tenant-1', externalSubject: { in: [thirdSubject, secondSubject, workerSubject, fourthSubject].sort() } }) }));
+  });
+
+  it('does not query or reveal roster candidates when signed identity assignment scope is empty', async () => {
+    const current = { id: 'shift-1', eventId: 'event-1', organizationId: 'tenant-1', venueId: 'venue-1', locationId: null, state: 'DRAFT', attendance: 'NOT_STARTED' };
+    const { service, tx } = harness(current);
+    const result = await service.assignmentSuggestions({ ...manager, assignableUserIds: [] }, 'event-1', 'shift-1');
+    expect(result.recommendations).toEqual([]);
+    expect(tx.person.findMany).not.toHaveBeenCalled();
+  });
+
   it('prevents changing a generated demand into another area or window until its open shifts are edited', async () => {
     const { service, tx } = harness();
     tx.staffingDemand.findFirst.mockResolvedValue({ id: 'demand-1', eventId: 'event-1', organizationId: 'tenant-1', venueId: 'venue-1', locationId: 'location-1', role: 'Usher', startsAt: new Date('2025-10-01T17:00:00Z'), endsAt: new Date('2025-10-01T22:00:00Z'), requiredHeadcount: 2, requiredQualificationCodes: [] });

@@ -152,6 +152,71 @@ export class StaffingService {
     });
   }
 
+  async assignmentSuggestions(identity: Identity, eventId: string, shiftId: string) {
+    assertScope(identity, 'operations:write', eventId);
+    return this.prisma.withTenant(identity, async (tx) => {
+      const shift = await tx.staffShift.findFirst({ where: { id: shiftId, eventId, organizationId: identity.tenantId } });
+      if (!shift) throw new NotFoundException('Shift not found.');
+      assertScope(identity, 'operations:write', eventId, shift.venueId, shift.locationId ?? undefined);
+      if (shift.state !== 'DRAFT' || shift.attendance !== 'NOT_STARTED') throw new ConflictException('Staff recommendations are only available before publishing or starting a shift.');
+
+      const subjects = [...new Set(identity.assignableUserIds)].sort();
+      if (subjects.length === 0) return { shiftId, availabilitySignal: 'NO_RECORDED_CONFLICT_ONLY', recommendations: [], excludedCount: 0, message: 'The signed identity has no assignable workers for this event.' };
+      const people = await tx.person.findMany({ where: { organizationId: identity.tenantId, active: true, externalSubject: { in: subjects } }, select: { id: true, externalSubject: true, displayName: true }, orderBy: { displayName: 'asc' } });
+      if (people.length === 0) return { shiftId, availabilitySignal: 'NO_RECORDED_CONFLICT_ONLY', recommendations: [], excludedCount: 0, message: 'No active assignable roster members were found.' };
+
+      const [policy] = await tx.$queryRaw<Array<{ minimum_rest_minutes: number | null }>>`SELECT minimum_rest_minutes FROM organizations WHERE id = ${identity.tenantId}::uuid`;
+      const restMs = (policy?.minimum_rest_minutes ?? 0) * 60_000;
+      const restStart = new Date(shift.startsAt.getTime() - restMs);
+      const restEnd = new Date(shift.endsAt.getTime() + restMs);
+      const [unavailable, conflicts, workload, qualifications] = await Promise.all([
+        tx.staffUnavailability.findMany({ where: { organizationId: identity.tenantId, subject: { in: people.map((person) => person.externalSubject) }, deletedAt: null, startsAt: { lt: shift.endsAt }, endsAt: { gt: shift.startsAt } }, select: { subject: true } }),
+        tx.staffShift.findMany({ where: { organizationId: identity.tenantId, assignedSubject: { in: people.map((person) => person.externalSubject) }, state: 'PUBLISHED', id: { not: shiftId }, startsAt: { lt: restEnd }, endsAt: { gt: restStart } }, select: { assignedSubject: true } }),
+        tx.staffShift.findMany({ where: { organizationId: identity.tenantId, eventId, assignedSubject: { in: people.map((person) => person.externalSubject) }, state: { in: ['DRAFT', 'PUBLISHED'] }, id: { not: shiftId } }, select: { assignedSubject: true, startsAt: true, endsAt: true } }),
+        shift.requiredQualificationCodes.length === 0 ? Promise.resolve([]) : tx.personQualification.findMany({ where: { organizationId: identity.tenantId, personId: { in: people.map((person) => person.id) }, code: { in: shift.requiredQualificationCodes }, revokedAt: null, evidenceStatus: { in: ['NONE', 'VERIFIED'] }, OR: [{ expiresAt: null }, { expiresAt: { gte: new Date(Date.UTC(shift.endsAt.getUTCFullYear(), shift.endsAt.getUTCMonth(), shift.endsAt.getUTCDate())) } }] }, select: { personId: true, code: true } }),
+      ]);
+      const unavailableSubjects = new Set(unavailable.map((row) => row.subject));
+      const conflictingSubjects = new Set(conflicts.map((row) => row.assignedSubject).filter((subject): subject is string => subject !== null));
+      const qualifiedByPerson = new Map<string, Set<string>>();
+      for (const qualification of qualifications) {
+        const codes = qualifiedByPerson.get(qualification.personId) ?? new Set<string>();
+        codes.add(qualification.code);
+        qualifiedByPerson.set(qualification.personId, codes);
+      }
+      const workloadBySubject = new Map<string, { minutes: number; shifts: number }>();
+      for (const assigned of workload) {
+        if (!assigned.assignedSubject) continue;
+        const load = workloadBySubject.get(assigned.assignedSubject) ?? { minutes: 0, shifts: 0 };
+        load.minutes += Math.max(0, assigned.endsAt.getTime() - assigned.startsAt.getTime()) / 60_000;
+        load.shifts += 1;
+        workloadBySubject.set(assigned.assignedSubject, load);
+      }
+      const recommendations = [];
+      let excludedCount = 0;
+      for (const person of people) {
+        const reasons: string[] = [];
+        if (policy?.minimum_rest_minutes === null || policy === undefined) reasons.push('Tenant rest policy is not configured.');
+        if (unavailableSubjects.has(person.externalSubject)) reasons.push('Worker has recorded unavailable time during this shift.');
+        if (conflictingSubjects.has(person.externalSubject)) reasons.push('Worker has a published shift inside this shift or its required rest window.');
+        const validCodes = qualifiedByPerson.get(person.id) ?? new Set<string>();
+        const missing = shift.requiredQualificationCodes.filter((code) => !validCodes.has(code));
+        if (missing.length > 0) reasons.push(`Missing current qualifications: ${missing.join(', ')}.`);
+        if (reasons.length > 0) { excludedCount += 1; continue; }
+        const load = workloadBySubject.get(person.externalSubject) ?? { minutes: 0, shifts: 0 };
+        recommendations.push({ subject: person.externalSubject, displayName: person.displayName, eventAssignedMinutes: Math.round(load.minutes), eventAssignedShifts: load.shifts, availabilitySignal: 'NO_RECORDED_CONFLICT_ONLY' });
+      }
+      recommendations.sort((left, right) => left.eventAssignedMinutes - right.eventAssignedMinutes || left.eventAssignedShifts - right.eventAssignedShifts || left.displayName.localeCompare(right.displayName));
+      return {
+        shiftId,
+        availabilitySignal: 'NO_RECORDED_CONFLICT_ONLY',
+        recommendations: recommendations.slice(0, 8),
+        eligibleCount: recommendations.length,
+        excludedCount,
+        message: recommendations.length === 0 ? 'No eligible assignable workers were found. Review the venue rest policy, qualifications, availability records, and identity assignment scope.' : 'Ranked by lowest scheduled minutes in this event. A manager must select a worker; the assignment endpoint rechecks all rules.',
+      };
+    });
+  }
+
   async teamAvailability(identity: Identity, eventId: string, fromInput: string, toInput: string) {
     assertScope(identity, 'operations:write', eventId);
     const from = new Date(fromInput);

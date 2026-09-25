@@ -15,6 +15,9 @@ export class StaffingController {
   @Get('events/:eventId/shifts') list(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string) {
     return this.staffing.list(req.identity, eventId);
   }
+  @Get('events/:eventId/shifts/:shiftId/assignment-suggestions') assignmentSuggestions(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Param('shiftId', new ParseUUIDPipe()) shiftId: string) {
+    return this.staffing.assignmentSuggestions(req.identity, eventId, shiftId);
+  }
   @Get('events/:eventId/coverage/requirements') coverage(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string) {
     return this.staffing.coverageRequirements(req.identity, eventId);
   }
