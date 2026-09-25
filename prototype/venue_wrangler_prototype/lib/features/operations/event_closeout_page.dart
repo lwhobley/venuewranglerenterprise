@@ -18,6 +18,7 @@ class EventCloseoutPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    ref.watch(closeoutNoteSyncProvider);
     final eventId = event['id'] as String;
     final state = ref.watch(eventCloseoutProvider(eventId));
     return state.when(
@@ -68,6 +69,20 @@ class EventCloseoutPage extends ConsumerWidget {
                     }),
                   )
                 else ...[
+                  if (data['offlineSummaryDraft'] is Map) ...[
+                    Builder(builder: (context) {
+                      final draft = Map<String, dynamic>.from(
+                          data['offlineSummaryDraft'] as Map);
+                      return _MessagePanel(
+                        title: draft['state'] == 'needs_review'
+                            ? 'Offline note needs review'
+                            : 'Offline note saved on this device',
+                        message:
+                            '${draft['summary'] ?? ''}${draft['message'] is String ? '\n${draft['message']}' : '\nIt will sync automatically while this event closeout remains open.'}',
+                      );
+                    }),
+                    const SizedBox(height: 12),
+                  ],
                   if (exceptions.isEmpty)
                     const _MessagePanel(
                         title: 'No open operational exceptions',
@@ -97,13 +112,13 @@ class EventCloseoutPage extends ConsumerWidget {
                   ],
                   const SizedBox(height: 16),
                   _SummaryCard(
-                    initial: closeout['summary'] as String? ?? '',
+                    initial: (data['offlineSummaryDraft'] as Map?)?['summary']
+                            as String? ??
+                        closeout['summary'] as String? ??
+                        '',
                     disabled: isClosed,
-                    onSave: (summary) => _run(context, ref, eventId, () async {
-                      await ref
-                          .read(operationsApiProvider)
-                          .updateCloseoutSummary(eventId, summary);
-                    }),
+                    onSave: (summary) =>
+                        _saveSummary(context, ref, eventId, summary),
                   ),
                   _ActivityCard(
                       events: (closeout['auditEvents'] as List? ?? const [])
@@ -209,6 +224,28 @@ class EventCloseoutPage extends ConsumerWidget {
             .read(operationsApiProvider)
             .recordPostCloseCorrection(eventId, result);
       });
+    }
+  }
+
+  Future<void> _saveSummary(BuildContext context, WidgetRef ref, String eventId,
+      String summary) async {
+    try {
+      final queued = await ref
+          .read(operationsApiProvider)
+          .saveCloseoutSummary(eventId, summary);
+      ref.invalidate(eventCloseoutProvider(eventId));
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(queued
+              ? 'Saved encrypted on this device. It will sync when online.'
+              : 'Closeout summary saved.'),
+        ));
+      }
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not save closeout summary: $error')));
+      }
     }
   }
 

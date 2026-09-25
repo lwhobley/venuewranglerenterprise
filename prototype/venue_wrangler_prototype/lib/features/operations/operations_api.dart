@@ -209,12 +209,25 @@ class OperationsApi {
                       Options(headers: {'Authorization': 'Bearer $token'}))))
               .data ??
           const []);
-  Future<Map<String, dynamic>> eventCloseout(String eventId) async =>
-      (await _request((token) => _dio.get<Map<String, dynamic>>(
+  Future<Map<String, dynamic>> eventCloseout(String eventId) async {
+    final response = await _cachedGet<Map<String, dynamic>>(
+      'closeout.$eventId',
+      () async => (await _request((token) => _dio.get<Map<String, dynamic>>(
               '/api/v1/events/$eventId/closeout',
               options: Options(headers: {'Authorization': 'Bearer $token'}))))
-          .data ??
-      const {};
+          .data ?? const {},
+    );
+    final data = Map<String, dynamic>.from(response);
+    final scope = await _auth.offlineCacheScope();
+    if (scope != null) {
+      final raw = await _storage.read(key: _closeoutSummaryKey(scope, eventId));
+      if (raw != null) {
+        final draft = jsonDecode(raw) as Map<String, dynamic>;
+        data['offlineSummaryDraft'] = draft;
+      }
+    }
+    return data;
+  }
   Future<void> openEventCloseout(String eventId) async => _command<void>(
       {'action': 'event.closeout.open', 'eventId': eventId},
       (token, key) => _dio.post<void>('/api/v1/events/$eventId/closeout',
@@ -262,6 +275,55 @@ class OperationsApi {
                 'Authorization': 'Bearer $token',
                 'Idempotency-Key': key
               })));
+  Future<bool> saveCloseoutSummary(String eventId, String summary) async {
+    try {
+      await updateCloseoutSummary(eventId, summary);
+      final scope = await _auth.offlineCacheScope();
+      if (scope != null) {
+        await _storage.delete(key: _closeoutSummaryKey(scope, eventId));
+      }
+      return false;
+    } on DioException catch (error) {
+      if (error.response != null) rethrow;
+      final scope = await _auth.offlineCacheScope();
+      if (scope == null) rethrow;
+      await _storage.write(
+        key: _closeoutSummaryKey(scope, eventId),
+        value: jsonEncode({
+          'eventId': eventId,
+          'summary': summary,
+          'recordedAt': DateTime.now().toUtc().toIso8601String(),
+          'state': 'pending',
+        }),
+      );
+      return true;
+    }
+  }
+
+  String _closeoutSummaryKey(String scope, String eventId) =>
+      'venue.closeout.summary.outbox.$scope.$eventId';
+
+  Future<void> synchronizeOfflineCloseoutSummaries() async {
+    final scope = await _auth.offlineCacheScope();
+    if (scope == null) return;
+    final prefix = 'venue.closeout.summary.outbox.$scope.';
+    final rows = await _storage.readAll();
+    for (final entry in rows.entries.where((row) => row.key.startsWith(prefix))) {
+      final draft = jsonDecode(entry.value) as Map<String, dynamic>;
+      if (draft['state'] == 'needs_review') continue;
+      final eventId = draft['eventId'] as String;
+      try {
+        await updateCloseoutSummary(eventId, draft['summary'] as String);
+        await _storage.delete(key: entry.key);
+      } on DioException catch (error) {
+        if (error.response == null) return;
+        await _storage.write(
+          key: entry.key,
+          value: jsonEncode({...draft, 'state': 'needs_review', 'message': 'The server did not accept this offline note. Review it against the current event closeout.'}),
+        );
+      }
+    }
+  }
   Future<List<dynamic>> shifts(String eventId) => _cachedGet(
       'shifts.$eventId',
       () async =>
@@ -775,6 +837,15 @@ final eventTasksProvider = FutureProvider.autoDispose
 final eventCloseoutProvider = FutureProvider.autoDispose
     .family<Map<String, dynamic>, String>(
         (ref, id) => ref.watch(operationsApiProvider).eventCloseout(id));
+final closeoutNoteSyncProvider = Provider((ref) {
+  final controller = CloseoutNoteSyncController(
+    ref.watch(operationsApiProvider),
+    () => ref.invalidate(eventCloseoutProvider),
+  );
+  controller.start();
+  ref.onDispose(controller.dispose);
+  return controller;
+});
 final eventInventoryCountsProvider = FutureProvider.autoDispose
     .family<List<Map<String, dynamic>>, String>(
         (ref, id) => ref.watch(operationsApiProvider).inventoryCounts(id));
@@ -858,4 +929,41 @@ class StaffAttendanceOutboxController extends StateNotifier<List<Map<String, dyn
     unawaited(_subscription?.cancel());
     super.dispose();
   }
+}
+
+class CloseoutNoteSyncController {
+  CloseoutNoteSyncController(this._api, this._onSynced);
+  final OperationsApi _api;
+  final void Function() _onSynced;
+  final Connectivity _connectivity = Connectivity();
+  StreamSubscription<List<ConnectivityResult>>? _subscription;
+  bool _syncing = false;
+
+  void start() {
+    _subscription = _connectivity.onConnectivityChanged.listen((results) {
+      if (results.any((result) => result != ConnectivityResult.none)) {
+        unawaited(synchronize());
+      }
+    });
+    unawaited(_connectivity.checkConnectivity().then((results) {
+      if (results.any((result) => result != ConnectivityResult.none)) {
+        unawaited(synchronize());
+      }
+    }, onError: (Object _) {}));
+  }
+
+  Future<void> synchronize() async {
+    if (_syncing) return;
+    _syncing = true;
+    try {
+      await _api.synchronizeOfflineCloseoutSummaries();
+      _onSynced();
+    } catch (_) {
+      // Keep encrypted drafts on the device if transport or storage is unavailable.
+    } finally {
+      _syncing = false;
+    }
+  }
+
+  void dispose() => unawaited(_subscription?.cancel());
 }
