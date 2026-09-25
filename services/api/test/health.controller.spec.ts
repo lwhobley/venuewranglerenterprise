@@ -25,7 +25,7 @@ function controllerFor(role: { rolsuper: boolean; rolbypassrls: boolean }, table
 }
 
 describe('API health RLS gate', () => {
-  it('reports healthy only when the runtime role and all protected tables enforce RLS', async () => {
+  it('reports healthy when every discovered application table enforces RLS', async () => {
     const response = responseDouble();
     const controller = controllerFor(
       { rolsuper: false, rolbypassrls: false },
@@ -42,11 +42,28 @@ describe('API health RLS gate', () => {
     }));
   });
 
+  it('keeps the gate healthy when a newly added table is protected', async () => {
+    const response = responseDouble();
+    const controller = controllerFor(
+      { rolsuper: false, rolbypassrls: false },
+      { protected: true, table_count: 47n, policy_table_count: 47n },
+    );
+
+    await controller.check(response as unknown as Response);
+
+    expect(response.status).toHaveBeenCalledWith(200);
+    expect(response.json).toHaveBeenCalledWith(expect.objectContaining({
+      ok: true,
+      rlsEnforced: true,
+    }));
+  });
+
   it.each([
     ['a superuser runtime role', { rolsuper: true, rolbypassrls: false }, { protected: true, table_count: 46n, policy_table_count: 46n }],
     ['a BYPASSRLS runtime role', { rolsuper: false, rolbypassrls: true }, { protected: true, table_count: 46n, policy_table_count: 46n }],
     ['an unprotected application table', { rolsuper: false, rolbypassrls: false }, { protected: false, table_count: 46n, policy_table_count: 46n }],
-    ['a missing protected table', { rolsuper: false, rolbypassrls: false }, { protected: true, table_count: 16n, policy_table_count: 16n }],
+    ['an empty application schema', { rolsuper: false, rolbypassrls: false }, { protected: false, table_count: 0n, policy_table_count: 0n }],
+    ['a newly added table without a row-level security policy', { rolsuper: false, rolbypassrls: false }, { protected: false, table_count: 47n, policy_table_count: 46n }],
   ] as const)('fails closed for %s', async (_name, role, tables) => {
     const response = responseDouble();
     const controller = controllerFor(role, tables);

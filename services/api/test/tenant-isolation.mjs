@@ -49,6 +49,25 @@ try {
   assert.equal(role.rolsuper, false);
   assert.equal(role.rolbypassrls, false);
 
+  const [rlsCoverage] = await prisma.$queryRaw`
+    SELECT count(*) AS table_count,
+           count(*) FILTER (WHERE c.relrowsecurity AND c.relforcerowsecurity AND EXISTS (
+             SELECT 1 FROM pg_policies p
+             WHERE p.schemaname = n.nspname AND p.tablename = c.relname
+           )) AS protected_table_count
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind IN ('r', 'p')
+      AND c.relname <> '_prisma_migrations'
+  `;
+  assert.ok(rlsCoverage.table_count > 0n, 'application schema must contain tables');
+  assert.equal(
+    rlsCoverage.protected_table_count,
+    rlsCoverage.table_count,
+    'every application table must have RLS, FORCE RLS, and at least one policy',
+  );
+
   let issueAId;
   let breakAId;
   let attendanceClaimAId;

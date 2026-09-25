@@ -1,6 +1,6 @@
 # Cloud Run API deployment
 
-`.github/workflows/deploy-api.yml` is a manual production deployment. It builds the API image, deploys a tagged Cloud Run candidate with no customer traffic, requires `/api/health` to report an active database connection and all 46 RLS-protected tables enforced, then promotes the candidate. It never applies database migrations; run the approved migrator process first.
+`.github/workflows/deploy-api.yml` is a manual production deployment. It builds the API image, deploys a tagged Cloud Run candidate with no customer traffic, requires `/api/health` to report an active database connection and RLS plus FORCE RLS and at least one policy on every ordinary or partitioned application table in `public` (excluding Prisma migration metadata), then promotes the candidate. The gate discovers tables from PostgreSQL metadata so newly added tables are included automatically. It never applies database migrations; run the approved migrator process first.
 
 ## GitHub configuration
 

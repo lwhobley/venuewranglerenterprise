@@ -13,23 +13,23 @@ export class HealthController {
         SELECT r.rolsuper, r.rolbypassrls FROM pg_roles r WHERE r.rolname = current_user
       `;
       const [tables] = await this.prisma.$queryRaw<Array<{ protected: boolean; table_count: bigint; policy_table_count: bigint }>>`
-        SELECT bool_and(c.relrowsecurity AND c.relforcerowsecurity) AS protected,
+        SELECT count(*) > 0
+                 AND bool_and(c.relrowsecurity AND c.relforcerowsecurity AND EXISTS (
+                   SELECT 1 FROM pg_policies p
+                   WHERE p.schemaname = n.nspname AND p.tablename = c.relname
+                 )) AS protected,
                count(*) AS table_count,
-               (SELECT count(DISTINCT p.tablename) FROM pg_policies p WHERE p.schemaname = 'public' AND p.tablename IN (
-                 'organizations','venues','events','locations','issues','issue_audit_events','command_receipts','issue_events',
-                 'people','person_audit_events','operational_tasks','operational_task_audit_events','user_notifications','issue_attachments','external_integration_events','push_devices','tenant_setup_audit_events','staff_shifts','staff_shift_audit_events','staff_unavailability','staff_unavailability_audit','person_qualifications','staff_breaks','staff_attendance_claims','staffing_demands','staffing_demand_audit',
-                 'stock_items','stock_counts','stock_count_lines','stock_movements','stock_count_audit','hospitality_orders','hospitality_order_lines','hospitality_order_fulfillments','hospitality_delivery_receipts','hospitality_order_audit','hospitality_menu_items','stock_transfers','stock_transfer_lines','stock_transfer_audit',
-                 'event_closeouts','event_closeout_followups','event_closeout_audit','staffing_vendor_requests','staffing_vendor_request_audit','event_post_close_corrections'
+               count(*) FILTER (WHERE EXISTS (
+                 SELECT 1 FROM pg_policies p
+                 WHERE p.schemaname = n.nspname AND p.tablename = c.relname
                )) AS policy_table_count
-        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = 'public' AND c.relname IN (
-          'organizations','venues','events','locations','issues','issue_audit_events','command_receipts','issue_events',
-          'people','person_audit_events','operational_tasks','operational_task_audit_events','user_notifications','issue_attachments','external_integration_events','push_devices','tenant_setup_audit_events','staff_shifts','staff_shift_audit_events','staff_unavailability','staff_unavailability_audit','person_qualifications','staff_breaks','staff_attendance_claims','staffing_demands','staffing_demand_audit',
-          'stock_items','stock_counts','stock_count_lines','stock_movements','stock_count_audit','hospitality_orders','hospitality_order_lines','hospitality_order_fulfillments','hospitality_delivery_receipts','hospitality_order_audit','hospitality_menu_items','stock_transfers','stock_transfer_lines','stock_transfer_audit',
-          'event_closeouts','event_closeout_followups','event_closeout_audit','staffing_vendor_requests','staffing_vendor_request_audit','event_post_close_corrections'
-        )
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relkind IN ('r', 'p')
+          AND c.relname <> '_prisma_migrations'
       `;
-      const rlsEnforced = role !== undefined && !role.rolsuper && !role.rolbypassrls && tables?.protected === true && tables.table_count === 46n && tables.policy_table_count === 46n;
+      const rlsEnforced = role !== undefined && !role.rolsuper && !role.rolbypassrls && tables?.protected === true && tables.table_count > 0n && tables.policy_table_count === tables.table_count;
       const body = { ok: rlsEnforced, rlsEnforced, databaseConnected: true, runtimeRole: role ? { superuser: role.rolsuper, bypassRls: role.rolbypassrls } : null };
       return response.status(rlsEnforced ? 200 : 503).json(body);
     } catch {

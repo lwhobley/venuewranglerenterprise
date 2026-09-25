@@ -15,7 +15,7 @@ This runbook is an operating template, not an SLA. Fill in named owners, custome
 ## Pre-event readiness
 
 1. Confirm the deployed API revision, database migration level, customer IdP issuer/audience/client mapping, and event/venue/location scopes. Do not use demo accounts for the live event.
-2. Call `GET /api/health` from the approved operator network. Require HTTP 200, `ok: true`, `rlsEnforced: true`, and `databaseConnected: true`. Treat any 503 or missing protected-table check as a release stop.
+2. Call `GET /api/health` from the approved operator network. Require HTTP 200, `ok: true`, `rlsEnforced: true`, and `databaseConnected: true`. The gate discovers every ordinary or partitioned application table in `public` (excluding Prisma migration metadata) and requires RLS, FORCE RLS, and at least one policy. Treat any 503 or missing protected-table check as a release stop.
 3. Sign in with one least-privilege worker and one manager account. Verify each sees only its assigned event and locations; verify manager-only issue transitions and task updates are rejected for the worker account.
 4. On a managed device, submit an issue with a photo, disconnect networking, confirm the encrypted report remains queued, reconnect, then verify the issue and evidence arrive and can be viewed by an authorized reader.
 5. Confirm the event's support contact and fallback procedure with the venue. Keep operational incident reporting available if Venue Wrangler is unavailable; do not rely on the app as the venue's sole emergency channel.
@@ -42,7 +42,7 @@ For every incident, record UTC start time, reporter, impact, tenants/events affe
 
 - Review the CI run and dependency advisory output for the exact commit.
 - Apply database migrations using the approved migrator identity, after a backup and staging replay. Do not run migrations with the application runtime role.
-- Verify the health endpoint reports all 46 protected tables with RLS and FORCE RLS, and the runtime role is neither superuser nor `BYPASSRLS`.
+- Verify the health endpoint reports `rlsEnforced: true` for every discovered application table, and the runtime role is neither superuser nor `BYPASSRLS`. CI also checks dynamic table coverage after replaying the full migration chain.
 - Run tenant-isolation checks in a disposable staging database. A green compile or unit test does not prove database isolation.
 - Deploy as a candidate revision with no customer traffic first. Perform health and SSO acceptance checks before shifting traffic.
 
