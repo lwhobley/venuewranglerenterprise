@@ -124,6 +124,32 @@ data: {"issueId":"issue-1","action":"reported"}
         'Bearer test-access-token');
   });
 
+  test('submits acknowledged hospitality handoff receipt with idempotency',
+      () async {
+    final adapter = _StatusAdapter(204);
+    final dio = Dio(BaseOptions(baseUrl: 'https://venue.example'))
+      ..httpClientAdapter = adapter;
+    final api = OperationsApi(_FixedTokenAuth(), const FlutterSecureStorage(),
+        dio: dio);
+
+    await api.hospitalityOrderAction(
+      'event-1',
+      'order-1',
+      'pickup',
+      receivedByName: 'Jordan Lee',
+      receiptNote: 'Suite 14 host stand',
+      receiverAcknowledged: true,
+    );
+
+    expect(adapter.lastRequest?.data, {
+      'action': 'pickup',
+      'receivedByName': 'Jordan Lee',
+      'receiptNote': 'Suite 14 host stand',
+      'receiverAcknowledged': true,
+    });
+    expect(adapter.lastRequest?.headers['Idempotency-Key'], isNotEmpty);
+  });
+
   test(
       'queues closeout summary in scoped secure storage and removes it after sync',
       () async {

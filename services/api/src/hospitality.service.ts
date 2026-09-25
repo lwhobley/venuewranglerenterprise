@@ -27,7 +27,7 @@ export class HospitalityService {
             OR: [{ locationId: null }, { locationId: { in: identity.locationIds } }],
           } : {}),
         },
-        include: { lines: { orderBy: { itemName: 'asc' }, include: { fulfillments: { orderBy: { createdAt: 'asc' } } } } },
+        include: { lines: { orderBy: { itemName: 'asc' }, include: { fulfillments: { orderBy: { createdAt: 'asc' } } } }, deliveryReceipt: true },
         orderBy: [{ serviceAt: 'asc' }, { createdAt: 'desc' }],
       });
     });
@@ -65,7 +65,7 @@ export class HospitalityService {
   async act(identity: Identity, eventId: string, orderId: string, dto: HospitalityOrderActionDto, key: string) {
     const result = await this.command(identity, key, `hospitality.order.${dto.action}`, { eventId, orderId, ...dto }, async tx => {
       await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`hospitality-order:${identity.tenantId}:${orderId}`}, 0))`;
-      const current = await tx.hospitalityOrder.findFirst({ where: { id: orderId, eventId, organizationId: identity.tenantId }, include: { lines: { orderBy: { itemName: 'asc' }, include: { fulfillments: { orderBy: { createdAt: 'asc' } } } } } });
+      const current = await tx.hospitalityOrder.findFirst({ where: { id: orderId, eventId, organizationId: identity.tenantId }, include: { lines: { orderBy: { itemName: 'asc' }, include: { fulfillments: { orderBy: { createdAt: 'asc' } } } }, deliveryReceipt: true } });
       if (!current) throw new NotFoundException('Hospitality order not found.');
       if (identity.capabilities.includes('hospitality:fulfill') && current.assignedTo && current.assignedTo !== identity.subject && !identity.capabilities.includes('tenant:admin')) throw new ForbiddenException('This order is assigned to another kitchen operator.');
       const mustFulfill = ['accept', 'preparing', 'ready', 'distribute', 'fulfill', 'reject'].includes(dto.action);
@@ -102,10 +102,19 @@ export class HospitalityService {
       }
       const nextState = this.nextState(current.state, dto.action, identity.subject === current.requestedBy, Boolean(identity.capabilities.includes('hospitality:fulfill') || identity.capabilities.includes('tenant:admin')));
       if (['reject', 'cancel'].includes(dto.action) && !dto.reason?.trim()) throw new ConflictException('A reason is required to reject or cancel an order.');
+      if (dto.action === 'pickup') {
+        const receivedByName = dto.receivedByName?.trim();
+        if (!receivedByName || receivedByName.length < 2 || !dto.receiverAcknowledged) throw new ConflictException('Confirm the receiver name and in-person handoff acknowledgement to record pickup.');
+        if (current.lines.length === 0 || current.lines.some(line => Number(line.fulfilledQuantity) < Number(line.quantity))) throw new ConflictException('Pickup requires every order line to be fully fulfilled.');
+        await tx.hospitalityDeliveryReceipt.create({ data: {
+          organizationId: identity.tenantId, eventId, orderId, actorId: identity.subject,
+          receivedByName, note: dto.receiptNote?.trim() ?? '', receiverAcknowledged: true,
+        } });
+      }
       const updated = await tx.hospitalityOrder.update({ where: { id: orderId }, data: {
         state: nextState,
         rejectionReason: dto.action === 'reject' ? dto.reason!.trim() : dto.action === 'cancel' ? dto.reason!.trim() : current.rejectionReason,
-      }, include: { lines: { orderBy: { itemName: 'asc' }, include: { fulfillments: { orderBy: { createdAt: 'asc' } } } } } });
+      }, include: { lines: { orderBy: { itemName: 'asc' }, include: { fulfillments: { orderBy: { createdAt: 'asc' } } } }, deliveryReceipt: true } });
       await this.audit(tx, identity, orderId, dto.action, current, updated, dto.reason?.trim());
       const recipient = identity.subject === current.requestedBy ? current.assignedTo : current.requestedBy;
       const title = dto.action === 'ready' ? 'Hospitality order ready' : dto.action === 'reject' ? 'Hospitality order rejected' : dto.action === 'cancel' ? 'Hospitality order cancelled' : `Hospitality order ${nextState.toLowerCase().replace('_', ' ')}`;

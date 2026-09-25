@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { ArrayMaxSize, ArrayMinSize, IsArray, IsDateString, IsIn, IsNumber, IsOptional, IsString, IsUUID, Length, Max, Min, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsDateString, IsIn, IsNumber, IsOptional, IsString, IsUUID, Length, Max, Min, ValidateNested } from 'class-validator';
 
 export class HospitalityOrderLineDto {
   @ApiProperty() @IsString() @Length(2, 160) itemName!: string;
@@ -30,4 +30,7 @@ export class HospitalityOrderActionDto {
   @IsIn(['accept', 'preparing', 'ready', 'distribute', 'fulfill', 'pickup', 'reject', 'cancel']) action!: 'accept' | 'preparing' | 'ready' | 'distribute' | 'fulfill' | 'pickup' | 'reject' | 'cancel';
   @ApiPropertyOptional() @IsOptional() @IsString() @Length(3, 500) reason?: string;
   @ApiPropertyOptional({ type: [HospitalityFulfillmentLineDto] }) @IsOptional() @IsArray() @ArrayMinSize(1) @ArrayMaxSize(40) @ValidateNested({ each: true }) @Type(() => HospitalityFulfillmentLineDto) fulfillments?: HospitalityFulfillmentLineDto[];
+  @ApiPropertyOptional({ description: 'Name of the person receiving the completed hospitality order.' }) @IsOptional() @IsString() @Length(2, 120) receivedByName?: string;
+  @ApiPropertyOptional({ description: 'Short non-sensitive note recorded with the handoff.' }) @IsOptional() @IsString() @Length(0, 500) receiptNote?: string;
+  @ApiPropertyOptional({ description: 'Must be true to confirm an in-person handoff.' }) @IsOptional() @IsBoolean() receiverAcknowledged?: boolean;
 }

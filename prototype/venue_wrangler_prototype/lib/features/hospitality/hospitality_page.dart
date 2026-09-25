@@ -198,7 +198,10 @@ class _HospitalityOrderCard extends ConsumerWidget {
       if (state == 'READY' || state == 'PARTIALLY_DISTRIBUTED') {
         actions.add(('fulfill', 'Record items delivered'));
       }
-      if (state == 'ACCEPTED' || state == 'PREPARING' || state == 'READY' || state == 'PARTIALLY_DISTRIBUTED') {
+      if (state == 'ACCEPTED' ||
+          state == 'PREPARING' ||
+          state == 'READY' ||
+          state == 'PARTIALLY_DISTRIBUTED') {
         actions.add(('cancel', 'Cancel order'));
       }
     }
@@ -226,8 +229,11 @@ class _HospitalityOrderCard extends ConsumerWidget {
                 '${line['itemName']} · ${line['quantity']} ${line['unit']}'),
             subtitle: Text([
               'Delivered ${line['fulfilledQuantity'] ?? 0} of ${line['quantity']} ${line['unit']}',
-              if ((line['note'] as String? ?? '').isNotEmpty) line['note'] as String,
-              for (final fulfillment in (line['fulfillments'] as List? ?? const []).whereType<Map>())
+              if ((line['note'] as String? ?? '').isNotEmpty)
+                line['note'] as String,
+              for (final fulfillment
+                  in (line['fulfillments'] as List? ?? const [])
+                      .whereType<Map>())
                 if (fulfillment['substituteItemName'] is String)
                   '${fulfillment['quantity']} substituted with ${fulfillment['substituteItemName']}${fulfillment['reason'] is String ? ' · ${fulfillment['reason']}' : ''}'
                 else if (fulfillment['reason'] is String)
@@ -240,6 +246,18 @@ class _HospitalityOrderCard extends ConsumerWidget {
               child: Align(
                   alignment: Alignment.centerLeft,
                   child: Text('Service notes: ${order['instructions']}'))),
+        if (order['deliveryReceipt'] is Map)
+          ListTile(
+            leading: const Icon(Icons.fact_check_outlined),
+            title: Text(
+                'Received by ${(order['deliveryReceipt'] as Map)['receivedByName']}'),
+            subtitle: Text([
+              'Handoff acknowledged · ${DateTime.tryParse((order['deliveryReceipt'] as Map)['acknowledgedAt']?.toString() ?? '')?.toLocal().toString() ?? 'time unavailable'}',
+              if (((order['deliveryReceipt'] as Map)['note'] as String? ?? '')
+                  .isNotEmpty)
+                (order['deliveryReceipt'] as Map)['note'] as String,
+            ].join(' · ')),
+          ),
         if (actions.isNotEmpty)
           Padding(
               padding: const EdgeInsets.all(12),
@@ -259,7 +277,9 @@ class _HospitalityOrderCard extends ConsumerWidget {
 
   IconData _icon(String state) => switch (state) {
         'READY' => Icons.notifications_active_outlined,
-        'DISTRIBUTED' || 'PARTIALLY_DISTRIBUTED' => Icons.local_shipping_outlined,
+        'DISTRIBUTED' ||
+        'PARTIALLY_DISTRIBUTED' =>
+          Icons.local_shipping_outlined,
         'PICKED_UP' => Icons.task_alt,
         'REJECTED' || 'CANCELLED' => Icons.block_outlined,
         'PREPARING' => Icons.soup_kitchen_outlined,
@@ -270,6 +290,9 @@ class _HospitalityOrderCard extends ConsumerWidget {
       String action, List<Map<String, dynamic>> lines) async {
     String? reason;
     List<Map<String, Object?>>? fulfillments;
+    String? receivedByName;
+    String? receiptNote;
+    bool? receiverAcknowledged;
     if (action == 'fulfill') {
       final result = await showDialog<Map<String, Object?>>(
         context: context,
@@ -312,11 +335,25 @@ class _HospitalityOrderCard extends ConsumerWidget {
           });
       if (reason == null || reason.trim().length < 3) return;
     }
+    if (action == 'pickup') {
+      if (!context.mounted) return;
+      final receipt = await showDialog<Map<String, Object?>>(
+        context: context,
+        builder: (_) => const _PickupReceiptDialog(),
+      );
+      if (!context.mounted || receipt == null) return;
+      receivedByName = receipt['receivedByName'] as String;
+      receiptNote = receipt['receiptNote'] as String?;
+      receiverAcknowledged = receipt['receiverAcknowledged'] as bool;
+    }
     try {
-      await ref
-          .read(operationsApiProvider)
-          .hospitalityOrderAction(eventId, orderId, action,
-              reason: reason, fulfillments: fulfillments);
+      await ref.read(operationsApiProvider).hospitalityOrderAction(
+          eventId, orderId, action,
+          reason: reason,
+          fulfillments: fulfillments,
+          receivedByName: receivedByName,
+          receiptNote: receiptNote,
+          receiverAcknowledged: receiverAcknowledged);
       ref.invalidate(eventHospitalityOrdersProvider(eventId));
     } catch (error) {
       if (context.mounted) {
@@ -349,19 +386,25 @@ class _FulfillmentComposerState extends State<_FulfillmentComposer> {
   void initState() {
     super.initState();
     _quantities = widget.lines.map((line) {
-      final remaining = (_amount(line['quantity']) -
-              _amount(line['fulfilledQuantity']))
-          .clamp(0, double.infinity);
+      final remaining =
+          (_amount(line['quantity']) - _amount(line['fulfilledQuantity']))
+              .clamp(0, double.infinity);
       return TextEditingController(text: remaining.toStringAsFixed(3));
     }).toList();
-    _substitutions = List.generate(widget.lines.length, (_) => TextEditingController());
-    _substitutionReasons = List.generate(widget.lines.length, (_) => TextEditingController());
+    _substitutions =
+        List.generate(widget.lines.length, (_) => TextEditingController());
+    _substitutionReasons =
+        List.generate(widget.lines.length, (_) => TextEditingController());
   }
 
   @override
   void dispose() {
     _reason.dispose();
-    for (final controller in [..._quantities, ..._substitutions, ..._substitutionReasons]) {
+    for (final controller in [
+      ..._quantities,
+      ..._substitutions,
+      ..._substitutionReasons
+    ]) {
       controller.dispose();
     }
     super.dispose();
@@ -373,12 +416,14 @@ class _FulfillmentComposerState extends State<_FulfillmentComposer> {
     var batchTotal = 0.0;
     for (var index = 0; index < widget.lines.length; index++) {
       final line = widget.lines[index];
-      final remaining = (_amount(line['quantity']) - _amount(line['fulfilledQuantity']))
-          .clamp(0, double.infinity);
+      final remaining =
+          (_amount(line['quantity']) - _amount(line['fulfilledQuantity']))
+              .clamp(0, double.infinity);
       remainingTotal += remaining;
       final quantity = double.tryParse(_quantities[index].text.trim());
       if (quantity == null || quantity < 0 || quantity > remaining) {
-        setState(() => _error = 'Enter a valid quantity up to the remaining amount for each item.');
+        setState(() => _error =
+            'Enter a valid quantity up to the remaining amount for each item.');
         return;
       }
       if (quantity == 0) continue;
@@ -401,7 +446,8 @@ class _FulfillmentComposerState extends State<_FulfillmentComposer> {
       return;
     }
     if (batchTotal < remainingTotal && _reason.text.trim().length < 3) {
-      setState(() => _error = 'Explain why the remaining items were not delivered.');
+      setState(
+          () => _error = 'Explain why the remaining items were not delivered.');
       return;
     }
     Navigator.pop(context, {
@@ -420,24 +466,31 @@ class _FulfillmentComposerState extends State<_FulfillmentComposer> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Enter the quantity delivered in this batch. Leave an item at 0 when none was delivered.'),
+                const Text(
+                    'Enter the quantity delivered in this batch. Leave an item at 0 when none was delivered.'),
                 const SizedBox(height: 12),
                 for (var index = 0; index < widget.lines.length; index++) ...[
-                  Text('${widget.lines[index]['itemName']} · ${widget.lines[index]['unit']}',
+                  Text(
+                      '${widget.lines[index]['itemName']} · ${widget.lines[index]['unit']}',
                       style: const TextStyle(fontWeight: FontWeight.w700)),
-                  Text('Remaining ${(_amount(widget.lines[index]['quantity']) - _amount(widget.lines[index]['fulfilledQuantity'])).clamp(0, double.infinity)}'),
+                  Text(
+                      'Remaining ${(_amount(widget.lines[index]['quantity']) - _amount(widget.lines[index]['fulfilledQuantity'])).clamp(0, double.infinity)}'),
                   TextField(
                     controller: _quantities[index],
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    decoration: const InputDecoration(labelText: 'Delivered now'),
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                    decoration:
+                        const InputDecoration(labelText: 'Delivered now'),
                   ),
                   TextField(
                     controller: _substitutions[index],
-                    decoration: const InputDecoration(labelText: 'Substitute item (optional)'),
+                    decoration: const InputDecoration(
+                        labelText: 'Substitute item (optional)'),
                   ),
                   TextField(
                     controller: _substitutionReasons[index],
-                    decoration: const InputDecoration(labelText: 'Substitution reason'),
+                    decoration:
+                        const InputDecoration(labelText: 'Substitution reason'),
                   ),
                   const Divider(height: 24),
                 ],
@@ -446,20 +499,95 @@ class _FulfillmentComposerState extends State<_FulfillmentComposer> {
                   maxLength: 500,
                   minLines: 2,
                   maxLines: 3,
-                  decoration: const InputDecoration(labelText: 'Reason for remaining quantities (required for partial fulfillment)'),
+                  decoration: const InputDecoration(
+                      labelText:
+                          'Reason for remaining quantities (required for partial fulfillment)'),
                 ),
                 if (_error != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 8),
-                    child: Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                    child: Text(_error!,
+                        style: TextStyle(
+                            color: Theme.of(context).colorScheme.error)),
                   ),
               ],
             ),
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Back')),
-          FilledButton(onPressed: _submit, child: const Text('Save fulfillment')),
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Back')),
+          FilledButton(
+              onPressed: _submit, child: const Text('Save fulfillment')),
+        ],
+      );
+}
+
+class _PickupReceiptDialog extends StatefulWidget {
+  const _PickupReceiptDialog();
+
+  @override
+  State<_PickupReceiptDialog> createState() => _PickupReceiptDialogState();
+}
+
+class _PickupReceiptDialogState extends State<_PickupReceiptDialog> {
+  final _receiver = TextEditingController();
+  final _note = TextEditingController();
+  bool _acknowledged = false;
+
+  @override
+  void dispose() {
+    _receiver.dispose();
+    _note.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('Confirm handoff'),
+        content: SingleChildScrollView(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const Text(
+                'Record who received the completed order. This is an in-person acknowledgement, not a captured signature.'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _receiver,
+              autofocus: true,
+              maxLength: 120,
+              onChanged: (_) => setState(() {}),
+              decoration: const InputDecoration(labelText: 'Received by'),
+            ),
+            TextField(
+              controller: _note,
+              maxLength: 500,
+              decoration:
+                  const InputDecoration(labelText: 'Handoff note (optional)'),
+            ),
+            CheckboxListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _acknowledged,
+              onChanged: (value) =>
+                  setState(() => _acknowledged = value ?? false),
+              title: const Text('I confirmed this handoff in person'),
+              controlAffinity: ListTileControlAffinity.leading,
+            ),
+          ]),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Back')),
+          FilledButton(
+            onPressed: _receiver.text.trim().length >= 2 && _acknowledged
+                ? () => Navigator.pop(context, {
+                      'receivedByName': _receiver.text.trim(),
+                      'receiptNote': _note.text.trim(),
+                      'receiverAcknowledged': true,
+                    })
+                : null,
+            child: const Text('Save receipt'),
+          ),
         ],
       );
 }

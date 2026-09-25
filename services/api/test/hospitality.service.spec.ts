@@ -27,6 +27,7 @@ function harness(order: Record<string, unknown> = {}) {
     hospitalityOrderAudit: { create: vi.fn().mockResolvedValue({}) },
     hospitalityOrderLine: { update: vi.fn().mockResolvedValue({}) },
     hospitalityOrderFulfillment: { create: vi.fn().mockResolvedValue({}) },
+    hospitalityDeliveryReceipt: { create: vi.fn().mockResolvedValue({ id: 'receipt-1' }) },
     userNotification: { create: vi.fn().mockResolvedValue({ id: 'notice-1', kind: 'hospitality.order.submitted', recipientSubject: 'kitchen-1' }) },
   };
   const prisma = { withTenant: vi.fn((_identity: Identity, action: (transaction: never) => Promise<unknown>) => action(tx as never)) } as unknown as PrismaService;
@@ -118,6 +119,37 @@ describe('hospitality order lifecycle', () => {
     const { service, tx } = harness();
     await expect(service.act(kitchen, eventId, '00000000-0000-0000-0000-000000000099', { action: 'ready' }, 'hospitality-action-key-0005'))
       .rejects.toBeInstanceOf(ConflictException);
+    expect(tx.hospitalityOrder.update).not.toHaveBeenCalled();
+  });
+
+  it('requires and records an acknowledged pickup receipt', async () => {
+    const { service, tx } = harness({ state: 'DISTRIBUTED', lines: [{ id: 'line-1', itemName: 'Sparkling water', quantity: 2, fulfilledQuantity: 2, unit: 'case', fulfillments: [] }] });
+    await service.act(requester, eventId, '00000000-0000-0000-0000-000000000099', {
+      action: 'pickup', receivedByName: 'Jordan Lee', receiptNote: 'Suite 14 host stand', receiverAcknowledged: true,
+    }, 'hospitality-pickup-key-0001');
+    expect(tx.hospitalityDeliveryReceipt.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+      organizationId: tenantId, eventId, actorId: requester.subject, receivedByName: 'Jordan Lee',
+      note: 'Suite 14 host stand', receiverAcknowledged: true,
+    }) });
+    expect(tx.hospitalityOrder.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ state: 'PICKED_UP' }) }));
+    expect(tx.hospitalityOrderAudit.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ action: 'pickup' }) }));
+  });
+
+  it('does not record pickup while a line is still outstanding', async () => {
+    const { service, tx } = harness({ state: 'DISTRIBUTED', lines: [{ id: 'line-1', itemName: 'Sparkling water', quantity: 2, fulfilledQuantity: 1, unit: 'case', fulfillments: [] }] });
+    await expect(service.act(requester, eventId, '00000000-0000-0000-0000-000000000099', {
+      action: 'pickup', receivedByName: 'Jordan Lee', receiverAcknowledged: true,
+    }, 'hospitality-pickup-key-0003')).rejects.toBeInstanceOf(ConflictException);
+    expect(tx.hospitalityDeliveryReceipt.create).not.toHaveBeenCalled();
+    expect(tx.hospitalityOrder.update).not.toHaveBeenCalled();
+  });
+
+  it('does not mark pickup without explicit in-person receiver acknowledgement', async () => {
+    const { service, tx } = harness({ state: 'DISTRIBUTED', lines: [{ id: 'line-1', itemName: 'Sparkling water', quantity: 2, fulfilledQuantity: 2, unit: 'case', fulfillments: [] }] });
+    await expect(service.act(requester, eventId, '00000000-0000-0000-0000-000000000099', {
+      action: 'pickup', receivedByName: 'Jordan Lee', receiverAcknowledged: false,
+    }, 'hospitality-pickup-key-0002')).rejects.toBeInstanceOf(ConflictException);
+    expect(tx.hospitalityDeliveryReceipt.create).not.toHaveBeenCalled();
     expect(tx.hospitalityOrder.update).not.toHaveBeenCalled();
   });
 

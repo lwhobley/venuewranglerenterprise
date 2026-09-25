@@ -218,6 +218,11 @@ try {
       hospitalityOrderLineBId = hospitalityOrderLineB.id;
       await tx.$executeRaw`INSERT INTO hospitality_order_fulfillments(organization_id,event_id,order_id,line_id,actor_id,quantity)
         VALUES (${tenantB}::uuid,${eventB}::uuid,${hospitalityOrderB.id}::uuid,${hospitalityOrderLineBId}::uuid,'tenant-isolation-test',1)`;
+      await tx.$executeRaw`INSERT INTO hospitality_order_fulfillments(organization_id,event_id,order_id,line_id,actor_id,quantity)
+        VALUES (${tenantB}::uuid,${eventB}::uuid,${hospitalityOrderB.id}::uuid,${hospitalityOrderLineBId}::uuid,'tenant-isolation-test',17)`;
+      await tx.$executeRaw`UPDATE hospitality_orders SET state='DISTRIBUTED' WHERE id=${hospitalityOrderB.id}::uuid`;
+      await tx.$executeRaw`INSERT INTO hospitality_delivery_receipts(organization_id,event_id,order_id,actor_id,received_by_name,receiver_acknowledged)
+        VALUES (${tenantB}::uuid,${eventB}::uuid,${hospitalityOrderB.id}::uuid,'tenant-isolation-test','Gate lead',true)`;
       await tx.$executeRaw`INSERT INTO hospitality_order_audit(organization_id,order_id,actor_id,action)
         VALUES (${tenantB}::uuid,${hospitalityOrderB.id}::uuid,'tenant-isolation-test','submitted')`;
       const [closeoutB] = await tx.$queryRaw`INSERT INTO event_closeouts(organization_id,venue_id,event_id,opened_by)
@@ -275,6 +280,35 @@ try {
       } catch (error) { crossTenantHospitalityFulfillmentError = error; }
       await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT cross_tenant_hospitality_fulfillment_probe');
       assert.equal(crossTenantHospitalityFulfillmentError?.meta?.code, '42501', 'runtime role must not insert another tenant hospitality fulfillment');
+      await tx.$executeRawUnsafe('SAVEPOINT premature_hospitality_receipt_probe');
+      let prematureHospitalityReceiptError;
+      try {
+        await tx.$executeRaw`INSERT INTO hospitality_delivery_receipts(organization_id,event_id,order_id,actor_id,received_by_name,receiver_acknowledged)
+          VALUES (${tenantA}::uuid,${eventA}::uuid,${hospitalityOrderAId}::uuid,'tenant-isolation-test','Suite host',true)`;
+      } catch (error) { prematureHospitalityReceiptError = error; }
+      await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT premature_hospitality_receipt_probe');
+      assert.equal(prematureHospitalityReceiptError?.meta?.code, '23514', 'database requires all hospitality items delivered before handoff receipt');
+      await tx.$executeRaw`INSERT INTO hospitality_order_fulfillments(organization_id,event_id,order_id,line_id,actor_id,quantity)
+        VALUES (${tenantA}::uuid,${eventA}::uuid,${hospitalityOrderAId}::uuid,${hospitalityOrderLineAId}::uuid,'tenant-isolation-test',23)`;
+      await tx.$executeRaw`UPDATE hospitality_orders SET state='DISTRIBUTED' WHERE id=${hospitalityOrderAId}::uuid`;
+      await tx.$executeRaw`INSERT INTO hospitality_delivery_receipts(organization_id,event_id,order_id,actor_id,received_by_name,receiver_acknowledged)
+        VALUES (${tenantA}::uuid,${eventA}::uuid,${hospitalityOrderAId}::uuid,'tenant-isolation-test','Suite host',true)`;
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_delivery_receipts WHERE order_id=${hospitalityOrderAId}::uuid`)[0].count, 1, 'tenant A sees its immutable hospitality handoff receipt');
+      await tx.$executeRawUnsafe('SAVEPOINT cross_tenant_hospitality_receipt_probe');
+      let crossTenantHospitalityReceiptError;
+      try {
+        await tx.$executeRaw`INSERT INTO hospitality_delivery_receipts(organization_id,event_id,order_id,actor_id,received_by_name,receiver_acknowledged)
+          VALUES (${tenantB}::uuid,${eventB}::uuid,${hospitalityOrderBId}::uuid,'tenant-isolation-test','Gate lead',true)`;
+      } catch (error) { crossTenantHospitalityReceiptError = error; }
+      await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT cross_tenant_hospitality_receipt_probe');
+      assert.equal(crossTenantHospitalityReceiptError?.meta?.code, '42501', 'runtime role must not insert another tenant delivery receipt');
+      await tx.$executeRawUnsafe('SAVEPOINT immutable_hospitality_receipt_probe');
+      let immutableHospitalityReceiptError;
+      try {
+        await tx.$executeRaw`UPDATE hospitality_delivery_receipts SET note='rewritten' WHERE order_id=${hospitalityOrderAId}::uuid`;
+      } catch (error) { immutableHospitalityReceiptError = error; }
+      await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT immutable_hospitality_receipt_probe');
+      assert.equal(immutableHospitalityReceiptError?.meta?.code, 'P0001', 'handoff receipt is append-only');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeouts WHERE id=${closeoutAId}::uuid`)[0].count, 1, 'tenant A sees its event closeout');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeout_followups WHERE closeout_id=${closeoutAId}::uuid`)[0].count, 1, 'tenant A sees its closeout follow-up');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeout_audit WHERE closeout_id=${closeoutAId}::uuid`)[0].count, 1, 'tenant A sees its closeout audit');
@@ -369,7 +403,7 @@ try {
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_count_audit WHERE count_id=${stockCountBId}::uuid`)[0].count, 1, 'tenant B sees its stock count audit');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_orders WHERE id=${hospitalityOrderBId}::uuid`)[0].count, 1, 'tenant B sees its hospitality order');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_order_lines WHERE order_id=${hospitalityOrderBId}::uuid`)[0].count, 1, 'tenant B sees its hospitality order line');
-      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_order_fulfillments WHERE order_id=${hospitalityOrderBId}::uuid`)[0].count, 1, 'tenant B sees its hospitality fulfillment record');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_order_fulfillments WHERE order_id=${hospitalityOrderBId}::uuid`)[0].count, 2, 'tenant B sees both hospitality fulfillment records');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_order_audit WHERE order_id=${hospitalityOrderBId}::uuid`)[0].count, 1, 'tenant B sees its hospitality order audit');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeouts WHERE id=${closeoutBId}::uuid`)[0].count, 1, 'tenant B sees its event closeout');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeout_followups WHERE closeout_id=${closeoutBId}::uuid`)[0].count, 1, 'tenant B sees its closeout follow-up');
@@ -388,6 +422,8 @@ try {
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_orders WHERE id=${hospitalityOrderAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A hospitality orders');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_order_lines WHERE order_id=${hospitalityOrderAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A hospitality order lines');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_order_fulfillments WHERE order_id=${hospitalityOrderAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A fulfillment records');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_delivery_receipts WHERE order_id=${hospitalityOrderAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A delivery receipts');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_delivery_receipts WHERE order_id=${hospitalityOrderBId}::uuid`)[0].count, 1, 'tenant B sees its own hospitality delivery receipt');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_order_audit WHERE order_id=${hospitalityOrderAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A hospitality order audit');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeouts WHERE id=${closeoutAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A event closeout');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeout_followups WHERE id=${closeoutFollowupAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A closeout follow-up');
@@ -436,6 +472,31 @@ try {
       } catch (error) { closedHospitalityFulfillmentError = error; }
       await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT closed_hospitality_fulfillment_probe');
       assert.equal(closedHospitalityFulfillmentError?.meta?.code, '23514', 'hospitality fulfillment writes must be rejected after closeout finalization');
+      await tx.$executeRawUnsafe('SAVEPOINT closed_hospitality_receipt_probe');
+      await tx.$executeRaw`UPDATE event_closeouts SET state='CLOSED',finalized_by='tenant-isolation-test',finalized_at=now() WHERE id=${closeoutAId}::uuid`;
+      let closedHospitalityReceiptError;
+      try {
+        await tx.$executeRaw`INSERT INTO hospitality_delivery_receipts(organization_id,event_id,order_id,actor_id,received_by_name,receiver_acknowledged)
+          VALUES (${tenantA}::uuid,${eventA}::uuid,${hospitalityOrderAId}::uuid,'tenant-isolation-test','Another host',true)`;
+      } catch (error) { closedHospitalityReceiptError = error; }
+      await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT closed_hospitality_receipt_probe');
+      assert.equal(closedHospitalityReceiptError?.meta?.code, '23514', 'handoff receipts must be rejected after event closeout');
+      await tx.$executeRawUnsafe('SAVEPOINT closed_hospitality_receipt_probe');
+      await tx.$executeRaw`UPDATE event_closeouts SET state='CLOSED',finalized_by='tenant-isolation-test',finalized_at=now() WHERE id=${closeoutAId}::uuid`;
+      let closedHospitalityReceiptError;
+      try {
+        await tx.$executeRaw`INSERT INTO hospitality_delivery_receipts(organization_id,event_id,order_id,actor_id,received_by_name,receiver_acknowledged)
+          VALUES (${tenantA}::uuid,${eventA}::uuid,${hospitalityOrderAId}::uuid,'tenant-isolation-test','Late handoff',true)`;
+      } catch (error) { closedHospitalityReceiptError = error; }
+      await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT closed_hospitality_receipt_probe');
+      assert.equal(closedHospitalityReceiptError?.meta?.code, '23514', 'hospitality handoff receipts must be rejected after closeout finalization');
+      await tx.$executeRawUnsafe('SAVEPOINT hospitality_receipt_immutable_probe');
+      let hospitalityReceiptRewriteError;
+      try {
+        await tx.$executeRaw`UPDATE hospitality_delivery_receipts SET note='forbidden rewrite' WHERE order_id=${hospitalityOrderAId}::uuid`;
+      } catch (error) { hospitalityReceiptRewriteError = error; }
+      await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT hospitality_receipt_immutable_probe');
+      assert.equal(hospitalityReceiptRewriteError?.meta?.code, '42501', 'runtime role cannot rewrite hospitality handoff receipts');
       await tx.$executeRawUnsafe('SAVEPOINT post_close_correction_rls_probe');
       await tx.$executeRaw`UPDATE event_closeouts SET state='CLOSED',finalized_by='tenant-isolation-test',finalized_at=now() WHERE id=${closeoutAId}::uuid`;
       const [correctionA] = await tx.$queryRaw`INSERT INTO event_post_close_corrections(organization_id,event_id,source_type,source_id,headline,correction,reason,created_by)

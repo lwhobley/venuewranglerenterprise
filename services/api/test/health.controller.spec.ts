@@ -29,7 +29,7 @@ describe('API health RLS gate', () => {
     const response = responseDouble();
     const controller = controllerFor(
       { rolsuper: false, rolbypassrls: false },
-      { protected: true, table_count: 44n, policy_table_count: 44n },
+      { protected: true, table_count: 45n, policy_table_count: 45n },
     );
 
     await controller.check(response as unknown as Response);
@@ -43,9 +43,9 @@ describe('API health RLS gate', () => {
   });
 
   it.each([
-    ['a superuser runtime role', { rolsuper: true, rolbypassrls: false }, { protected: true, table_count: 44n, policy_table_count: 44n }],
-    ['a BYPASSRLS runtime role', { rolsuper: false, rolbypassrls: true }, { protected: true, table_count: 44n, policy_table_count: 44n }],
-    ['an unprotected application table', { rolsuper: false, rolbypassrls: false }, { protected: false, table_count: 44n, policy_table_count: 44n }],
+    ['a superuser runtime role', { rolsuper: true, rolbypassrls: false }, { protected: true, table_count: 45n, policy_table_count: 45n }],
+    ['a BYPASSRLS runtime role', { rolsuper: false, rolbypassrls: true }, { protected: true, table_count: 45n, policy_table_count: 45n }],
+    ['an unprotected application table', { rolsuper: false, rolbypassrls: false }, { protected: false, table_count: 45n, policy_table_count: 45n }],
     ['a missing protected table', { rolsuper: false, rolbypassrls: false }, { protected: true, table_count: 16n, policy_table_count: 16n }],
   ] as const)('fails closed for %s', async (_name, role, tables) => {
     const response = responseDouble();

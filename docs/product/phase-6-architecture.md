@@ -118,7 +118,7 @@ Health checks fail closed for missing JWT verification configuration, database c
 | `services/api/src/operations.*` | Tenant bootstrap, administrator onboarding, operational task CRUD, and audit records |
 | `services/api/src/scim.*` | Tenant-bound SCIM 2.0 user lifecycle and immediate API denial for deactivated provisioned users |
 | `services/api/src/integration.*` | HMAC-authenticated, idempotent normalized event ingestion for vendor-specific adapters |
-| `services/api/src/hospitality.*` and `20261019000000_hospitality_partial_fulfillment` | Audited hospitality requests and per-line partial fulfillment/substitutions with database quantity guards |
+| `services/api/src/hospitality.*`, `20261019000000_hospitality_partial_fulfillment`, and `20261020000000_hospitality_delivery_receipts` | Audited hospitality requests, per-line partial fulfillment/substitutions, and immutable in-person handoff receipts |
 | `services/api/prisma/migrations/20260926000000_operations_admin` | Tenant people and operational-task tables with RLS and consistency constraints |
 | `services/api/src/closeout.*` | Exception aggregation, reasoned dispositions, idempotent finalization, and audit for scoped event closeout |
 | `services/api/prisma/migrations/20261016000000_event_closeout` | Tenant-protected event closeout records, follow-ups, immutable audit, and closed-event write guards |
@@ -127,7 +127,7 @@ Health checks fail closed for missing JWT verification configuration, database c
 
 ## Verification status
 
-- Previous automated evidence: GitHub Actions CI run [36122600658](https://github.com/lwhobley/venuewranglerenterprise/actions/runs/36122600658) passed Flutter analysis/tests, API build/tests, Prisma validation/client generation, the migration replay under the non-superuser migrator, and runtime tenant-isolation checks under `venue_app`. That run covered 40 protected tables and event closeout isolation/write locks. Vendor staffing adds two health-gated protected tables (42 total); its migration and runtime isolation still require CI and staging verification before deployment.
+- Previous automated evidence: GitHub Actions CI run [36122600658](https://github.com/lwhobley/venuewranglerenterprise/actions/runs/36122600658) passed Flutter analysis/tests, API build/tests, Prisma validation/client generation, the migration replay under the non-superuser migrator, and runtime tenant-isolation checks under `venue_app`. That run covered 40 protected tables and event closeout isolation/write locks. It does not cover later migrations. The current health gate checks 45 protected tables, including hospitality handoff receipts; confirm that count on the next CI run and on approved staging before deployment.
 - The JWT guard tests generate temporary RS256 keys and exercise OIDC discovery/JWKS, issuer/audience/client verification, expiration, UUID scope claims, provider-derived tenant selection, and deactivated-user denial for Okta and Entra configurations. These protocol tests do not substitute for a login against a customer's registered IdP tenant.
 - Earlier physical Android issue-report recovery validation is historical evidence for that build only. Re-run intermittent-network, accessibility, performance, and end-to-end workflow checks on the current release candidate and approved customer staging before pilot.
 - Automated Flutter coverage checks report-form labels, keyboard focus from title to location, live-region issue status, and a 200% text scale layout.

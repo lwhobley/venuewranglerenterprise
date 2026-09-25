@@ -212,10 +212,13 @@ class OperationsApi {
   Future<Map<String, dynamic>> eventCloseout(String eventId) async {
     final response = await _cachedGet<Map<String, dynamic>>(
       'closeout.$eventId',
-      () async => (await _request((token) => _dio.get<Map<String, dynamic>>(
-              '/api/v1/events/$eventId/closeout',
-              options: Options(headers: {'Authorization': 'Bearer $token'}))))
-          .data ?? const {},
+      () async =>
+          (await _request((token) => _dio.get<Map<String, dynamic>>(
+                  '/api/v1/events/$eventId/closeout',
+                  options:
+                      Options(headers: {'Authorization': 'Bearer $token'}))))
+              .data ??
+          const {},
     );
     final data = Map<String, dynamic>.from(response);
     final scope = await _auth.offlineCacheScope();
@@ -228,6 +231,7 @@ class OperationsApi {
     }
     return data;
   }
+
   Future<void> openEventCloseout(String eventId) async => _command<void>(
       {'action': 'event.closeout.open', 'eventId': eventId},
       (token, key) => _dio.post<void>('/api/v1/events/$eventId/closeout',
@@ -248,7 +252,11 @@ class OperationsApi {
               })));
   Future<void> updateCloseoutSummary(String eventId, String summary) async =>
       _command<void>(
-          {'action': 'event.closeout.summary', 'eventId': eventId, 'summary': summary},
+          {
+            'action': 'event.closeout.summary',
+            'eventId': eventId,
+            'summary': summary
+          },
           (token, key) => _dio.put<void>(
               '/api/v1/events/$eventId/closeout/summary',
               data: {'summary': summary},
@@ -322,11 +330,17 @@ class OperationsApi {
         if (error.response == null) return;
         await _storage.write(
           key: entry.key,
-          value: jsonEncode({...draft, 'state': 'needs_review', 'message': 'The server did not accept this offline note. Review it against the current event closeout.'}),
+          value: jsonEncode({
+            ...draft,
+            'state': 'needs_review',
+            'message':
+                'The server did not accept this offline note. Review it against the current event closeout.'
+          }),
         );
       }
     }
   }
+
   Future<List<dynamic>> shifts(String eventId) => _cachedGet(
       'shifts.$eventId',
       () async =>
@@ -338,43 +352,88 @@ class OperationsApi {
           const []);
   Future<List<dynamic>> coverageRequirements(String eventId) async =>
       (await _request((token) => _dio.get<List<dynamic>>(
-        '/api/v1/events/$eventId/coverage/requirements',
-        options: Options(headers: {'Authorization': 'Bearer $token'})))).data ?? const [];
+              '/api/v1/events/$eventId/coverage/requirements',
+              options: Options(headers: {'Authorization': 'Bearer $token'}))))
+          .data ??
+      const [];
   Future<List<dynamic>> coverageForecast(String eventId) async =>
       (await _request((token) => _dio.get<List<dynamic>>(
-        '/api/v1/events/$eventId/coverage/forecast',
-        options: Options(headers: {'Authorization': 'Bearer $token'})))).data ?? const [];
+              '/api/v1/events/$eventId/coverage/forecast',
+              options: Options(headers: {'Authorization': 'Bearer $token'}))))
+          .data ??
+      const [];
   Future<List<dynamic>> vendorStaffingRequests(String eventId) async =>
       (await _request((token) => _dio.get<List<dynamic>>(
-        '/api/v1/events/$eventId/vendor-staffing',
-        options: Options(headers: {'Authorization': 'Bearer $token'})))).data ?? const [];
-  Future<void> createVendorStaffingRequest(String eventId, Map<String, Object?> data) async =>
-      _command<void>({'action': 'vendor-staffing.create', 'eventId': eventId, ...data},
-        (token, key) => _dio.post<void>('/api/v1/events/$eventId/vendor-staffing', data: data,
-          options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
-  Future<void> vendorStaffingAction(String eventId, String requestId, String action, Map<String, Object?> data) async =>
-      _command<void>({'action': 'vendor-staffing.$action', 'eventId': eventId, 'requestId': requestId, ...data},
-        (token, key) => _dio.post<void>('/api/v1/events/$eventId/vendor-staffing/$requestId/$action', data: data,
-          options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
-  Future<void> createCoverageRequirement(String eventId, Map<String, Object?> demand) async =>
-      _command<void>({'eventId': eventId, ...demand}, (token, key) => _dio.post<void>(
-        '/api/v1/events/$eventId/coverage/requirements', data: demand,
-        options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
-  Future<void> updateCoverageRequirement(String eventId, String demandId, Map<String, Object?> patch) async =>
-      _command<void>({'eventId': eventId, 'demandId': demandId, ...patch}, (token, key) => _dio.put<void>(
-        '/api/v1/events/$eventId/coverage/requirements/$demandId', data: patch,
-        options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
-  Future<Map<String, dynamic>> generateCoverageShifts(String eventId, String demandId) async {
+              '/api/v1/events/$eventId/vendor-staffing',
+              options: Options(headers: {'Authorization': 'Bearer $token'}))))
+          .data ??
+      const [];
+  Future<void> createVendorStaffingRequest(
+          String eventId, Map<String, Object?> data) async =>
+      _command<void>(
+          {'action': 'vendor-staffing.create', 'eventId': eventId, ...data},
+          (token, key) => _dio.post<void>(
+              '/api/v1/events/$eventId/vendor-staffing',
+              data: data,
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key
+              })));
+  Future<void> vendorStaffingAction(String eventId, String requestId,
+          String action, Map<String, Object?> data) async =>
+      _command<void>(
+          {
+            'action': 'vendor-staffing.$action',
+            'eventId': eventId,
+            'requestId': requestId,
+            ...data
+          },
+          (token, key) => _dio.post<void>(
+              '/api/v1/events/$eventId/vendor-staffing/$requestId/$action',
+              data: data,
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key
+              })));
+  Future<void> createCoverageRequirement(
+          String eventId, Map<String, Object?> demand) async =>
+      _command<void>(
+          {'eventId': eventId, ...demand},
+          (token, key) => _dio.post<void>(
+              '/api/v1/events/$eventId/coverage/requirements',
+              data: demand,
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key
+              })));
+  Future<void> updateCoverageRequirement(
+          String eventId, String demandId, Map<String, Object?> patch) async =>
+      _command<void>(
+          {'eventId': eventId, 'demandId': demandId, ...patch},
+          (token, key) => _dio.put<void>(
+              '/api/v1/events/$eventId/coverage/requirements/$demandId',
+              data: patch,
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key
+              })));
+  Future<Map<String, dynamic>> generateCoverageShifts(
+      String eventId, String demandId) async {
     final response = await _command<Response<Map<String, dynamic>>>(
       {'eventId': eventId, 'demandId': demandId},
       (token, key) => _dio.post<Map<String, dynamic>>(
         '/api/v1/events/$eventId/coverage/requirements/$demandId/generate',
-        options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key}),
+        options: Options(headers: {
+          'Authorization': 'Bearer $token',
+          'Idempotency-Key': key
+        }),
       ),
     );
     return response.data ?? const {};
   }
-  Future<List<dynamic>> teamAvailability(String eventId, DateTime from, DateTime to) async =>
+
+  Future<List<dynamic>> teamAvailability(
+          String eventId, DateTime from, DateTime to) async =>
       (await _request((token) => _dio.get<List<dynamic>>(
               '/api/v1/events/$eventId/availability',
               queryParameters: {
@@ -382,23 +441,37 @@ class OperationsApi {
                 'to': to.toUtc().toIso8601String(),
               },
               options: Options(headers: {'Authorization': 'Bearer $token'}))))
-          .data ?? const [];
+          .data ??
+      const [];
   Future<List<dynamic>> myUnavailability() async =>
       (await _request((token) => _dio.get<List<dynamic>>(
               '/api/v1/me/unavailability',
               options: Options(headers: {'Authorization': 'Bearer $token'}))))
-          .data ?? const [];
+          .data ??
+      const [];
   Future<void> createUnavailability(DateTime startsAt, DateTime endsAt) async =>
       _command<void>(
-          {'action': 'staff-unavailability.create', 'startsAt': startsAt.toUtc().toIso8601String(), 'endsAt': endsAt.toUtc().toIso8601String()},
+          {
+            'action': 'staff-unavailability.create',
+            'startsAt': startsAt.toUtc().toIso8601String(),
+            'endsAt': endsAt.toUtc().toIso8601String()
+          },
           (token, key) => _dio.post<void>('/api/v1/me/unavailability',
-              data: {'startsAt': startsAt.toUtc().toIso8601String(), 'endsAt': endsAt.toUtc().toIso8601String()},
-              options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
-  Future<void> deleteUnavailability(String id) async =>
-      _command<void>(
-          {'action': 'staff-unavailability.delete', 'id': id},
-          (token, key) => _dio.delete<void>('/api/v1/me/unavailability/$id',
-              options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
+              data: {
+                'startsAt': startsAt.toUtc().toIso8601String(),
+                'endsAt': endsAt.toUtc().toIso8601String()
+              },
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key
+              })));
+  Future<void> deleteUnavailability(String id) async => _command<void>(
+      {'action': 'staff-unavailability.delete', 'id': id},
+      (token, key) => _dio.delete<void>('/api/v1/me/unavailability/$id',
+          options: Options(headers: {
+            'Authorization': 'Bearer $token',
+            'Idempotency-Key': key
+          })));
   Future<List<dynamic>> evidence(String eventId, String issueId) async =>
       (await _request((token) => _dio.get<List<dynamic>>(
               '/api/v1/events/$eventId/issues/$issueId/evidence',
@@ -492,15 +565,14 @@ class OperationsApi {
   Future<void> createShift(String eventId, Map<String, Object?> shift) async =>
       _command<void>(
           {'action': 'staff-shift.create', 'eventId': eventId, 'shift': shift},
-          (token, key) => _dio.post<void>(
-              '/api/v1/events/$eventId/shifts',
+          (token, key) => _dio.post<void>('/api/v1/events/$eventId/shifts',
               data: shift,
               options: Options(headers: {
                 'Authorization': 'Bearer $token',
                 'Idempotency-Key': key,
               })));
-  Future<void> updateShift(String eventId, String shiftId,
-          Map<String, Object?> patch) async =>
+  Future<void> updateShift(
+          String eventId, String shiftId, Map<String, Object?> patch) async =>
       _command<void>(
           {
             'action': 'staff-shift.update',
@@ -508,118 +580,312 @@ class OperationsApi {
             'shiftId': shiftId,
             'patch': patch
           },
-          (token, key) => _dio.put<void>(
-              '/api/v1/events/$eventId/shifts/$shiftId',
-              data: patch,
-              options: Options(headers: {
-                'Authorization': 'Bearer $token',
-                'Idempotency-Key': key,
-              })));
+          (token, key) =>
+              _dio.put<void>('/api/v1/events/$eventId/shifts/$shiftId',
+                  data: patch,
+                  options: Options(headers: {
+                    'Authorization': 'Bearer $token',
+                    'Idempotency-Key': key,
+                  })));
   Future<List<Map<String, dynamic>>> inventoryCounts(String eventId) async =>
       (await _request((token) => _dio.get<List<dynamic>>(
-            '/api/v1/events/$eventId/inventory/counts',
-            options: Options(headers: {'Authorization': 'Bearer $token'}),
-          ))).data!.whereType<Map>().map((row) => Map<String, dynamic>.from(row)).toList();
-  Future<void> startInventoryCount(String eventId, String venueId, {String? locationId}) async =>
-      _command<void>({'action': 'stock-count.start', 'eventId': eventId, 'venueId': venueId, 'locationId': locationId},
-          (token, key) => _dio.post<void>('/api/v1/events/$eventId/inventory/counts',
-              data: {'venueId': venueId, if (locationId != null) 'locationId': locationId},
-              options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
-  Future<void> createInventoryItem(String venueId, String sku, String name, String unit, {String? locationId}) async =>
-      _command<void>({'action': 'stock-item.create', 'venueId': venueId, 'sku': sku, 'name': name, 'unit': unit, 'locationId': locationId},
+                '/api/v1/events/$eventId/inventory/counts',
+                options: Options(headers: {'Authorization': 'Bearer $token'}),
+              )))
+          .data!
+          .whereType<Map>()
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList();
+  Future<void> startInventoryCount(String eventId, String venueId,
+          {String? locationId}) async =>
+      _command<void>(
+          {
+            'action': 'stock-count.start',
+            'eventId': eventId,
+            'venueId': venueId,
+            'locationId': locationId
+          },
+          (token, key) => _dio.post<void>(
+              '/api/v1/events/$eventId/inventory/counts',
+              data: {
+                'venueId': venueId,
+                if (locationId != null) 'locationId': locationId
+              },
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key
+              })));
+  Future<void> createInventoryItem(
+          String venueId, String sku, String name, String unit,
+          {String? locationId}) async =>
+      _command<void>(
+          {
+            'action': 'stock-item.create',
+            'venueId': venueId,
+            'sku': sku,
+            'name': name,
+            'unit': unit,
+            'locationId': locationId
+          },
           (token, key) => _dio.post<void>('/api/v1/admin/inventory/items',
-              data: {'venueId': venueId, 'sku': sku, 'name': name, 'unit': unit, if (locationId != null) 'locationId': locationId},
-              options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
-  Future<void> recordInventoryCount(String eventId, String countId, String lineId, double quantity, {String? note}) async =>
-      _command<void>({'action': 'stock-count.record', 'eventId': eventId, 'countId': countId, 'lineId': lineId, 'quantity': quantity, 'note': note},
-          (token, key) => _dio.put<void>('/api/v1/events/$eventId/inventory/counts/$countId/lines/$lineId',
+              data: {
+                'venueId': venueId,
+                'sku': sku,
+                'name': name,
+                'unit': unit,
+                if (locationId != null) 'locationId': locationId
+              },
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key
+              })));
+  Future<void> recordInventoryCount(
+          String eventId, String countId, String lineId, double quantity,
+          {String? note}) async =>
+      _command<void>(
+          {
+            'action': 'stock-count.record',
+            'eventId': eventId,
+            'countId': countId,
+            'lineId': lineId,
+            'quantity': quantity,
+            'note': note
+          },
+          (token, key) => _dio.put<void>(
+              '/api/v1/events/$eventId/inventory/counts/$countId/lines/$lineId',
               data: {'quantity': quantity, if (note != null) 'note': note},
-              options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
-  Future<void> inventoryCountCommand(String eventId, String countId, String action, {String? reason}) async =>
-      _command<void>({'action': 'stock-count.$action', 'eventId': eventId, 'countId': countId, 'reason': reason},
-          (token, key) => _dio.post<void>('/api/v1/events/$eventId/inventory/counts/$countId/$action',
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key
+              })));
+  Future<void> inventoryCountCommand(
+          String eventId, String countId, String action,
+          {String? reason}) async =>
+      _command<void>(
+          {
+            'action': 'stock-count.$action',
+            'eventId': eventId,
+            'countId': countId,
+            'reason': reason
+          },
+          (token, key) => _dio.post<void>(
+              '/api/v1/events/$eventId/inventory/counts/$countId/$action',
               data: action == 'approve' ? {'reason': reason} : null,
-              options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
-  Future<List<Map<String, dynamic>>> inventoryItems(String venueId, {String? locationId}) async =>
-      (await _request((token) => _dio.get<List<dynamic>>('/api/v1/inventory/items',
-        queryParameters: {'venueId': venueId, if (locationId != null) 'locationId': locationId},
-        options: Options(headers: {'Authorization': 'Bearer $token'}),
-      ))).data!.whereType<Map>().map((row) => Map<String, dynamic>.from(row)).toList();
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key
+              })));
+  Future<List<Map<String, dynamic>>> inventoryItems(String venueId,
+          {String? locationId}) async =>
+      (await _request((token) => _dio.get<List<dynamic>>(
+                '/api/v1/inventory/items',
+                queryParameters: {
+                  'venueId': venueId,
+                  if (locationId != null) 'locationId': locationId
+                },
+                options: Options(headers: {'Authorization': 'Bearer $token'}),
+              )))
+          .data!
+          .whereType<Map>()
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList();
   Future<List<Map<String, dynamic>>> stockTransfers(String eventId) async =>
-      (await _cachedGet('stock-transfers.$eventId', () async =>
-        (await _request((token) => _dio.get<List<dynamic>>('/api/v1/events/$eventId/inventory/transfers',
-          options: Options(headers: {'Authorization': 'Bearer $token'}),
-        ))).data!.whereType<Map>().map((row) => Map<String, dynamic>.from(row)).toList()));
-  Future<void> createStockTransfer(String eventId, String venueId, String? sourceLocationId, String? destinationLocationId, List<Map<String, Object?>> lines) async =>
-      _command<void>({'action': 'stock-transfer.create', 'eventId': eventId, 'venueId': venueId, 'sourceLocationId': sourceLocationId, 'destinationLocationId': destinationLocationId, 'lines': lines},
-        (token, key) => _dio.post<void>('/api/v1/events/$eventId/inventory/transfers',
-          data: {'venueId': venueId, if (sourceLocationId != null) 'sourceLocationId': sourceLocationId, if (destinationLocationId != null) 'destinationLocationId': destinationLocationId, 'lines': lines},
-          options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
-  Future<void> stockTransferAction(String eventId, String transferId, String action, {Map<String, Object?>? data}) async =>
-      _command<void>({'action': 'stock-transfer.$action', 'eventId': eventId, 'transferId': transferId, 'data': data},
-        (token, key) => _dio.post<void>('/api/v1/events/$eventId/inventory/transfers/$transferId/$action', data: data,
-          options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
+      (await _cachedGet(
+          'stock-transfers.$eventId',
+          () async => (await _request((token) => _dio.get<List<dynamic>>(
+                    '/api/v1/events/$eventId/inventory/transfers',
+                    options:
+                        Options(headers: {'Authorization': 'Bearer $token'}),
+                  )))
+              .data!
+              .whereType<Map>()
+              .map((row) => Map<String, dynamic>.from(row))
+              .toList()));
+  Future<void> createStockTransfer(
+          String eventId,
+          String venueId,
+          String? sourceLocationId,
+          String? destinationLocationId,
+          List<Map<String, Object?>> lines) async =>
+      _command<void>(
+          {
+            'action': 'stock-transfer.create',
+            'eventId': eventId,
+            'venueId': venueId,
+            'sourceLocationId': sourceLocationId,
+            'destinationLocationId': destinationLocationId,
+            'lines': lines
+          },
+          (token, key) => _dio.post<void>(
+              '/api/v1/events/$eventId/inventory/transfers',
+              data: {
+                'venueId': venueId,
+                if (sourceLocationId != null)
+                  'sourceLocationId': sourceLocationId,
+                if (destinationLocationId != null)
+                  'destinationLocationId': destinationLocationId,
+                'lines': lines
+              },
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key
+              })));
+  Future<void> stockTransferAction(
+          String eventId, String transferId, String action,
+          {Map<String, Object?>? data}) async =>
+      _command<void>(
+          {
+            'action': 'stock-transfer.$action',
+            'eventId': eventId,
+            'transferId': transferId,
+            'data': data
+          },
+          (token, key) => _dio.post<void>(
+              '/api/v1/events/$eventId/inventory/transfers/$transferId/$action',
+              data: data,
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key
+              })));
   Future<List<Map<String, dynamic>>> hospitalityOrders(String eventId) async =>
-      (await _cachedGet('hospitality.$eventId', () async =>
-        (await _request((token) => _dio.get<List<dynamic>>(
-          '/api/v1/events/$eventId/hospitality/orders',
-          options: Options(headers: {'Authorization': 'Bearer $token'}),
-        ))).data!.map((row) => Map<String, dynamic>.from(row as Map)).toList()));
+      (await _cachedGet(
+          'hospitality.$eventId',
+          () async => (await _request((token) => _dio.get<List<dynamic>>(
+                    '/api/v1/events/$eventId/hospitality/orders',
+                    options:
+                        Options(headers: {'Authorization': 'Bearer $token'}),
+                  )))
+              .data!
+              .map((row) => Map<String, dynamic>.from(row as Map))
+              .toList()));
   Future<List<Map<String, dynamic>>> hospitalityDrafts(String eventId) async {
     final scope = await _auth.offlineCacheScope();
     if (scope == null) return const [];
     final raw = await _storage.read(key: 'venue.hospitality.drafts.$scope');
     if (raw == null) return const [];
-    return (jsonDecode(raw) as List).whereType<Map>().map((row) => Map<String, dynamic>.from(row)).where((row) => row['eventId'] == eventId).toList();
+    return (jsonDecode(raw) as List)
+        .whereType<Map>()
+        .map((row) => Map<String, dynamic>.from(row))
+        .where((row) => row['eventId'] == eventId)
+        .toList();
   }
-  Future<void> saveHospitalityDraft(String eventId, Map<String, Object?> draft) async {
+
+  Future<void> saveHospitalityDraft(
+      String eventId, Map<String, Object?> draft) async {
     final scope = await _auth.offlineCacheScope();
-    if (scope == null) throw StateError('Sign in again to save a scoped offline draft.');
+    if (scope == null)
+      throw StateError('Sign in again to save a scoped offline draft.');
     final key = 'venue.hospitality.drafts.$scope';
     final rows = await _storage.read(key: key);
-    final drafts = rows == null ? <Map<String, dynamic>>[] : (jsonDecode(rows) as List).whereType<Map>().map((row) => Map<String, dynamic>.from(row)).toList();
-    drafts.add({'draftId': const Uuid().v4(), 'eventId': eventId, 'savedAt': DateTime.now().toUtc().toIso8601String(), ...draft});
+    final drafts = rows == null
+        ? <Map<String, dynamic>>[]
+        : (jsonDecode(rows) as List)
+            .whereType<Map>()
+            .map((row) => Map<String, dynamic>.from(row))
+            .toList();
+    drafts.add({
+      'draftId': const Uuid().v4(),
+      'eventId': eventId,
+      'savedAt': DateTime.now().toUtc().toIso8601String(),
+      ...draft
+    });
     await _storage.write(key: key, value: jsonEncode(drafts));
   }
+
   Future<void> deleteHospitalityDraft(String eventId, String draftId) async {
     final scope = await _auth.offlineCacheScope();
     if (scope == null) return;
     final key = 'venue.hospitality.drafts.$scope';
     final raw = await _storage.read(key: key);
     if (raw == null) return;
-    final drafts = (jsonDecode(raw) as List).whereType<Map>().map((row) => Map<String, dynamic>.from(row)).where((row) => row['eventId'] != eventId || row['draftId'] != draftId).toList();
-    if (drafts.isEmpty) { await _storage.delete(key: key); } else { await _storage.write(key: key, value: jsonEncode(drafts)); }
+    final drafts = (jsonDecode(raw) as List)
+        .whereType<Map>()
+        .map((row) => Map<String, dynamic>.from(row))
+        .where((row) => row['eventId'] != eventId || row['draftId'] != draftId)
+        .toList();
+    if (drafts.isEmpty) {
+      await _storage.delete(key: key);
+    } else {
+      await _storage.write(key: key, value: jsonEncode(drafts));
+    }
   }
-  Future<void> submitHospitalityDraft(String eventId, Map<String, dynamic> draft) async {
-    final data = Map<String, Object?>.from(draft)..remove('draftId')..remove('eventId')..remove('savedAt');
+
+  Future<void> submitHospitalityDraft(
+      String eventId, Map<String, dynamic> draft) async {
+    final data = Map<String, Object?>.from(draft)
+      ..remove('draftId')
+      ..remove('eventId')
+      ..remove('savedAt');
     await createHospitalityOrder(eventId, data);
     await deleteHospitalityDraft(eventId, draft['draftId'] as String);
   }
-  Future<void> createHospitalityOrder(String eventId, Map<String, Object?> order) async =>
-      _command<void>({'action': 'hospitality.order.create', 'eventId': eventId, ...order},
-        (token, key) => _dio.post<void>('/api/v1/events/$eventId/hospitality/orders', data: order,
-          options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
-  Future<void> hospitalityOrderAction(String eventId, String orderId, String action, {String? reason, List<Map<String, Object?>>? fulfillments}) async =>
-      _command<void>({'action': 'hospitality.order.$action', 'eventId': eventId, 'orderId': orderId, 'reason': reason, 'fulfillments': fulfillments},
-        (token, key) => _dio.post<void>('/api/v1/events/$eventId/hospitality/orders/$orderId/actions',
-          data: {'action': action, if (reason != null) 'reason': reason, if (fulfillments != null) 'fulfillments': fulfillments},
-          options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
-  Future<Map<String, dynamic>> shiftAssignmentSuggestions(String eventId, String shiftId) async =>
+
+  Future<void> createHospitalityOrder(
+          String eventId, Map<String, Object?> order) async =>
+      _command<void>(
+          {'action': 'hospitality.order.create', 'eventId': eventId, ...order},
+          (token, key) => _dio.post<void>(
+              '/api/v1/events/$eventId/hospitality/orders',
+              data: order,
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key
+              })));
+  Future<void> hospitalityOrderAction(
+          String eventId, String orderId, String action,
+          {String? reason,
+          List<Map<String, Object?>>? fulfillments,
+          String? receivedByName,
+          String? receiptNote,
+          bool? receiverAcknowledged}) async =>
+      _command<void>(
+          {
+            'action': 'hospitality.order.$action',
+            'eventId': eventId,
+            'orderId': orderId,
+            'reason': reason,
+            'fulfillments': fulfillments,
+            'receivedByName': receivedByName,
+            'receiptNote': receiptNote,
+            'receiverAcknowledged': receiverAcknowledged
+          },
+          (token, key) => _dio.post<void>(
+              '/api/v1/events/$eventId/hospitality/orders/$orderId/actions',
+              data: {
+                'action': action,
+                if (reason != null) 'reason': reason,
+                if (fulfillments != null) 'fulfillments': fulfillments,
+                if (receivedByName != null) 'receivedByName': receivedByName,
+                if (receiptNote != null) 'receiptNote': receiptNote,
+                if (receiverAcknowledged != null)
+                  'receiverAcknowledged': receiverAcknowledged
+              },
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key
+              })));
+  Future<Map<String, dynamic>> shiftAssignmentSuggestions(
+          String eventId, String shiftId) async =>
       (await _request((token) => _dio.get<Map<String, dynamic>>(
-            '/api/v1/events/$eventId/shifts/$shiftId/assignment-suggestions',
-            options: Options(headers: {'Authorization': 'Bearer $token'}),
-          ))).data!;
-  Future<void> shiftCommand(
-      String eventId, String shiftId, String action, {Map<String, Object?>? data}) async {
+                '/api/v1/events/$eventId/shifts/$shiftId/assignment-suggestions',
+                options: Options(headers: {'Authorization': 'Bearer $token'}),
+              )))
+          .data!;
+  Future<void> shiftCommand(String eventId, String shiftId, String action,
+      {Map<String, Object?>? data}) async {
     await _command<void>(
-        {'action': 'staff-shift.$action', 'eventId': eventId, 'shiftId': shiftId},
-        (token, key) => _dio.post<void>(
-            '/api/v1/events/$eventId/shifts/$shiftId/$action',
-            data: data,
-            options: Options(headers: {
-              'Authorization': 'Bearer $token',
-              'Idempotency-Key': key,
-            })));
+        {
+          'action': 'staff-shift.$action',
+          'eventId': eventId,
+          'shiftId': shiftId
+        },
+        (token, key) =>
+            _dio.post<void>('/api/v1/events/$eventId/shifts/$shiftId/$action',
+                data: data,
+                options: Options(headers: {
+                  'Authorization': 'Bearer $token',
+                  'Idempotency-Key': key,
+                })));
   }
 
   Future<List<Map<String, dynamic>>> queuedOfflineAttendance() async {
@@ -627,20 +893,32 @@ class OperationsApi {
     if (scope == null) return const [];
     final prefix = 'venue.staff.attendance.$scope.';
     final rows = await _storage.readAll();
-    return rows.entries.where((row) => row.key.startsWith(prefix)).map((row) => jsonDecode(row.value) as Map<String, dynamic>).toList()
-      ..sort((a, b) => DateTime.parse(a['recordedAt'] as String).compareTo(DateTime.parse(b['recordedAt'] as String)));
+    return rows.entries
+        .where((row) => row.key.startsWith(prefix))
+        .map((row) => jsonDecode(row.value) as Map<String, dynamic>)
+        .toList()
+      ..sort((a, b) => DateTime.parse(a['recordedAt'] as String)
+          .compareTo(DateTime.parse(b['recordedAt'] as String)));
   }
 
-  Future<void> enqueueOfflineAttendance(String eventId, String shiftId, String action) async {
+  Future<void> enqueueOfflineAttendance(
+      String eventId, String shiftId, String action) async {
     final scope = await _auth.offlineCacheScope();
-    if (scope == null) throw StateError('Sign in again before recording attendance offline.');
-    if (action != 'CHECK_IN' && action != 'CHECK_OUT') throw ArgumentError.value(action, 'action');
+    if (scope == null)
+      throw StateError('Sign in again before recording attendance offline.');
+    if (action != 'CHECK_IN' && action != 'CHECK_OUT')
+      throw ArgumentError.value(action, 'action');
     final id = const Uuid().v4();
     final item = <String, Object?>{
-      'id': id, 'eventId': eventId, 'shiftId': shiftId, 'action': action,
-      'recordedAt': DateTime.now().toUtc().toIso8601String(), 'sessionScope': scope,
+      'id': id,
+      'eventId': eventId,
+      'shiftId': shiftId,
+      'action': action,
+      'recordedAt': DateTime.now().toUtc().toIso8601String(),
+      'sessionScope': scope,
     };
-    await _storage.write(key: 'venue.staff.attendance.$scope.$id', value: jsonEncode(item));
+    await _storage.write(
+        key: 'venue.staff.attendance.$scope.$id', value: jsonEncode(item));
   }
 
   Future<void> synchronizeOfflineAttendance() async {
@@ -649,36 +927,70 @@ class OperationsApi {
     if (scope == null || token == null || token.isEmpty) return;
     final prefix = 'venue.staff.attendance.$scope.';
     final rows = await _storage.readAll();
-    final pending = rows.entries.where((entry) => entry.key.startsWith(prefix)).map((entry) => MapEntry(entry.key, jsonDecode(entry.value) as Map<String, dynamic>)).toList()
-      ..sort((a, b) => DateTime.parse(a.value['recordedAt'] as String).compareTo(DateTime.parse(b.value['recordedAt'] as String)));
+    final pending = rows.entries
+        .where((entry) => entry.key.startsWith(prefix))
+        .map((entry) => MapEntry(
+            entry.key, jsonDecode(entry.value) as Map<String, dynamic>))
+        .toList()
+      ..sort((a, b) => DateTime.parse(a.value['recordedAt'] as String)
+          .compareTo(DateTime.parse(b.value['recordedAt'] as String)));
     for (final row in pending) {
       final item = row.value;
       if (item['sessionScope'] != scope) continue;
       try {
-        await _dio.post<void>('/api/v1/events/${item['eventId']}/shifts/${item['shiftId']}/attendance/offline',
-          data: {'action': item['action'], 'recordedAt': item['recordedAt']},
-          options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': item['id']}));
+        await _dio.post<void>(
+            '/api/v1/events/${item['eventId']}/shifts/${item['shiftId']}/attendance/offline',
+            data: {'action': item['action'], 'recordedAt': item['recordedAt']},
+            options: Options(headers: {
+              'Authorization': 'Bearer $token',
+              'Idempotency-Key': item['id']
+            }));
         await _storage.delete(key: row.key);
       } catch (error) {
-        if (error is DioException && error.response != null && error.response!.statusCode != 409) rethrow;
+        if (error is DioException &&
+            error.response != null &&
+            error.response!.statusCode != 409) rethrow;
       }
     }
   }
 
   Future<List<dynamic>> reviewOfflineAttendance(String eventId) async =>
-      (await _request((token) => _dio.get<List<dynamic>>('/api/v1/events/$eventId/attendance/offline', options: Options(headers: {'Authorization': 'Bearer $token'})))).data ?? const [];
+      (await _request((token) => _dio.get<List<dynamic>>(
+              '/api/v1/events/$eventId/attendance/offline',
+              options: Options(headers: {'Authorization': 'Bearer $token'}))))
+          .data ??
+      const [];
 
-  Future<void> decideOfflineAttendance(String eventId, String claimId, String decision, String reason) async =>
-      _command<void>({'eventId': eventId, 'claimId': claimId, 'decision': decision, 'reason': reason.trim()},
-        (token, key) => _dio.post<void>('/api/v1/events/$eventId/attendance/offline/$claimId/review',
-          data: {'decision': decision, 'reason': reason.trim()}, options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
+  Future<void> decideOfflineAttendance(String eventId, String claimId,
+          String decision, String reason) async =>
+      _command<void>(
+          {
+            'eventId': eventId,
+            'claimId': claimId,
+            'decision': decision,
+            'reason': reason.trim()
+          },
+          (token, key) => _dio.post<void>(
+              '/api/v1/events/$eventId/attendance/offline/$claimId/review',
+              data: {'decision': decision, 'reason': reason.trim()},
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key
+              })));
 
-  Future<void> correctAttendance(String eventId, String shiftId, Map<String, Object?> correction) async =>
-      _command<void>({'eventId': eventId, 'shiftId': shiftId, ...correction},
-        (token, key) => _dio.post<void>('/api/v1/events/$eventId/shifts/$shiftId/attendance/correction',
-          data: correction, options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
-  Future<void> respondToShift(
-      String eventId, String shiftId, String response, {String? reason}) async {
+  Future<void> correctAttendance(String eventId, String shiftId,
+          Map<String, Object?> correction) async =>
+      _command<void>(
+          {'eventId': eventId, 'shiftId': shiftId, ...correction},
+          (token, key) => _dio.post<void>(
+              '/api/v1/events/$eventId/shifts/$shiftId/attendance/correction',
+              data: correction,
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key
+              })));
+  Future<void> respondToShift(String eventId, String shiftId, String response,
+      {String? reason}) async {
     await _command<void>(
         {
           'action': 'staff-shift.response',
@@ -695,6 +1007,7 @@ class OperationsApi {
               'Idempotency-Key': key,
             })));
   }
+
   Future<void> createVenue(String name) async => _command<void>(
       {'action': 'venue.create', 'name': name.trim()},
       (token, key) => _dio.post<void>('/api/v1/admin/venues',
@@ -748,64 +1061,116 @@ class OperationsApi {
               },
               options: Options(headers: {
                 'Authorization': 'Bearer $token',
-              'Idempotency-Key': key,
-            })));
-  Future<void> grantQualification(String personId, String code, String name, {String? expiresAt}) async =>
+                'Idempotency-Key': key,
+              })));
+  Future<void> grantQualification(String personId, String code, String name,
+          {String? expiresAt}) async =>
       _command<void>(
-          {'action': 'person-qualification.grant', 'personId': personId, 'code': code.trim().toUpperCase(), 'name': name.trim(), 'expiresAt': expiresAt},
-          (token, key) => _dio.post<void>('/api/v1/admin/people/$personId/qualifications',
-              data: {'code': code, 'name': name, if (expiresAt != null) 'expiresAt': expiresAt},
-              options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
+          {
+            'action': 'person-qualification.grant',
+            'personId': personId,
+            'code': code.trim().toUpperCase(),
+            'name': name.trim(),
+            'expiresAt': expiresAt
+          },
+          (token, key) => _dio.post<void>(
+              '/api/v1/admin/people/$personId/qualifications',
+              data: {
+                'code': code,
+                'name': name,
+                if (expiresAt != null) 'expiresAt': expiresAt
+              },
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key
+              })));
   Future<void> revokeQualification(String qualificationId) async =>
       _command<void>(
-          {'action': 'person-qualification.revoke', 'qualificationId': qualificationId},
-          (token, key) => _dio.delete<void>('/api/v1/admin/qualifications/$qualificationId',
-              options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
-  Future<Map<String, dynamic>> uploadQualificationEvidence(String qualificationId, String fileName, String contentType, List<int> bytes) async {
-    if (bytes.isEmpty || bytes.length > 10 * 1024 * 1024) throw StateError('Credential evidence must be 10 MiB or smaller.');
+          {
+            'action': 'person-qualification.revoke',
+            'qualificationId': qualificationId
+          },
+          (token, key) => _dio.delete<void>(
+              '/api/v1/admin/qualifications/$qualificationId',
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key
+              })));
+  Future<Map<String, dynamic>> uploadQualificationEvidence(
+      String qualificationId,
+      String fileName,
+      String contentType,
+      List<int> bytes) async {
+    if (bytes.isEmpty || bytes.length > 10 * 1024 * 1024)
+      throw StateError('Credential evidence must be 10 MiB or smaller.');
     final digest = await Sha256().hash(bytes);
     final token = await _auth.validAccessToken();
-    if (token == null || token.isEmpty) throw StateError('Sign in before uploading credential evidence.');
+    if (token == null || token.isEmpty)
+      throw StateError('Sign in before uploading credential evidence.');
     final headers = {'Authorization': 'Bearer $token'};
-    final response = await _dio.post<Map<String, dynamic>>('/api/v1/admin/qualifications/$qualificationId/evidence', data: {
-      'fileName': fileName,
-      'contentType': contentType,
-      'sizeBytes': bytes.length,
-      'sha256': digest.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join(),
-    }, options: Options(headers: headers));
+    final response = await _dio.post<Map<String, dynamic>>(
+        '/api/v1/admin/qualifications/$qualificationId/evidence',
+        data: {
+          'fileName': fileName,
+          'contentType': contentType,
+          'sizeBytes': bytes.length,
+          'sha256': digest.bytes
+              .map((b) => b.toRadixString(16).padLeft(2, '0'))
+              .join(),
+        },
+        options: Options(headers: headers));
     final upload = response.data;
     final uploadUrl = upload?['uploadUrl'];
-    if (uploadUrl is! String || uploadUrl.isEmpty) throw StateError('The evidence API did not return a private upload URL.');
-    final fields = Map<String, dynamic>.from(upload?['uploadFields'] as Map? ?? const {});
-    await Dio().post<void>(uploadUrl, data: FormData.fromMap({
-      ...fields,
-      'file': MultipartFile.fromBytes(bytes, filename: fileName, contentType: DioMediaType.parse(contentType)),
-    }));
-    final completed = await _dio.post<Map<String, dynamic>>('/api/v1/admin/qualifications/$qualificationId/evidence/complete', options: Options(headers: headers));
+    if (uploadUrl is! String || uploadUrl.isEmpty)
+      throw StateError('The evidence API did not return a private upload URL.');
+    final fields =
+        Map<String, dynamic>.from(upload?['uploadFields'] as Map? ?? const {});
+    await Dio().post<void>(uploadUrl,
+        data: FormData.fromMap({
+          ...fields,
+          'file': MultipartFile.fromBytes(bytes,
+              filename: fileName, contentType: DioMediaType.parse(contentType)),
+        }));
+    final completed = await _dio.post<Map<String, dynamic>>(
+        '/api/v1/admin/qualifications/$qualificationId/evidence/complete',
+        options: Options(headers: headers));
     return completed.data ?? const {};
   }
-  Future<void> reviewQualificationEvidence(String qualificationId, String status, String reason) async {
+
+  Future<void> reviewQualificationEvidence(
+      String qualificationId, String status, String reason) async {
     final token = await _auth.validAccessToken();
-    if (token == null || token.isEmpty) throw StateError('Sign in before reviewing credential evidence.');
-    await _dio.put<void>('/api/v1/admin/qualifications/$qualificationId/evidence/review', data: {'status': status, 'reason': reason.trim()}, options: Options(headers: {'Authorization': 'Bearer $token'}));
+    if (token == null || token.isEmpty)
+      throw StateError('Sign in before reviewing credential evidence.');
+    await _dio.put<void>(
+        '/api/v1/admin/qualifications/$qualificationId/evidence/review',
+        data: {'status': status, 'reason': reason.trim()},
+        options: Options(headers: {'Authorization': 'Bearer $token'}));
   }
+
   Future<String> qualificationEvidenceDownload(String qualificationId) async {
-    final response = await _request((token) => _dio.get<Map<String, dynamic>>('/api/v1/admin/qualifications/$qualificationId/evidence/download', options: Options(headers: {'Authorization': 'Bearer $token'})));
+    final response = await _request((token) => _dio.get<Map<String, dynamic>>(
+        '/api/v1/admin/qualifications/$qualificationId/evidence/download',
+        options: Options(headers: {'Authorization': 'Bearer $token'})));
     final url = response.data?['downloadUrl'];
-    if (url is! String || url.isEmpty) throw StateError('The evidence API did not return a download link.');
+    if (url is! String || url.isEmpty)
+      throw StateError('The evidence API did not return a download link.');
     return url;
   }
+
   Future<Map<String, dynamic>> staffingPolicy() async =>
       (await _request((token) => _dio.get<Map<String, dynamic>>(
               '/api/v1/admin/staffing-policy',
               options: Options(headers: {'Authorization': 'Bearer $token'}))))
           .data!;
-  Future<void> updateMinimumRestMinutes(int minutes) async =>
-      _command<void>(
-          {'action': 'staffing-policy.update', 'minimumRestMinutes': minutes},
-          (token, key) => _dio.put<void>('/api/v1/admin/staffing-policy',
-              data: {'minimumRestMinutes': minutes},
-              options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
+  Future<void> updateMinimumRestMinutes(int minutes) async => _command<void>(
+      {'action': 'staffing-policy.update', 'minimumRestMinutes': minutes},
+      (token, key) => _dio.put<void>('/api/v1/admin/staffing-policy',
+          data: {'minimumRestMinutes': minutes},
+          options: Options(headers: {
+            'Authorization': 'Bearer $token',
+            'Idempotency-Key': key
+          })));
   Future<Map<String, dynamic>> audit({int limit = 50, String? cursor}) async =>
       (await _request((token) => _dio.get<Map<String, dynamic>>(
                 '/api/v1/admin/audit',
@@ -820,8 +1185,10 @@ class OperationsApi {
 
 final operationsApiProvider = Provider((ref) => OperationsApi(
     ref.watch(authRepositoryProvider), const FlutterSecureStorage()));
-final staffAttendanceOutboxProvider = StateNotifierProvider<StaffAttendanceOutboxController, List<Map<String, dynamic>>>((ref) {
-  final controller = StaffAttendanceOutboxController(ref.watch(operationsApiProvider));
+final staffAttendanceOutboxProvider = StateNotifierProvider<
+    StaffAttendanceOutboxController, List<Map<String, dynamic>>>((ref) {
+  final controller =
+      StaffAttendanceOutboxController(ref.watch(operationsApiProvider));
   unawaited(controller.restore());
   controller.watchConnectivity();
   return controller;
@@ -865,22 +1232,27 @@ final eventShiftsProvider = FutureProvider.autoDispose
     .family<List<dynamic>, String>(
         (ref, id) => ref.watch(operationsApiProvider).shifts(id));
 final staffingCoverageProvider = FutureProvider.autoDispose
-    .family<List<dynamic>, String>((ref, id) =>
-        ref.watch(operationsApiProvider).coverageRequirements(id));
+    .family<List<dynamic>, String>(
+        (ref, id) => ref.watch(operationsApiProvider).coverageRequirements(id));
 final vendorStaffingRequestsProvider = FutureProvider.autoDispose
     .family<List<dynamic>, String>((ref, id) =>
         ref.watch(operationsApiProvider).vendorStaffingRequests(id));
-typedef TeamAvailabilityRequest = ({String eventId, DateTime from, DateTime to});
+typedef TeamAvailabilityRequest = ({
+  String eventId,
+  DateTime from,
+  DateTime to
+});
 final teamAvailabilityProvider = FutureProvider.autoDispose
-    .family<List<dynamic>, TeamAvailabilityRequest>((ref, request) =>
-        ref.watch(operationsApiProvider).teamAvailability(
-            request.eventId, request.from, request.to));
+    .family<List<dynamic>, TeamAvailabilityRequest>((ref, request) => ref
+        .watch(operationsApiProvider)
+        .teamAvailability(request.eventId, request.from, request.to));
 final myUnavailabilityProvider = FutureProvider.autoDispose<List<dynamic>>(
     (ref) => ref.watch(operationsApiProvider).myUnavailability());
 final userNotificationsProvider = FutureProvider.autoDispose<List<dynamic>>(
     (ref) => ref.watch(operationsApiProvider).notifications());
 
-class StaffAttendanceOutboxController extends StateNotifier<List<Map<String, dynamic>>> {
+class StaffAttendanceOutboxController
+    extends StateNotifier<List<Map<String, dynamic>>> {
   StaffAttendanceOutboxController(this._api) : super(const []);
   final OperationsApi _api;
   final Connectivity _connectivity = Connectivity();
@@ -891,17 +1263,22 @@ class StaffAttendanceOutboxController extends StateNotifier<List<Map<String, dyn
 
   void watchConnectivity() {
     _subscription = _connectivity.onConnectivityChanged.listen((results) {
-      if (results.any((result) => result != ConnectivityResult.none)) unawaited(synchronize());
+      if (results.any((result) => result != ConnectivityResult.none))
+        unawaited(synchronize());
     });
     unawaited(_connectivity.checkConnectivity().then((results) {
-      if (results.any((result) => result != ConnectivityResult.none)) unawaited(synchronize());
+      if (results.any((result) => result != ConnectivityResult.none))
+        unawaited(synchronize());
     }, onError: (Object _) {}));
   }
 
-  Future<bool> record(String eventId, String shiftId, String action, {bool queueForReview = false}) async {
-    final online = (await _connectivity.checkConnectivity()).any((result) => result != ConnectivityResult.none);
+  Future<bool> record(String eventId, String shiftId, String action,
+      {bool queueForReview = false}) async {
+    final online = (await _connectivity.checkConnectivity())
+        .any((result) => result != ConnectivityResult.none);
     if (online && !queueForReview) {
-      await _api.shiftCommand(eventId, shiftId, action == 'CHECK_IN' ? 'check-in' : 'check-out');
+      await _api.shiftCommand(
+          eventId, shiftId, action == 'CHECK_IN' ? 'check-in' : 'check-out');
       return false;
     }
     await _api.enqueueOfflineAttendance(eventId, shiftId, action);
@@ -915,7 +1292,11 @@ class StaffAttendanceOutboxController extends StateNotifier<List<Map<String, dyn
     if (current != null) return current;
     final operation = _synchronize();
     _syncing = operation;
-    try { await operation; } finally { _syncing = null; }
+    try {
+      await operation;
+    } finally {
+      _syncing = null;
+    }
   }
 
   Future<void> _synchronize() async {
