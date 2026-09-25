@@ -1,8 +1,8 @@
-# Venue Wrangler Enterprise — Phase 6: Architecture and first vertical workflow
+# Venue Wrangler Enterprise — Phase 6: Architecture, offline contracts, and vertical workflows
 
 ## First implementation slice
 
-The first vertical workflow is **event issue management**:
+The first delivered vertical workflow is **event issue management**:
 
 `Report → triage → assign → escalate → resolve → verify/close`
 
@@ -74,6 +74,23 @@ The server never accepts a tenant identifier from a request body. It derives ten
 
 An outbox item never disappears on retry failure. The user may edit before sending, retry, or discard only if the command has not been accepted by the server.
 
+## Offline policy across the current product
+
+Offline support is defined per command rather than inferred from a screen being visible. Cached reads are never used after an authorization or server response, and every queued command remains bound to the identity and capability scope that created it.
+
+| Workflow | Read while offline | Write while offline | Recovery and conflict rule |
+|---|---|---|---|
+| Sign-in and tenant bootstrap | Previously loaded bootstrap is available from the encrypted cache for up to 12 hours after transport failure. | Online-only. | Sign-in, token refresh, and a first bootstrap require the identity provider/API. Authorization failures never fall back to cached data. |
+| Event issues and operations tasks | Previously loaded event issue/task lists are available from the encrypted, identity-and-capability-scoped cache for up to 12 hours after transport failure. | Issue reports and photo evidence can be queued; issue transitions and task mutations require connectivity. | Report retries retain idempotency and original session scope. Failed evidence uploads do not discard the report. Managers refresh before making online state transitions. |
+| Hospitality requests and fulfillment | Previously loaded orders are available from the encrypted, identity-and-capability-scoped cache for up to 12 hours after transport failure. | Request drafts are encrypted locally and queued; kitchen preparation, distribution, pickup, rejection, and cancellation are online-only. | Queued requests retain their event and identity scope and sync when connectivity returns. Kitchen actions always require current server state. |
+| Staffing schedule and worker responses | Previously loaded shifts are available from the encrypted, identity-and-capability-scoped cache for up to 12 hours after transport failure. | Shift acknowledgement, schedule edits, publication, assignment, breaks, and corrections are online-only. Attendance timestamps may be recorded as encrypted offline claims. | Offline attendance remains unverified and is not applied to the schedule until an independently scoped supervisor accepts or rejects it with a reason. |
+| Inventory counts, balances, and transfers | Stock balances/counts are online-only. A previously loaded transfer queue can be read from the encrypted cache for up to 12 hours after transport failure. | Online-only. | Count approval rejects stale expected balances; transfer dispatch checks current source stock and receipt records actual quantities. Queuing these writes offline would hide conflicts and is not supported. |
+| Tenant setup and roster administration | Online-only. | Online-only. | API tenant-admin capability and scoped audit are required for each write. IdP role and UUID scope changes remain managed by the customer identity administrator. |
+| Notifications | The durable inbox is fetched online; configured OS push can alert while the app is backgrounded. | Mark-read and device registration/revocation are online-only. | Push is generic and non-sensitive; the tenant-scoped inbox remains the source of truth. |
+| SCIM and signed vendor events | Online-only. | Online-only. | SCIM and inbound HMAC events are accepted by the API and use tenant-specific credentials, replay handling, and server audit. Vendor-specific adapters remain separate integration work. |
+
+This policy intentionally limits offline writes to workflows with a defined encrypted outbox and conflict resolution. It does not claim that all event-day work is available without network access.
+
 ## Delivery topology
 
 The API is containerized and stateless. Issue changes and their `issue_events` records commit together. SSE instances poll the shared, tenant-protected PostgreSQL event log and support `Last-Event-ID` replay, so a report written through one instance can be delivered through another. This first durable adapter uses database polling; production can replace polling with a broker while preserving the event log and cursor contract.
@@ -105,8 +122,9 @@ Health checks fail closed for missing JWT verification configuration, database c
 
 ## Verification status
 
-- Verified locally: API type-check/build and state-machine unit tests; Docker Compose migrations and health gate; runtime-role two-tenant isolation across all eight protected tables; same-tenant wrong-venue and cross-tenant location rejection; full issue lifecycle and SSE replay through a second API instance; Flutter controller/widget tests, analyzer, and web build.
-- SCIM, append-only roster audit, provisioning deactivation checks, signed integration ingestion, and normalized task upserts were added after that earlier verification. CI applies every migration to a clean PostgreSQL 17 database as the non-superuser migrator and runs the tenant-isolation suite as the non-superuser runtime role; the actual customer staging database and its identity-provider path still require independent rollout verification.
+- Current automated evidence: GitHub Actions CI run [36116339922](https://github.com/lwhobley/venuewranglerenterprise/actions/runs/36116339922) passes Flutter analysis/tests, API build/tests, Prisma validation/client generation, the complete migration replay under the non-superuser migrator, and runtime tenant-isolation checks under the non-superuser `venue_app` role. The health gate covers all 37 protected application tables; the runtime suite directly checks two-tenant isolation for stock transfer headers, lines, and audit rows.
+- The JWT guard tests generate temporary RS256 keys and exercise OIDC discovery/JWKS, issuer/audience/client verification, expiration, UUID scope claims, provider-derived tenant selection, and deactivated-user denial for Okta and Entra configurations. These protocol tests do not substitute for a login against a customer's registered IdP tenant.
+- Earlier physical Android issue-report recovery validation is historical evidence for that build only. Re-run intermittent-network, accessibility, performance, and end-to-end workflow checks on the current release candidate and approved customer staging before pilot.
 - Automated Flutter coverage checks report-form labels, keyboard focus from title to location, live-region issue status, and a 200% text scale layout.
 - Android device verification: on a FOXXD HTH C67 running Android 14, an issue report was saved while Wi-Fi and mobile data were disabled, survived force-stop/relaunch in encrypted storage, and remained queued after mobile data returned. The app now has organization-scoped Okta/Entra OIDC discovery and native PKCE sign-in, but no customer provider registration has been supplied; real login and server acceptance remain unverified. The header shows the queued/blocked count, and the mobile Event Command issue detail scrolls without a flex-layout assertion.
 - Automated Flutter coverage checks report-form labels, keyboard focus from title to location, live-region issue status, and a 200% text scale layout. Android UI hierarchy exposed the location control and submit action. Database polling is the current event transport, with broker-backed fan-out a future scale-up option.
