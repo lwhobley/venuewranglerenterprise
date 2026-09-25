@@ -96,6 +96,7 @@ model Organization {
   staffShiftAuditEvents StaffShiftAuditEvent[]
   staffUnavailability  StaffUnavailability[]
   staffUnavailabilityAudits StaffUnavailabilityAudit[]
+  qualifications        PersonQualification[]
 
   @@map("organizations")
 }
@@ -157,6 +158,7 @@ model Person {
   createdAt       DateTime           @default(now()) @map("created_at")
   updatedAt       DateTime           @updatedAt @map("updated_at")
   auditEvents     PersonAuditEvent[]
+  qualifications  PersonQualification[]
   organization    Organization       @relation(fields: [organizationId], references: [id])
 
   @@unique([organizationId, externalSubject])
@@ -310,6 +312,7 @@ model StaffShift {
   assignedSubject  String?                @map("assigned_subject")
   role             String
   instructions     String                 @default("")
+  requiredQualificationCodes String[]     @default([]) @map("required_qualification_codes")
   startsAt         DateTime               @map("starts_at")
   endsAt           DateTime               @map("ends_at")
   state            StaffShiftState        @default(DRAFT)
@@ -367,6 +370,26 @@ model StaffUnavailabilityAudit {
 
   @@index([organizationId, unavailabilityId, createdAt])
   @@map("staff_unavailability_audit")
+}
+
+model PersonQualification {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  personId       String   @map("person_id") @db.Uuid
+  code           String   @map("qualification_code")
+  name           String   @map("qualification_name")
+  expiresAt      DateTime? @map("expires_at") @db.Date
+  revokedAt      DateTime? @map("revoked_at")
+  createdBy      String   @map("created_by")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  person         Person @relation(fields: [personId, organizationId], references: [id, organizationId], map: "person_qualifications_person_tenant_fk")
+
+  @@unique([organizationId, personId, code])
+  @@unique([id, organizationId])
+  @@index([organizationId, personId, revokedAt, expiresAt])
+  @@map("person_qualifications")
 }
 
 model StaffShiftAuditEvent {

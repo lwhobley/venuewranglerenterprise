@@ -1187,6 +1187,7 @@ class _LiveStaffingPage extends ConsumerWidget {
                 final locationName = location.isEmpty ? 'All areas' : location.first['name'] as String? ?? 'Area';
                 final assigned = people.where((row) => row['externalSubject'] == shift['assignedSubject']);
                 final assignedName = assignedToMe ? 'You' : assigned.isEmpty ? 'Open shift' : assigned.first['displayName'] as String? ?? 'Assigned worker';
+                final requiredQualifications = (shift['requiredQualificationCodes'] as List? ?? const []).cast<String>();
                 final currentResponse = shift['responseRevision'] == shift['revision'];
                 return Card(
                   child: Padding(
@@ -1195,7 +1196,7 @@ class _LiveStaffingPage extends ConsumerWidget {
                       ListTile(
                         leading: const CircleAvatar(child: Icon(Icons.badge_outlined)),
                         title: Text(shift['role'] as String? ?? 'Shift', style: const TextStyle(fontWeight: FontWeight.w800)),
-                        subtitle: Text('$assignedName · $locationName\n${_shiftTimeLabel(startsAt, endsAt)}\n$state · $response · $attendance'),
+                        subtitle: Text('$assignedName · $locationName\n${_shiftTimeLabel(startsAt, endsAt)}\n$state · $response · $attendance${requiredQualifications.isEmpty ? '' : '\nRequires: ${requiredQualifications.join(', ')}'}'),
                         isThreeLine: true,
                       ),
                       if (shift['instructions'] is String && (shift['instructions'] as String).isNotEmpty)
@@ -1314,6 +1315,7 @@ Future<void> _newLiveShift(
 ) async {
   final role = TextEditingController();
   final instructions = TextEditingController();
+  final qualificationCodes = TextEditingController();
   final eventStart = DateTime.tryParse(event['startsAt'] as String? ?? '')?.toLocal() ?? DateTime.now();
   var startsAt = eventStart;
   var endsAt = eventStart.add(const Duration(hours: 4));
@@ -1348,6 +1350,7 @@ Future<void> _newLiveShift(
         const SizedBox(height: 8),
         ListTile(contentPadding: EdgeInsets.zero, title: const Text('Starts'), subtitle: Text(_shiftTimeLabel(startsAt, startsAt)), trailing: const Icon(Icons.edit_calendar), onTap: () async { final value = await pickDateTime(startsAt); if (value != null) setState(() => startsAt = value); }),
         ListTile(contentPadding: EdgeInsets.zero, title: const Text('Ends'), subtitle: Text(_shiftTimeLabel(endsAt, endsAt)), trailing: const Icon(Icons.edit_calendar), onTap: () async { final value = await pickDateTime(endsAt); if (value != null) setState(() => endsAt = value); }),
+        TextField(controller: qualificationCodes, decoration: const InputDecoration(labelText: 'Required qualification codes (optional)', hintText: 'FOOD_HANDLER, ALCOHOL_SERVICE'), helperText: 'Codes must match active credentials in the tenant roster.'),
         TextField(controller: instructions, decoration: const InputDecoration(labelText: 'Instructions (optional)'), minLines: 1, maxLines: 3),
       ]))),
       actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')), FilledButton(onPressed: () {
@@ -1361,6 +1364,7 @@ Future<void> _newLiveShift(
           if (assignedSubject.isNotEmpty) 'assignedSubject': assignedSubject.first['externalSubject'] as String,
           'role': role.text.trim(),
           'instructions': instructions.text.trim(),
+          if (qualificationCodes.text.trim().isNotEmpty) 'requiredQualificationCodes': qualificationCodes.text.split(',').map((code) => code.trim().toUpperCase()).where((code) => code.isNotEmpty).toSet().toList(),
           'startsAt': startsAt.toUtc().toIso8601String(),
           'endsAt': endsAt.toUtc().toIso8601String(),
         });
@@ -1369,6 +1373,7 @@ Future<void> _newLiveShift(
   );
   role.dispose();
   instructions.dispose();
+  qualificationCodes.dispose();
   if (input == null) return;
   try {
     await ref.read(operationsApiProvider).createShift(event['id'] as String, input);
@@ -1437,11 +1442,67 @@ class _TenantSetupPage extends StatelessWidget {
                 .textTheme
                 .titleMedium
                 ?.copyWith(fontWeight: FontWeight.w800)),
-        ...people.map((person) => ListTile(
-            leading: const Icon(Icons.person_outline),
-            title: Text(person['displayName'] as String? ?? 'Person'),
-            subtitle: Text(person['email'] as String? ?? '')))
+        ...people.map((person) {
+          final qualifications = (person['qualifications'] as List? ?? const [])
+              .map((item) => Map<String, dynamic>.from(item as Map))
+              .toList();
+          return Card(child: Column(children: [
+            ListTile(
+              leading: const Icon(Icons.person_outline),
+              title: Text(person['displayName'] as String? ?? 'Person'),
+              subtitle: Text(person['email'] as String? ?? ''),
+              trailing: IconButton(tooltip: 'Grant qualification', icon: const Icon(Icons.workspace_premium_outlined), onPressed: () => _grantQualification(context, person)),
+            ),
+            ...qualifications.map((qualification) {
+              final expiry = DateTime.tryParse(qualification['expiresAt'] as String? ?? '');
+              final expired = expiry != null && expiry.isBefore(DateTime.now());
+              return ListTile(
+                dense: true,
+                leading: Icon(expired ? Icons.warning_amber : Icons.verified_outlined),
+                title: Text('${qualification['name']} · ${qualification['code']}'),
+                subtitle: Text(expiry == null ? (expired ? 'Expired' : 'No expiry recorded') : '${expired ? 'Expired' : 'Valid through'} ${expiry.month}/${expiry.day}/${expiry.year}'),
+                trailing: IconButton(tooltip: 'Revoke qualification', icon: const Icon(Icons.remove_circle_outline), onPressed: () async {
+                  try {
+                    await api.revokeQualification(qualification['id'] as String);
+                    onSaved();
+                  } catch (error) {
+                    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not revoke credential: $error')));
+                  }
+                }),
+              );
+            }),
+          ]));
+        })
       ]);
+  Future<void> _grantQualification(BuildContext context, Map<String, dynamic> person) async {
+    final code = TextEditingController();
+    final name = TextEditingController();
+    DateTime? expiresAt;
+    final saved = await showDialog<bool>(context: context, builder: (dialogContext) => StatefulBuilder(builder: (context, setState) => AlertDialog(
+      title: Text('Grant qualification to ${person['displayName']}'),
+      content: Column(mainAxisSize: MainAxisSize.min, children: [
+        TextField(controller: code, decoration: const InputDecoration(labelText: 'Code', hintText: 'FOOD_HANDLER')),
+        TextField(controller: name, decoration: const InputDecoration(labelText: 'Credential name')),
+        ListTile(contentPadding: EdgeInsets.zero, title: const Text('Valid through'), subtitle: Text(expiresAt == null ? 'No expiry' : '${expiresAt!.month}/${expiresAt!.day}/${expiresAt!.year}'), trailing: const Icon(Icons.event), onTap: () async {
+          final today = DateTime.now();
+          final date = await showDatePicker(context: context, initialDate: expiresAt ?? today.add(const Duration(days: 365)), firstDate: DateTime(today.year - 30), lastDate: DateTime(today.year + 30));
+          if (date != null) setState(() => expiresAt = date);
+        }),
+        TextButton(onPressed: () => setState(() => expiresAt = null), child: const Text('Clear expiry')),
+      ]),
+      actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')), FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Grant'))],
+    )));
+    if (saved == true && context.mounted) {
+      try {
+        await api.grantQualification(person['id'] as String, code.text, name.text, expiresAt: expiresAt == null ? null : '${expiresAt!.year.toString().padLeft(4, '0')}-${expiresAt!.month.toString().padLeft(2, '0')}-${expiresAt!.day.toString().padLeft(2, '0')}');
+        onSaved();
+      } catch (error) {
+        if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not grant credential: $error')));
+      }
+    }
+    code.dispose();
+    name.dispose();
+  }
   Future<void> _create(BuildContext context, String type) async {
     final name = TextEditingController();
     final email = TextEditingController();

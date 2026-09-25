@@ -431,8 +431,19 @@ class OperationsApi {
               },
               options: Options(headers: {
                 'Authorization': 'Bearer $token',
-                'Idempotency-Key': key,
-              })));
+              'Idempotency-Key': key,
+            })));
+  Future<void> grantQualification(String personId, String code, String name, {String? expiresAt}) async =>
+      _command<void>(
+          {'action': 'person-qualification.grant', 'personId': personId, 'code': code.trim().toUpperCase(), 'name': name.trim(), 'expiresAt': expiresAt},
+          (token, key) => _dio.post<void>('/api/v1/admin/people/$personId/qualifications',
+              data: {'code': code, 'name': name, if (expiresAt != null) 'expiresAt': expiresAt},
+              options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
+  Future<void> revokeQualification(String qualificationId) async =>
+      _command<void>(
+          {'action': 'person-qualification.revoke', 'qualificationId': qualificationId},
+          (token, key) => _dio.delete<void>('/api/v1/admin/qualifications/$qualificationId',
+              options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
   Future<Map<String, dynamic>> audit({int limit = 50, String? cursor}) async =>
       (await _request((token) => _dio.get<Map<String, dynamic>>(
                 '/api/v1/admin/audit',

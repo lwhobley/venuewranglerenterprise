@@ -36,18 +36,20 @@ export class StaffingService {
     const start = new Date(dto.startsAt);
     const end = new Date(dto.endsAt);
     if (end <= start) throw new ConflictException('Shift end must be later than shift start.');
-    const input = { eventId, venueId: dto.venueId, locationId: dto.locationId ?? null, assignedSubject: dto.assignedSubject ?? null, role: dto.role.trim(), instructions: dto.instructions?.trim() ?? '', startsAt: start.toISOString(), endsAt: end.toISOString() };
+    const requiredQualificationCodes = this.normalizeQualificationCodes(dto.requiredQualificationCodes);
+    const input = { eventId, venueId: dto.venueId, locationId: dto.locationId ?? null, assignedSubject: dto.assignedSubject ?? null, role: dto.role.trim(), instructions: dto.instructions?.trim() ?? '', requiredQualificationCodes, startsAt: start.toISOString(), endsAt: end.toISOString() };
     return this.command(identity, key, 'staff-shift.create', input, async (tx) => {
       const event = await tx.event.findFirst({ where: { id: eventId, venueId: dto.venueId, organizationId: identity.tenantId } });
       if (!event) throw new NotFoundException('Event not found in the selected venue.');
       if (dto.locationId && !await tx.location.findFirst({ where: { id: dto.locationId, venueId: dto.venueId, organizationId: identity.tenantId } })) throw new NotFoundException('Location not found in this venue.');
       await this.assertAssignable(tx, identity, dto.assignedSubject);
+      await this.assertQualified(tx, identity.tenantId, dto.assignedSubject, requiredQualificationCodes, end);
       await this.lockScheduleSubjects(tx, identity.tenantId, [dto.assignedSubject]);
       await this.assertAvailable(tx, identity.tenantId, dto.assignedSubject, start, end);
       const shift = await tx.staffShift.create({ data: {
         organizationId: identity.tenantId, eventId, venueId: dto.venueId, locationId: dto.locationId,
         assignedSubject: dto.assignedSubject, role: input.role, instructions: input.instructions,
-        startsAt: start, endsAt: end, createdBy: identity.subject, updatedBy: identity.subject,
+        startsAt: start, endsAt: end, requiredQualificationCodes, createdBy: identity.subject, updatedBy: identity.subject,
       } });
       await this.audit(tx, identity, shift.id, 'created', undefined, shift);
       return shift;
@@ -57,7 +59,7 @@ export class StaffingService {
   async update(identity: Identity, eventId: string, shiftId: string, dto: UpdateStaffShiftDto, key: string) {
     assertScope(identity, 'operations:write', eventId);
     if (dto.role !== undefined && (typeof dto.role !== 'string' || dto.role.trim().length < 2)) throw new ConflictException('Shift role must contain at least two characters.');
-    const normalized = { ...dto, role: dto.role?.trim(), instructions: dto.instructions === null ? '' : dto.instructions?.trim(), startsAt: dto.startsAt ? new Date(dto.startsAt).toISOString() : undefined, endsAt: dto.endsAt ? new Date(dto.endsAt).toISOString() : undefined };
+    const normalized = { ...dto, role: dto.role?.trim(), instructions: dto.instructions === null ? '' : dto.instructions?.trim(), requiredQualificationCodes: dto.requiredQualificationCodes === undefined ? undefined : this.normalizeQualificationCodes(dto.requiredQualificationCodes), startsAt: dto.startsAt ? new Date(dto.startsAt).toISOString() : undefined, endsAt: dto.endsAt ? new Date(dto.endsAt).toISOString() : undefined };
     const result = await this.command(identity, key, 'staff-shift.update', { eventId, shiftId, patch: normalized }, async (tx) => {
       await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`staff-shift:${identity.tenantId}:${shiftId}`}, 0))`;
       const current = await tx.staffShift.findFirst({ where: { id: shiftId, eventId, organizationId: identity.tenantId } });
@@ -74,6 +76,7 @@ export class StaffingService {
         || (dto.assignedSubject !== undefined && dto.assignedSubject !== current.assignedSubject)
         || (dto.role !== undefined && normalized.role !== current.role)
         || (dto.instructions !== undefined && normalized.instructions !== current.instructions)
+        || (normalized.requiredQualificationCodes !== undefined && JSON.stringify(normalized.requiredQualificationCodes) !== JSON.stringify(current.requiredQualificationCodes))
         || (dto.startsAt !== undefined && start.getTime() !== current.startsAt.getTime())
         || (dto.endsAt !== undefined && end.getTime() !== current.endsAt.getTime());
       if (!materialChange) throw new ConflictException('No shift changes were supplied.');
@@ -83,12 +86,15 @@ export class StaffingService {
         await this.assertNoOverlap(tx, identity.tenantId, assignedSubject, start, end, shiftId);
       }
       const nextSubject = dto.assignedSubject === undefined ? current.assignedSubject : dto.assignedSubject;
+      const nextQualifications = normalized.requiredQualificationCodes ?? current.requiredQualificationCodes;
       if (current.state !== 'PUBLISHED') await this.lockScheduleSubjects(tx, identity.tenantId, [nextSubject]);
+      await this.assertQualified(tx, identity.tenantId, nextSubject, nextQualifications, end);
       await this.assertAvailable(tx, identity.tenantId, nextSubject, start, end);
       const patchData = {
         ...dto,
         role: normalized.role,
         instructions: normalized.instructions,
+        requiredQualificationCodes: normalized.requiredQualificationCodes,
         startsAt: dto.startsAt ? start : undefined,
         endsAt: dto.endsAt ? end : undefined,
         ...(current.state === 'PUBLISHED' ? { revision: { increment: 1 }, response: StaffShiftResponse.PENDING, responseRevision: null } : {}),
@@ -115,6 +121,7 @@ export class StaffingService {
       assertScope(identity, 'operations:write', eventId, current.venueId, current.locationId ?? undefined);
       if (current.state !== 'DRAFT') throw new ConflictException('Only a draft shift can be published.');
       await this.assertAssignable(tx, identity, current.assignedSubject ?? undefined);
+      await this.assertQualified(tx, identity.tenantId, current.assignedSubject, current.requiredQualificationCodes, current.endsAt);
       await this.lockScheduleSubjects(tx, identity.tenantId, [current.assignedSubject]);
       await this.assertAvailable(tx, identity.tenantId, current.assignedSubject, current.startsAt, current.endsAt);
       await this.assertNoOverlap(tx, identity.tenantId, current.assignedSubject, current.startsAt, current.endsAt, shiftId);
@@ -137,6 +144,7 @@ export class StaffingService {
       if (current.assignedSubject || current.state !== 'PUBLISHED' || current.attendance !== 'NOT_STARTED') throw new ConflictException('This open shift is no longer available.');
       const activePerson = await tx.person.findFirst({ where: { organizationId: identity.tenantId, externalSubject: identity.subject, active: true }, select: { id: true } });
       if (!activePerson) throw new ForbiddenException('An active organization roster record is required to claim a shift.');
+      await this.assertQualified(tx, identity.tenantId, identity.subject, current.requiredQualificationCodes, current.endsAt);
       await this.lockScheduleSubjects(tx, identity.tenantId, [identity.subject]);
       await this.assertAvailable(tx, identity.tenantId, identity.subject, current.startsAt, current.endsAt);
       await this.assertNoOverlap(tx, identity.tenantId, identity.subject, current.startsAt, current.endsAt, shiftId);
@@ -161,6 +169,7 @@ export class StaffingService {
       assertScope(identity, 'operations:read', eventId, current.venueId, current.locationId ?? undefined);
       if (current.assignedSubject !== identity.subject) throw new ForbiddenException('Only the assigned worker may respond to this shift.');
       if (current.state !== 'PUBLISHED' || current.attendance !== 'NOT_STARTED') throw new ConflictException('Only a current published shift can be acknowledged or declined.');
+      if (dto.response === 'ACKNOWLEDGED') await this.assertQualified(tx, identity.tenantId, identity.subject, current.requiredQualificationCodes, current.endsAt);
       if (current.response !== 'PENDING' && current.responseRevision === current.revision) throw new ConflictException('This shift version already has a response.');
       const updated = await tx.staffShift.update({ where: { id: shiftId }, data: { response: dto.response, responseRevision: current.revision, updatedBy: identity.subject } });
       await this.audit(tx, identity, shiftId, dto.response.toLowerCase(), current, updated, dto.reason?.trim());
@@ -177,6 +186,7 @@ export class StaffingService {
       assertScope(identity, 'operations:read', eventId, current.venueId, current.locationId ?? undefined);
       if (current.assignedSubject !== identity.subject) throw new ForbiddenException('Only the assigned worker may record attendance.');
       if (current.state !== 'PUBLISHED' || current.response !== 'ACKNOWLEDGED' || current.responseRevision !== current.revision) throw new ConflictException('Acknowledge the current published shift before recording attendance.');
+      if (action === 'check-in') await this.assertQualified(tx, identity.tenantId, identity.subject, current.requiredQualificationCodes, current.endsAt);
       if (action === 'check-in' && current.attendance !== 'NOT_STARTED') throw new ConflictException('Attendance has already started.');
       if (action === 'check-out' && current.attendance !== 'CHECKED_IN') throw new ConflictException('Check in before checking out.');
       const now = new Date();
@@ -258,6 +268,29 @@ export class StaffingService {
       startsAt: { lt: endsAt }, endsAt: { gt: startsAt },
     }, select: { id: true } });
     if (unavailable) throw new ConflictException('This worker has marked part of the shift unavailable. Adjust the schedule before assigning or publishing.');
+  }
+
+  private normalizeQualificationCodes(codes?: string[]) {
+    const normalized = (codes ?? []).map((code) => code.trim().toUpperCase());
+    if (normalized.some((code) => !/^[A-Z0-9][A-Z0-9._-]{1,39}$/.test(code)) || new Set(normalized).size !== normalized.length) {
+      throw new ConflictException('Required qualification codes must be unique valid identifiers.');
+    }
+    return normalized.sort();
+  }
+
+  private async assertQualified(tx: Prisma.TransactionClient, tenantId: string, subject: string | null | undefined, codes: string[], shiftEndsAt: Date) {
+    const requiredCodes = codes ?? [];
+    if (!subject || requiredCodes.length === 0) return;
+    const person = await tx.person.findFirst({ where: { organizationId: tenantId, externalSubject: subject, active: true }, select: { id: true } });
+    if (!person) throw new NotFoundException('The selected person is not an active user in this organization.');
+    const requiredThroughUtcDay = new Date(Date.UTC(shiftEndsAt.getUTCFullYear(), shiftEndsAt.getUTCMonth(), shiftEndsAt.getUTCDate()));
+    const valid = await tx.personQualification.findMany({ where: {
+      organizationId: tenantId, personId: person.id, code: { in: requiredCodes }, revokedAt: null,
+      OR: [{ expiresAt: null }, { expiresAt: { gte: requiredThroughUtcDay } }],
+    }, select: { code: true } });
+    const validCodes = new Set(valid.map((qualification) => qualification.code));
+    const missing = requiredCodes.filter((code) => !validCodes.has(code));
+    if (missing.length > 0) throw new ConflictException(`Worker lacks current required qualification(s): ${missing.join(', ')}. Update the roster credential or assign another eligible worker.`);
   }
 
   private audit(tx: Prisma.TransactionClient, identity: Identity, shiftId: string, action: string, before?: unknown, after?: unknown, reason?: string) {

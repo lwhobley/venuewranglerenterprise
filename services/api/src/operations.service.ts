@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { assertScope, assertTenantAdmin, Identity } from './auth';
 import { CreateEventDto, CreateLocationDto, CreateOperationalTaskDto, CreateVenueDto, UpdateOperationalTaskDto, UpsertPersonDto } from './operations.dto';
 import { PrismaService } from './prisma.service';
+import { GrantPersonQualificationDto } from './qualification.dto';
 
 @Injectable()
 export class OperationsService {
@@ -44,7 +45,7 @@ export class OperationsService {
       const venues = await tx.venue.findMany({ where: admin ? { organizationId: identity.tenantId } : { id: { in: identity.venueIds }, organizationId: identity.tenantId }, orderBy: { name: 'asc' } });
       const events = await tx.event.findMany({ where: admin ? { organizationId: identity.tenantId } : { id: { in: identity.eventIds }, venueId: { in: identity.venueIds }, organizationId: identity.tenantId }, orderBy: { startsAt: 'asc' } });
       const locations = await tx.location.findMany({ where: admin ? { organizationId: identity.tenantId } : { id: { in: identity.locationIds }, venueId: { in: identity.venueIds }, organizationId: identity.tenantId }, orderBy: { name: 'asc' } });
-      const people = await tx.person.findMany({ where: { organizationId: identity.tenantId, active: true, ...(!admin ? { externalSubject: { in: identity.assignableUserIds } } : {}) }, orderBy: { displayName: 'asc' } });
+      const people = await tx.person.findMany({ where: { organizationId: identity.tenantId, active: true, ...(!admin ? { externalSubject: { in: identity.assignableUserIds } } : {}) }, include: { qualifications: { where: { revokedAt: null }, orderBy: [{ code: 'asc' }] } }, orderBy: { displayName: 'asc' } });
       return { organization: { id: org.id, slug: org.slug, name: org.name }, identity: { subject: identity.subject, capabilities: identity.capabilities, assignableUserIds: identity.assignableUserIds }, venues, events, locations, people };
     });
   }
@@ -113,6 +114,44 @@ export class OperationsService {
       create: { organizationId: identity.tenantId, ...input },
       update: { email: input.email, displayName: input.displayName, active: true },
     }));
+  }
+
+  async personQualifications(identity: Identity, personId: string) {
+    assertTenantAdmin(identity);
+    return this.prisma.withTenant(identity, async (tx) => {
+      const person = await tx.person.findFirst({ where: { id: personId, organizationId: identity.tenantId } });
+      if (!person) throw new NotFoundException('Person not found in this organization.');
+      return tx.personQualification.findMany({ where: { personId, organizationId: identity.tenantId }, orderBy: [{ code: 'asc' }] });
+    });
+  }
+
+  async grantPersonQualification(identity: Identity, personId: string, dto: GrantPersonQualificationDto, key: string) {
+    assertTenantAdmin(identity);
+    const input = { personId, code: dto.code.trim().toUpperCase(), name: dto.name.trim(), expiresAt: dto.expiresAt ? new Date(`${dto.expiresAt.slice(0, 10)}T00:00:00.000Z`).toISOString() : null };
+    return this.command(identity, key, 'person-qualification.grant', input, async (tx) => {
+      const person = await tx.person.findFirst({ where: { id: personId, organizationId: identity.tenantId, active: true }, select: { id: true, externalSubject: true } });
+      if (!person) throw new NotFoundException('An active person in this organization is required.');
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`staff-schedule:${identity.tenantId}:${person.externalSubject}`}, 0))`;
+      const existing = await tx.personQualification.findUnique({ where: { organizationId_personId_code: { organizationId: identity.tenantId, personId, code: input.code } } });
+      const expiresAt = input.expiresAt ? new Date(input.expiresAt) : null;
+      const qualification = existing
+        ? await tx.personQualification.update({ where: { id: existing.id }, data: { name: input.name, expiresAt, revokedAt: null } })
+        : await tx.personQualification.create({ data: { organizationId: identity.tenantId, personId, code: input.code, name: input.name, expiresAt, createdBy: identity.subject } });
+      await tx.tenantSetupAuditEvent.create({ data: { organizationId: identity.tenantId, actorId: identity.subject, action: existing ? 'updated' : 'created', resourceType: 'qualification', resourceId: qualification.id, changedFields: ['qualification_code', 'qualification_name', 'expires_at', 'revoked_at'] } });
+      return qualification;
+    });
+  }
+
+  async revokePersonQualification(identity: Identity, qualificationId: string, key: string) {
+    assertTenantAdmin(identity);
+    return this.command(identity, key, 'person-qualification.revoke', { qualificationId }, async (tx) => {
+      const current = await tx.personQualification.findFirst({ where: { id: qualificationId, organizationId: identity.tenantId, revokedAt: null }, include: { person: { select: { externalSubject: true } } } });
+      if (!current) throw new NotFoundException('Active qualification not found in this organization.');
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`staff-schedule:${identity.tenantId}:${current.person.externalSubject}`}, 0))`;
+      const revoked = await tx.personQualification.update({ where: { id: qualificationId }, data: { revokedAt: new Date() } });
+      await tx.tenantSetupAuditEvent.create({ data: { organizationId: identity.tenantId, actorId: identity.subject, action: 'updated', resourceType: 'qualification', resourceId: revoked.id, changedFields: ['revoked_at'] } });
+      return revoked;
+    });
   }
 
   async listTasks(identity: Identity, eventId: string) {

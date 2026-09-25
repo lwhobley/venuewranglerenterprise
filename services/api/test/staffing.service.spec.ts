@@ -19,6 +19,7 @@ function harness(current?: Record<string, unknown>) {
     event: { findFirst: vi.fn().mockResolvedValue({ id: 'event-1' }) },
     location: { findFirst: vi.fn().mockResolvedValue({ id: 'location-1' }) },
     person: { findFirst: vi.fn().mockResolvedValue({ id: 'person-1' }) },
+    personQualification: { findMany: vi.fn().mockResolvedValue([]) },
     staffUnavailability: { findFirst: vi.fn().mockResolvedValue(null) },
     staffShift: {
       create: vi.fn().mockImplementation(({ data }) => ({ id: 'shift-1', state: 'DRAFT', response: 'PENDING', attendance: 'NOT_STARTED', revision: 1, ...data })),
@@ -115,6 +116,20 @@ describe('event staffing workflow', () => {
     ));
     await expect(service.publish(manager, 'event-1', 'shift-1', 'staff-shift-publish-key-2'))
       .rejects.toThrow('overlapping published shift');
+    expect(tx.staffShift.update).not.toHaveBeenCalled();
+  });
+
+  it('blocks publishing when the worker lacks a current required qualification', async () => {
+    const current = {
+      id: 'shift-1', eventId: 'event-1', organizationId: 'tenant-1', venueId: 'venue-1', locationId: null,
+      assignedSubject: workerSubject, state: 'DRAFT', response: 'PENDING', attendance: 'NOT_STARTED', revision: 1,
+      startsAt: new Date('2026-10-01T17:00:00Z'), endsAt: new Date('2026-10-01T22:00:00Z'),
+      requiredQualificationCodes: ['FOOD_HANDLER'],
+    };
+    const { service, tx } = harness(current);
+    await expect(service.publish(manager, 'event-1', 'shift-1', 'staff-shift-publish-qual-1'))
+      .rejects.toThrow('lacks current required qualification(s): FOOD_HANDLER');
+    expect(tx.personQualification.findMany).toHaveBeenCalledOnce();
     expect(tx.staffShift.update).not.toHaveBeenCalled();
   });
 
