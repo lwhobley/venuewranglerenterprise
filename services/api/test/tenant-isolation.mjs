@@ -89,6 +89,11 @@ try {
       await tx.commandReceipt.create({ data: { organizationId: tenantA, key: `tenant-a-${randomUUID()}`, fingerprint: 'a', action: 'test', response: {} } });
       await tx.issueDomainEvent.create({ data: { organizationId: tenantA, eventId: eventA, issueId: issueA.id, action: 'reported', payload: { issueId: issueA.id } } });
       const personA = await tx.person.create({ data: { organizationId: tenantA, externalSubject: subjectA, email: `${randomUUID()}@example.invalid`, displayName: 'Tenant A' } });
+      await tx.personAuditEvent.create({ data: { organizationId: tenantA, personId: personA.id, actorId: 'tenant-isolation-test', action: 'created', changedFields: ['provisioning_source'] } });
+      await tx.personAuditEvent.create({ data: { organizationId: tenantA, personId: personA.id, actorId: 'tenant-isolation-test', action: 'deactivated', changedFields: ['active'] } });
+      await tx.person.update({ where: { id: personA.id }, data: { provisioningSource: 'scim' } });
+      const sourceAudit = await tx.personAuditEvent.findFirst({ where: { organizationId: tenantA, personId: personA.id, action: 'update' }, orderBy: { createdAt: 'desc' } });
+      assert.ok(sourceAudit?.changedFields.includes('provisioning_source'), 'provisioning source changes are captured by the database audit trigger');
       const qualificationA = await tx.personQualification.create({ data: { organizationId: tenantA, personId: personA.id, code: 'FOOD_HANDLER', name: 'Food handler', createdBy: 'tenant-isolation-test', evidenceStatus: 'VERIFIED', evidenceObjectKey: `tenants/${tenantA}/qualifications/test`, evidenceFileName: 'food-handler.pdf', evidenceContentType: 'application/pdf', evidenceSizeBytes: 128, evidenceSha256: 'a'.repeat(64), evidenceUploadedAt: new Date(), evidenceReviewedBy: 'tenant-isolation-test', evidenceReviewedAt: new Date(), evidenceReviewReason: 'Tenant isolation fixture verified.' } });
       await tx.tenantSetupAuditEvent.create({ data: { organizationId: tenantA, actorId: 'tenant-isolation-test', action: 'created', resourceType: 'qualification', resourceId: qualificationA.id, changedFields: ['qualification_code'] } });
       await setTenant(tx, tenantA, subjectA);

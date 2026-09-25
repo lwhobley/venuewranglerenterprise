@@ -1,4 +1,4 @@
-import { IsDateString, IsEmail, IsEnum, IsNumber, IsOptional, IsString, IsUUID, Length, Max, Min } from 'class-validator';
+import { IsBoolean, IsDateString, IsEmail, IsEnum, IsNumber, IsOptional, IsString, IsUUID, Length, Max, Min } from 'class-validator';
 import { OperationalTaskKind, OperationalTaskState } from '@prisma/client';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
@@ -9,6 +9,7 @@ export class UpdateVenueDto { @ApiPropertyOptional() @IsOptional() @IsString() @
 export class UpdateLocationDto { @ApiPropertyOptional() @IsOptional() @IsString() @Length(2, 120) name?: string; }
 export class UpdateEventDto { @ApiPropertyOptional() @IsOptional() @IsString() @Length(2, 160) name?: string; @ApiPropertyOptional() @IsOptional() @IsDateString() startsAt?: string; }
 export class UpsertPersonDto { @ApiProperty() @IsString() @Length(1, 240) externalSubject!: string; @ApiProperty() @IsEmail() email!: string; @ApiProperty() @IsString() @Length(1, 160) displayName!: string; }
+export class SetPersonActiveDto { @ApiProperty() @IsBoolean() active!: boolean; }
 export class CreateOperationalTaskDto {
   @ApiProperty({ enum: OperationalTaskKind }) @IsEnum(OperationalTaskKind) kind!: OperationalTaskKind;
   @ApiProperty() @IsUUID() venueId!: string;

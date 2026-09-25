@@ -109,8 +109,8 @@ export class ScimService {
     const data = this.userInput(identity, input);
     try {
       return await this.prisma.withTenant(identity, async (tx) => {
-        const person = await tx.person.create({ data: { organizationId: identity.tenantId, ...data } });
-        await this.auditPersonMutation(tx, identity, person.id, 'created', ['external_subject', 'email', 'display_name', 'active']);
+        const person = await tx.person.create({ data: { organizationId: identity.tenantId, ...data, provisioningSource: 'scim' } });
+        await this.auditPersonMutation(tx, identity, person.id, 'created', ['external_subject', 'email', 'display_name', 'active', 'provisioning_source']);
         return this.resource(person);
       });
     } catch (error) {
@@ -125,12 +125,13 @@ export class ScimService {
       return await this.prisma.withTenant(identity, async (tx) => {
         const current = await tx.person.findFirst({ where: { id, organizationId: identity.tenantId } });
         if (!current) throw new NotFoundException(this.scimError(404, 'User not found.'));
-        const person = await tx.person.update({ where: { id }, data });
+        const person = await tx.person.update({ where: { id }, data: { ...data, provisioningSource: 'scim' } });
         const changedFields = [
           ...(current.externalSubject !== person.externalSubject ? ['external_subject'] : []),
           ...(current.email !== person.email ? ['email'] : []),
           ...(current.displayName !== person.displayName ? ['display_name'] : []),
           ...(current.active !== person.active ? ['active'] : []),
+          ...(current.provisioningSource !== person.provisioningSource ? ['provisioning_source'] : []),
         ];
         await this.auditPersonMutation(tx, identity, person.id, this.personAction(current.active, person.active), changedFields);
         return this.resource(person);
@@ -169,12 +170,13 @@ export class ScimService {
     if (Object.keys(patch).length === 0) throw new BadRequestException(this.scimError(400, 'The SCIM PATCH contains no supported changes.'));
     try {
       return await this.prisma.withTenant(identity, async (tx) => {
-        const person = await tx.person.update({ where: { id }, data: patch });
+        const person = await tx.person.update({ where: { id }, data: { ...patch, provisioningSource: 'scim' } });
         const changedFields = [
           ...(current.externalSubject !== person.externalSubject ? ['external_subject'] : []),
           ...(current.email !== person.email ? ['email'] : []),
           ...(current.displayName !== person.displayName ? ['display_name'] : []),
           ...(current.active !== person.active ? ['active'] : []),
+          ...(current.provisioningSource !== person.provisioningSource ? ['provisioning_source'] : []),
         ];
         await this.auditPersonMutation(tx, identity, person.id, this.personAction(current.active, person.active), changedFields);
         return this.resource(person);
@@ -189,8 +191,8 @@ export class ScimService {
     return this.prisma.withTenant(identity, async (tx) => {
       const current = await tx.person.findFirst({ where: { id, organizationId: identity.tenantId } });
       if (!current) throw new NotFoundException(this.scimError(404, 'User not found.'));
-      const person = await tx.person.update({ where: { id }, data: { active: false } });
-      await this.auditPersonMutation(tx, identity, person.id, 'deactivated', current.active ? ['active'] : []);
+      const person = await tx.person.update({ where: { id }, data: { active: false, provisioningSource: 'scim' } });
+      await this.auditPersonMutation(tx, identity, person.id, 'deactivated', [...(current.active ? ['active'] : []), ...(current.provisioningSource !== person.provisioningSource ? ['provisioning_source'] : [])]);
     });
   }
 

@@ -110,7 +110,7 @@ describe('tenant setup command idempotency', () => {
         personId: person.id,
         actorId: admin.subject,
         action: 'created',
-        changedFields: ['external_subject', 'email', 'display_name', 'active'],
+        changedFields: ['external_subject', 'email', 'display_name', 'active', 'provisioning_source'],
       },
     });
     expect(JSON.stringify(tx.personAuditEvent.create.mock.calls[0][0])).not.toContain(person.email);
@@ -182,6 +182,57 @@ describe('tenant setup command idempotency', () => {
     expect(update).not.toHaveBeenCalled();
     expect(tx.tenantSetupAuditEvent.create).not.toHaveBeenCalled();
   });
+
+  it('deactivates a manually managed roster record with an idempotent, value-free audit', async () => {
+    const person = { id: 'person-2', organizationId: admin.tenantId, externalSubject: 'worker-2', email: 'worker@example.invalid', displayName: 'Worker Two', active: true, provisioningSource: 'admin' };
+    const tx = setupUpdateTx({ person: {
+      findFirst: vi.fn().mockResolvedValue(person),
+      update: vi.fn().mockResolvedValue({ ...person, active: false }),
+    } });
+    const service = new OperationsService(setupUpdatePrisma(tx));
+
+    const result = await service.setPersonActive(admin, person.id, false, 'person-deactivate-0001');
+    const replay = await service.setPersonActive(admin, person.id, false, 'person-deactivate-0001');
+
+    expect(result).toMatchObject({ id: person.id, active: false });
+    expect(replay).toEqual(result);
+    expect(tx.person.findFirst).toHaveBeenCalledWith({ where: { id: person.id, organizationId: admin.tenantId } });
+    expect(tx.person.update).toHaveBeenCalledOnce();
+    expect(tx.personAuditEvent.create).toHaveBeenCalledWith({ data: {
+      organizationId: admin.tenantId, personId: person.id, actorId: admin.subject,
+      action: 'deactivated', changedFields: ['active'],
+    } });
+    expect(JSON.stringify(tx.personAuditEvent.create.mock.calls[0][0])).not.toContain(person.email);
+  });
+
+  it('keeps SCIM as the source of truth and prevents tenant admins from deactivating themselves', async () => {
+    const scimPerson = { id: 'person-3', organizationId: admin.tenantId, externalSubject: 'worker-3', active: true, provisioningSource: 'scim' };
+    const tx = setupUpdateTx({ person: {
+      findFirst: vi.fn().mockResolvedValue(scimPerson),
+      update: vi.fn(),
+    } });
+    const service = new OperationsService(setupUpdatePrisma(tx));
+
+    await expect(service.setPersonActive(admin, scimPerson.id, false, 'person-deactivate-0002')).rejects.toBeInstanceOf(ConflictException);
+    const self = { ...scimPerson, externalSubject: admin.subject, provisioningSource: 'admin' };
+    tx.person.findFirst.mockResolvedValue(self);
+    await expect(service.setPersonActive(admin, self.id, false, 'person-deactivate-0003')).rejects.toBeInstanceOf(ForbiddenException);
+    expect(tx.person.update).not.toHaveBeenCalled();
+    expect(tx.personAuditEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('requires provenance reconciliation before changing legacy roster records', async () => {
+    const legacyPerson = { id: 'person-4', organizationId: admin.tenantId, externalSubject: 'legacy-worker', active: true, provisioningSource: 'unknown' };
+    const tx = setupUpdateTx({ person: {
+      findFirst: vi.fn().mockResolvedValue(legacyPerson),
+      update: vi.fn(),
+    } });
+    const service = new OperationsService(setupUpdatePrisma(tx));
+
+    await expect(service.setPersonActive(admin, legacyPerson.id, false, 'person-deactivate-0004')).rejects.toBeInstanceOf(ConflictException);
+    expect(tx.person.update).not.toHaveBeenCalled();
+    expect(tx.personAuditEvent.create).not.toHaveBeenCalled();
+  });
 });
 
 function setupUpdateTx(resources: Record<string, unknown> = {}) {
@@ -196,6 +247,8 @@ function setupUpdateTx(resources: Record<string, unknown> = {}) {
     venue: { findFirst: vi.fn(), update: vi.fn(), ...(resources.venue as object ?? {}) },
     location: { findFirst: vi.fn(), update: vi.fn(), ...(resources.location as object ?? {}) },
     event: { findFirst: vi.fn(), update: vi.fn(), ...(resources.event as object ?? {}) },
+    person: { findFirst: vi.fn(), update: vi.fn(), upsert: vi.fn(), ...(resources.person as object ?? {}) },
+    personAuditEvent: { create: vi.fn().mockResolvedValue({}) },
     tenantSetupAuditEvent: { create: vi.fn().mockResolvedValue({}) },
   };
 }

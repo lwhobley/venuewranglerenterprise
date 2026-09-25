@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { assertScope, assertTenantAdmin, Identity } from './auth';
@@ -41,8 +41,8 @@ export class OperationsService {
         });
         const person = await tx.person.upsert({
           where: { organizationId_externalSubject: { organizationId: identity.tenantId, externalSubject: identity.subject } },
-          create: { organizationId: identity.tenantId, externalSubject: identity.subject, email, displayName: claims.name?.trim().slice(0, 160) || email },
-          update: { email, displayName: claims.name?.trim().slice(0, 160) || email, active: true },
+          create: { organizationId: identity.tenantId, externalSubject: identity.subject, email, displayName: claims.name?.trim().slice(0, 160) || email, provisioningSource: 'sso' },
+          update: { email, displayName: claims.name?.trim().slice(0, 160) || email },
         });
         const changedFields = previousPerson
           ? [
@@ -50,15 +50,16 @@ export class OperationsService {
               ...(previousPerson.displayName !== person.displayName ? ['display_name'] : []),
               ...(previousPerson.active !== person.active ? ['active'] : []),
             ]
-          : ['external_subject', 'email', 'display_name', 'active'];
+          : ['external_subject', 'email', 'display_name', 'active', 'provisioning_source'];
         await this.auditPersonMutation(tx, identity, person.id, previousPerson ? 'updated' : 'created', changedFields);
       }
       const admin = identity.capabilities.includes('tenant:admin');
       const venues = await tx.venue.findMany({ where: admin ? { organizationId: identity.tenantId } : { id: { in: identity.venueIds }, organizationId: identity.tenantId }, orderBy: { name: 'asc' } });
       const events = await tx.event.findMany({ where: admin ? { organizationId: identity.tenantId } : { id: { in: identity.eventIds }, venueId: { in: identity.venueIds }, organizationId: identity.tenantId }, include: { closeout: { select: { state: true } } }, orderBy: { startsAt: 'asc' } });
       const locations = await tx.location.findMany({ where: admin ? { organizationId: identity.tenantId } : { id: { in: identity.locationIds }, venueId: { in: identity.venueIds }, organizationId: identity.tenantId }, orderBy: { name: 'asc' } });
-      const people = await tx.person.findMany({ where: { organizationId: identity.tenantId, active: true, ...(!admin ? { externalSubject: { in: identity.assignableUserIds } } : {}) }, include: { qualifications: { where: { revokedAt: null }, select: { id: true, code: true, name: true, expiresAt: true, revokedAt: true, ...(admin ? { evidenceStatus: true, evidenceFileName: true, evidenceContentType: true, evidenceSizeBytes: true, evidenceUploadedAt: true, evidenceReviewedAt: true, evidenceReviewReason: true } : {}) }, orderBy: [{ code: 'asc' }] } }, orderBy: { displayName: 'asc' } });
-      return { organization: { id: org.id, slug: org.slug, name: org.name }, identity: { subject: identity.subject, capabilities: identity.capabilities, assignableUserIds: identity.assignableUserIds }, venues, events, locations, people };
+      const people = await tx.person.findMany({ where: { organizationId: identity.tenantId, ...(!admin ? { active: true, externalSubject: { in: identity.assignableUserIds } } : {}) }, include: { qualifications: { where: { revokedAt: null }, select: { id: true, code: true, name: true, expiresAt: true, revokedAt: true, ...(admin ? { evidenceStatus: true, evidenceFileName: true, evidenceContentType: true, evidenceSizeBytes: true, evidenceUploadedAt: true, evidenceReviewedAt: true, evidenceReviewReason: true } : {}) }, orderBy: [{ code: 'asc' }] } }, orderBy: { displayName: 'asc' } });
+      const directory = people.map(({ provisioningSource, ...person }) => admin ? { ...person, provisioningSource } : person);
+      return { organization: { id: org.id, slug: org.slug, name: org.name }, identity: { subject: identity.subject, capabilities: identity.capabilities, assignableUserIds: identity.assignableUserIds }, venues, events, locations, people: directory };
     });
   }
 
@@ -175,20 +176,39 @@ export class OperationsService {
       const previousPerson = await tx.person.findUnique({
         where: { organizationId_externalSubject: { organizationId: identity.tenantId, externalSubject: dto.externalSubject } },
       });
+      if (previousPerson?.provisioningSource === 'scim') throw new ConflictException('This roster record is managed by SCIM. Update it through the identity provider.');
+      if (previousPerson?.provisioningSource === 'unknown') throw new ConflictException('This roster record predates source tracking. Reconcile its provisioning source before editing it.');
+      if (previousPerson?.provisioningSource === 'sso') throw new ConflictException('This profile is maintained by SSO claims. Edit the identity-provider record instead.');
       const person = await tx.person.upsert({
         where: { organizationId_externalSubject: { organizationId: identity.tenantId, externalSubject: dto.externalSubject } },
-        create: { organizationId: identity.tenantId, ...input },
-        update: { email: input.email, displayName: input.displayName, active: true },
+        create: { organizationId: identity.tenantId, ...input, provisioningSource: 'admin' },
+        update: { email: input.email, displayName: input.displayName, active: true, provisioningSource: 'admin' },
       });
       const changedFields = previousPerson
         ? [
             ...(previousPerson.email !== person.email ? ['email'] : []),
             ...(previousPerson.displayName !== person.displayName ? ['display_name'] : []),
             ...(previousPerson.active !== person.active ? ['active'] : []),
+            ...(previousPerson.provisioningSource !== person.provisioningSource ? ['provisioning_source'] : []),
           ]
-        : ['external_subject', 'email', 'display_name', 'active'];
+        : ['external_subject', 'email', 'display_name', 'active', 'provisioning_source'];
       await this.auditPersonMutation(tx, identity, person.id, previousPerson ? 'updated' : 'created', changedFields);
       return person;
+    });
+  }
+
+  async setPersonActive(identity: Identity, personId: string, active: boolean, key: string) {
+    assertTenantAdmin(identity);
+    return this.command(identity, key, `person.${active ? 'activate' : 'deactivate'}`, { personId, active }, async (tx) => {
+      const current = await tx.person.findFirst({ where: { id: personId, organizationId: identity.tenantId } });
+      if (!current) throw new NotFoundException('Person not found in this organization.');
+      if (current.provisioningSource === 'scim') throw new ConflictException('This roster record is managed by SCIM. Change its status through the identity provider.');
+      if (current.provisioningSource === 'unknown') throw new ConflictException('This roster record predates source tracking. Reconcile its provisioning source before changing its status.');
+      if (!active && current.externalSubject === identity.subject) throw new ForbiddenException('Ask another tenant administrator to deactivate your account.');
+      if (current.active === active) return current;
+      const updated = await tx.person.update({ where: { id: personId }, data: { active } });
+      await this.auditPersonMutation(tx, identity, personId, active ? 'reactivated' : 'deactivated', ['active']);
+      return updated;
     });
   }
 

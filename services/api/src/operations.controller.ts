@@ -2,7 +2,7 @@ import { Body, ConflictException, Controller, Delete, Get, Headers, Param, Parse
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { JwtIdentityGuard } from './auth';
-import { CreateEventDto, CreateLocationDto, CreateOperationalTaskDto, CreateVenueDto, UpdateEventDto, UpdateLocationDto, UpdateOperationalTaskDto, UpdateVenueDto, UpsertPersonDto } from './operations.dto';
+import { CreateEventDto, CreateLocationDto, CreateOperationalTaskDto, CreateVenueDto, SetPersonActiveDto, UpdateEventDto, UpdateLocationDto, UpdateOperationalTaskDto, UpdateVenueDto, UpsertPersonDto } from './operations.dto';
 import { OperationsService } from './operations.service';
 import { GrantPersonQualificationDto } from './qualification.dto';
 import { UpdateStaffingPolicyDto } from './staffing-policy.dto';
@@ -26,6 +26,7 @@ export class OperationsController {
   @Post('admin/events') createEvent(@Req() request: Request, @Body() dto: CreateEventDto, @Headers('idempotency-key') key: string) { return this.operations.createEvent(request.identity, dto, this.key(key)); }
   @Put('admin/events/:eventId') updateEvent(@Req() request: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Body() dto: UpdateEventDto, @Headers('idempotency-key') key: string) { return this.operations.updateEvent(request.identity, eventId, dto, this.key(key)); }
   @Post('admin/people') upsertPerson(@Req() request: Request, @Body() dto: UpsertPersonDto, @Headers('idempotency-key') key: string) { return this.operations.upsertPerson(request.identity, dto, this.key(key)); }
+  @Put('admin/people/:personId/status') setPersonActive(@Req() request: Request, @Param('personId', new ParseUUIDPipe()) personId: string, @Body() dto: SetPersonActiveDto, @Headers('idempotency-key') key: string) { return this.operations.setPersonActive(request.identity, personId, dto.active, this.key(key)); }
   @Get('admin/people/:personId/qualifications') personQualifications(@Req() request: Request, @Param('personId', new ParseUUIDPipe()) personId: string) { return this.operations.personQualifications(request.identity, personId); }
   @Post('admin/people/:personId/qualifications') grantPersonQualification(@Req() request: Request, @Param('personId', new ParseUUIDPipe()) personId: string, @Body() dto: GrantPersonQualificationDto, @Headers('idempotency-key') key: string) { return this.operations.grantPersonQualification(request.identity, personId, dto, this.key(key)); }
   @Post('admin/qualifications/:qualificationId/evidence') createQualificationEvidence(@Req() request: Request, @Param('qualificationId', new ParseUUIDPipe()) qualificationId: string, @Body() dto: CreateQualificationEvidenceDto) { return this.evidence.createQualificationEvidence(request.identity, qualificationId, dto); }

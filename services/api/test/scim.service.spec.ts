@@ -42,6 +42,7 @@ describe('SCIM roster audit', () => {
       email: 'worker@example.invalid',
       displayName: 'Worker One',
       active: true,
+      provisioningSource: 'scim',
       createdAt: new Date('2026-09-25T12:00:00.000Z'),
       updatedAt: new Date('2026-09-25T12:00:00.000Z'),
     };
@@ -62,7 +63,7 @@ describe('SCIM roster audit', () => {
         personId: person.id,
         actorId: identity.subject,
         action: 'created',
-        changedFields: ['external_subject', 'email', 'display_name', 'active'],
+        changedFields: ['external_subject', 'email', 'display_name', 'active', 'provisioning_source'],
       },
     });
     const auditData = tx.personAuditEvent.create.mock.calls[0][0].data;
@@ -77,6 +78,7 @@ describe('SCIM roster audit', () => {
       email: 'worker2@example.invalid',
       displayName: 'Worker Two',
       active: true,
+      provisioningSource: 'scim',
       createdAt: new Date('2026-09-25T12:00:00.000Z'),
       updatedAt: new Date('2026-09-25T12:00:00.000Z'),
     };

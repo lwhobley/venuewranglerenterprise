@@ -357,6 +357,7 @@ model Person {
   email                  String
   displayName            String                  @map("display_name")
   active                 Boolean                 @default(true)
+  provisioningSource     String                  @default("sso") @map("provisioning_source")
   createdAt              DateTime                @default(now()) @map("created_at")
   updatedAt              DateTime                @updatedAt @map("updated_at")
   auditEvents            PersonAuditEvent[]

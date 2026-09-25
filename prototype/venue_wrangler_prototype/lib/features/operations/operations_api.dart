@@ -1184,6 +1184,16 @@ class OperationsApi {
               },
               options: Options(headers: {
                 'Authorization': 'Bearer $token',
+            'Idempotency-Key': key,
+          })));
+  Future<void> setPersonActive(String personId, bool active) async =>
+      _command<void>(
+          {'action': 'person.${active ? 'activate' : 'deactivate'}', 'personId': personId, 'active': active},
+          (token, key) => _dio.put<void>(
+              '/api/v1/admin/people/$personId/status',
+              data: {'active': active},
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
                 'Idempotency-Key': key,
               })));
   Future<void> grantQualification(String personId, String code, String name,

@@ -2867,8 +2867,23 @@ class _TenantSetupPage extends StatelessWidget {
             ListTile(
               leading: const Icon(Icons.person_outline),
               title: Text(person['displayName'] as String? ?? 'Person'),
-              subtitle: Text(person['email'] as String? ?? ''),
-              trailing: IconButton(tooltip: 'Grant qualification', icon: const Icon(Icons.workspace_premium_outlined), onPressed: () => _grantQualification(context, person)),
+              subtitle: Text('${person['email'] as String? ?? ''}${person['active'] == false ? ' · Deactivated' : ''}'),
+              trailing: PopupMenuButton<String>(
+                tooltip: 'Manage person',
+                onSelected: (action) {
+                  if (action == 'qualification') _grantQualification(context, person);
+                  if (action == 'activate' || action == 'deactivate') _setPersonActive(context, person, action == 'activate');
+                },
+                itemBuilder: (_) => [
+                  const PopupMenuItem(value: 'qualification', child: ListTile(leading: Icon(Icons.workspace_premium_outlined), title: Text('Grant qualification'))),
+                  if (person['provisioningSource'] == 'scim')
+                    const PopupMenuItem(enabled: false, child: ListTile(leading: Icon(Icons.sync_lock_outlined), title: Text('Status managed by SCIM')))
+                  else if (person['provisioningSource'] == 'unknown')
+                    const PopupMenuItem(enabled: false, child: ListTile(leading: Icon(Icons.help_outline), title: Text('Roster source needs review')))
+                  else
+                    PopupMenuItem(value: person['active'] == false ? 'activate' : 'deactivate', child: ListTile(leading: Icon(person['active'] == false ? Icons.person_add_alt : Icons.person_off_outlined), title: Text(person['active'] == false ? 'Reactivate account' : 'Deactivate account'))),
+                ],
+              ),
             ),
             ...qualifications.map((qualification) {
               final expiry = DateTime.tryParse(qualification['expiresAt'] as String? ?? '');
@@ -2899,6 +2914,24 @@ class _TenantSetupPage extends StatelessWidget {
           ]));
         })
       ]);
+  Future<void> _setPersonActive(BuildContext context, Map<String, dynamic> person, bool active) async {
+    final name = person['displayName'] as String? ?? 'this person';
+    if (!active) {
+      final confirmed = await showDialog<bool>(context: context, builder: (dialogContext) => AlertDialog(
+        title: const Text('Deactivate account?'),
+        content: Text('$name will lose access on their next API request. This does not disable their identity-provider account.'),
+        actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')), FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Deactivate'))],
+      ));
+      if (confirmed != true) return;
+    }
+    try {
+      await api.setPersonActive(person['id'] as String, active);
+      onSaved();
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(active ? 'Account reactivated' : 'Account deactivated')));
+    } catch (error) {
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not update account status: $error')));
+    }
+  }
   Future<void> _editVenue(BuildContext context, Map<String, dynamic> venue) => _editName(context, title: 'Edit venue', initialName: venue['name'] as String? ?? '', save: (name) => api.updateVenue(venue['id'] as String, name));
   Future<void> _editLocation(BuildContext context, Map<String, dynamic> location) => _editName(context, title: 'Edit location', initialName: location['name'] as String? ?? '', save: (name) => api.updateLocation(location['id'] as String, name));
   Future<void> _editName(BuildContext context, {required String title, required String initialName, required Future<void> Function(String) save}) async {
