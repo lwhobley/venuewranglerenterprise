@@ -140,6 +140,7 @@ class OperationsApi {
         String? eventType;
         final dataLines = <String>[];
         final lines = response.data!.stream
+            .cast<List<int>>()
             .transform(utf8.decoder)
             .transform(const LineSplitter());
         await for (final line in lines) {
