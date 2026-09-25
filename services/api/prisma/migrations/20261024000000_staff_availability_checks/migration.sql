@@ -46,10 +46,6 @@ CREATE TABLE staff_availability_check_audits (
 );
 CREATE INDEX staff_availability_check_audits_time_idx
   ON staff_availability_check_audits (organization_id, availability_check_id, created_at);
-CREATE TRIGGER staff_availability_check_audits_immutable
-  BEFORE UPDATE OR DELETE ON staff_availability_check_audits
-  FOR EACH ROW EXECUTE FUNCTION app_private.prevent_audit_mutation();
-
 ALTER TABLE staff_availability_checks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE staff_availability_checks FORCE ROW LEVEL SECURITY;
 CREATE POLICY staff_availability_checks_tenant_scope ON staff_availability_checks
