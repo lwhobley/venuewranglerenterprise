@@ -127,7 +127,9 @@ class _PushNotificationGateState extends ConsumerState<_PushNotificationGate> {
   Future<void> _attachPushHandlers() async {
     if (!PushNotifications.isConfigured ||
         !await PushNotifications.initialize() ||
-        !mounted) return;
+        !mounted) {
+      return;
+    }
     _foregroundSubscription =
         FirebaseMessaging.onMessage.listen(_handlePushMessage);
     _openedSubscription =
