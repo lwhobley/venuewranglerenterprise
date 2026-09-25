@@ -79,7 +79,55 @@ describe('inventory count workflow', () => {
     });
     await expect(service.receiveTransfer(manager, manager.eventIds[0], '00000000-0000-0000-0000-000000000018', {
       lines: [{ lineId: '00000000-0000-0000-0000-000000000016', quantity: 4 }],
-    }, 'stock-transfer-receive-key-02')).rejects.toBeInstanceOf(ConflictException);
+      }, 'stock-transfer-receive-key-02')).rejects.toBeInstanceOf(ConflictException);
     expect(tx.$executeRaw).not.toHaveBeenCalled();
+  });
+
+  it('submits a purchase order only with active items in the selected venue and location', async () => {
+    const { service, tx } = harness(sql => {
+      if (sql.includes('SELECT id, location_id')) return [{ id: '00000000-0000-0000-0000-000000000021', locationId: null }];
+      if (sql.includes('INSERT INTO stock_purchase_orders')) return [{ id: '00000000-0000-0000-0000-000000000022' }];
+      return [];
+    });
+    const result = await service.createPurchaseOrder(manager, manager.eventIds[0], {
+      venueId: manager.venueIds[0], supplierName: 'Regional Beverage Supply',
+      lines: [{ itemId: '00000000-0000-0000-0000-000000000021', quantity: 12 }],
+    }, 'purchase-order-create-key-01');
+    expect(result).toMatchObject({ id: '00000000-0000-0000-0000-000000000022', state: 'SUBMITTED', supplierName: 'Regional Beverage Supply' });
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(2);
+  });
+
+  it('requires an independent scoped manager to approve a purchase order', async () => {
+    const { service, tx } = harness(sql => sql.includes('FROM stock_purchase_orders WHERE')
+      ? [{ venueId: manager.venueIds[0], locationId: null, state: 'SUBMITTED', requestedBy: manager.subject }]
+      : []);
+    await expect(service.approvePurchaseOrder(manager, manager.eventIds[0], '00000000-0000-0000-0000-000000000023', 'purchase-order-approve-key-1'))
+      .rejects.toBeInstanceOf(ConflictException);
+    expect(tx.$executeRaw).not.toHaveBeenCalled();
+  });
+
+  it('refuses receiving more than the remaining approved purchase quantity', async () => {
+    const { service, tx } = harness(sql => {
+      if (sql.includes('FROM stock_purchase_orders WHERE')) return [{ venueId: manager.venueIds[0], locationId: null, state: 'APPROVED', approvedBy: 'approver-1' }];
+      if (sql.includes('FROM stock_purchase_order_lines WHERE')) return [{ id: '00000000-0000-0000-0000-000000000024', itemId: '00000000-0000-0000-0000-000000000025', orderedQuantity: '5.000', receivedQuantity: '2.000' }];
+      return [];
+    });
+    await expect(service.receivePurchaseOrder(manager, manager.eventIds[0], '00000000-0000-0000-0000-000000000026', {
+      lines: [{ lineId: '00000000-0000-0000-0000-000000000024', quantity: 3.001 }],
+    }, 'purchase-order-receive-key-01')).rejects.toBeInstanceOf(ConflictException);
+    expect(tx.$executeRaw).not.toHaveBeenCalled();
+  });
+
+  it('records incremental receipts as inventory movements and keeps short orders open for reconciliation', async () => {
+    const { service, tx } = harness(sql => {
+      if (sql.includes('FROM stock_purchase_orders WHERE')) return [{ venueId: manager.venueIds[0], locationId: null, state: 'APPROVED', approvedBy: 'approver-1' }];
+      if (sql.includes('FROM stock_purchase_order_lines WHERE')) return [{ id: '00000000-0000-0000-0000-000000000027', itemId: '00000000-0000-0000-0000-000000000028', orderedQuantity: '5.000', receivedQuantity: '0.000' }];
+      return [];
+    });
+    const result = await service.receivePurchaseOrder(manager, manager.eventIds[0], '00000000-0000-0000-0000-000000000029', {
+      lines: [{ lineId: '00000000-0000-0000-0000-000000000027', quantity: 2.5 }], note: 'First delivery',
+    }, 'purchase-order-receive-key-02');
+    expect(result.state).toBe('PARTIALLY_RECEIVED');
+    expect(tx.$executeRaw.mock.calls.some(([parts]) => parts.join('?').includes("'PURCHASE_RECEIPT'"))).toBe(true);
   });
 });

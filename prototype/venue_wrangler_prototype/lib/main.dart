@@ -357,6 +357,7 @@ class _LiveOperationsHome extends ConsumerWidget {
                     event: event,
                     canWrite: caps.contains('operations:write'),
                     isAdmin: isAdmin,
+                    subject: identity['subject'] as String? ?? '',
                     locations: locations),
                 'Staffing' => _LiveStaffingPage(
                     event: event,
@@ -1814,10 +1815,11 @@ class _LiveTasksPage extends ConsumerWidget {
 }
 
 class _LiveInventoryPage extends ConsumerWidget {
-  const _LiveInventoryPage({required this.event, required this.canWrite, required this.isAdmin, required this.locations});
+  const _LiveInventoryPage({required this.event, required this.canWrite, required this.isAdmin, required this.subject, required this.locations});
   final Map<String, dynamic> event;
   final bool canWrite;
   final bool isAdmin;
+  final String subject;
   final List<Map<String, dynamic>> locations;
 
   @override
@@ -1833,6 +1835,9 @@ class _LiveInventoryPage extends ConsumerWidget {
           for (final location in locations.where((row) => row['venueId'] == venueId)) if (canWrite) OutlinedButton.icon(onPressed: () => _startStockCount(context, ref, eventId, venueId, locationId: location['id'] as String), icon: const Icon(Icons.location_on_outlined), label: Text('Count ${location['name']}')),
           if (isAdmin) OutlinedButton.icon(onPressed: () => _addStockItem(context, ref, venueId, eventId), icon: const Icon(Icons.add_box_outlined), label: const Text('Add stock item')),
           if (canWrite) OutlinedButton.icon(onPressed: () => _requestStockTransfer(context, ref, eventId, venueId), icon: const Icon(Icons.swap_horiz), label: const Text('Request transfer')),
+          if (canWrite) OutlinedButton.icon(onPressed: () => _createStockPurchaseOrder(context, ref, eventId, venueId), icon: const Icon(Icons.playlist_add_outlined), label: const Text('Request venue purchase')),
+          for (final location in locations.where((row) => row['venueId'] == venueId))
+            if (canWrite) OutlinedButton.icon(onPressed: () => _createStockPurchaseOrder(context, ref, eventId, venueId, locationId: location['id'] as String, locationName: location['name'] as String? ?? 'Location'), icon: const Icon(Icons.location_on_outlined), label: Text('Request ${location['name']} purchase')),
         ])),
         ref.watch(eventStockTransfersProvider(eventId)).when(
           loading: () => const LinearProgressIndicator(),
@@ -1852,6 +1857,27 @@ class _LiveInventoryPage extends ConsumerWidget {
                 if (state == 'REQUESTED') IconButton(tooltip: 'Dispatch', icon: const Icon(Icons.local_shipping_outlined), onPressed: () => _stockTransferAction(context, ref, eventId, transfer['id'] as String, 'dispatch')),
                 if (state == 'REQUESTED') IconButton(tooltip: 'Cancel', icon: const Icon(Icons.cancel_outlined), onPressed: () => _cancelStockTransfer(context, ref, eventId, transfer['id'] as String)),
                 if (state == 'IN_TRANSIT') IconButton(tooltip: 'Confirm receipt', icon: const Icon(Icons.inventory_2_outlined), onPressed: () => _receiveStockTransfer(context, ref, eventId, transfer)),
+              ]) : null,
+            ));
+          })),
+        ),
+        ref.watch(eventStockPurchaseOrdersProvider(eventId)).when(
+          loading: () => const LinearProgressIndicator(),
+          error: (error, _) => ListTile(title: const Text('Purchase orders unavailable'), subtitle: Text('$error')),
+          data: (orders) => orders.isEmpty ? const SizedBox.shrink() : SizedBox(height: 205, child: ListView.builder(itemCount: orders.length, itemBuilder: (context, index) {
+            final order = orders[index];
+            final orderId = order['id'] as String;
+            final state = order['state'] as String? ?? 'SUBMITTED';
+            final lines = (order['lines'] as List? ?? const []).whereType<Map>().map((line) => '${line['name']}: ${line['receivedQuantity'] ?? 0}/${line['orderedQuantity']} ${line['unit']}').join(' · ');
+            return Card(child: ListTile(
+              leading: const Icon(Icons.local_shipping_outlined),
+              title: Text('${order['supplierName']} · ${state.replaceAll('_', ' ')}'),
+              subtitle: Text(lines),
+              trailing: canWrite ? Wrap(children: [
+                if (state == 'SUBMITTED' && order['requestedBy'] != subject) IconButton(tooltip: 'Approve (independent manager)', icon: const Icon(Icons.verified_outlined), onPressed: () => _stockPurchaseOrderAction(context, ref, eventId, orderId, 'approve')),
+                if (state == 'SUBMITTED' && order['requestedBy'] == subject) IconButton(tooltip: 'Cancel purchase request', icon: const Icon(Icons.cancel_outlined), onPressed: () => _cancelStockPurchaseOrder(context, ref, eventId, orderId)),
+                if ((state == 'APPROVED' || state == 'PARTIALLY_RECEIVED') && order['approvedBy'] != subject) IconButton(tooltip: 'Record received quantities', icon: const Icon(Icons.inventory_outlined), onPressed: () => _receiveStockPurchaseOrder(context, ref, eventId, order)),
+                if (state == 'PARTIALLY_RECEIVED') IconButton(tooltip: 'Close with short quantity', icon: const Icon(Icons.assignment_turned_in_outlined), onPressed: () => _closeShortStockPurchaseOrder(context, ref, eventId, orderId)),
               ]) : null,
             ));
           })),
@@ -1977,6 +2003,101 @@ class _LiveInventoryPage extends ConsumerWidget {
     try { await ref.read(operationsApiProvider).stockTransferAction(eventId, transfer['id'] as String, 'receive', data: {'lines': [for (var i = 0; i < lines.length; i++) {'lineId': lines[i]['id'], 'quantity': double.tryParse(controllers[i].text) ?? -1}], if (reason.text.trim().isNotEmpty) 'reason': reason.text.trim()}); ref.invalidate(eventStockTransfersProvider(eventId)); ref.invalidate(eventInventoryCountsProvider(eventId)); }
     catch (error) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not confirm receipt: $error'))); }
   }
+}
+
+class _StockPurchaseOrderComposer extends StatefulWidget {
+  const _StockPurchaseOrderComposer({required this.items, required this.locationName});
+  final List<Map<String, dynamic>> items;
+  final String locationName;
+
+  @override
+  State<_StockPurchaseOrderComposer> createState() => _StockPurchaseOrderComposerState();
+}
+
+class _StockPurchaseOrderComposerState extends State<_StockPurchaseOrderComposer> {
+  final _supplier = TextEditingController();
+  final _reference = TextEditingController();
+  final _note = TextEditingController();
+  final Map<String, TextEditingController> _quantities = {};
+
+  bool get _hasLines => _quantities.values.any((controller) => (double.tryParse(controller.text.trim()) ?? 0) > 0);
+
+  @override
+  void dispose() {
+    _supplier.dispose();
+    _reference.dispose();
+    _note.dispose();
+    for (final controller in _quantities.values) { controller.dispose(); }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('Request stock purchase'),
+        content: SizedBox(
+          width: 500,
+          child: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text('${widget.locationName} · a different manager must approve before receipt.'),
+              ),
+              TextField(controller: _supplier, maxLength: 160, onChanged: (_) => setState(() {}), decoration: const InputDecoration(labelText: 'Supplier')),
+              TextField(controller: _reference, maxLength: 120, decoration: const InputDecoration(labelText: 'Supplier reference (optional)')),
+              TextField(controller: _note, maxLength: 500, decoration: const InputDecoration(labelText: 'Request note (optional)')),
+              const SizedBox(height: 8),
+              for (final item in widget.items) Builder(builder: (context) {
+                final id = item['id'] as String;
+                final quantity = _quantities[id];
+                return Row(children: [
+                  Expanded(child: CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: quantity != null,
+                    onChanged: (selected) => setState(() {
+                      if (selected == true) {
+                        _quantities[id] = TextEditingController(text: '1');
+                      } else {
+                        _quantities.remove(id)?.dispose();
+                      }
+                    }),
+                    title: Text('${item['name']} · ${item['unit']}'),
+                    subtitle: Text('${item['sku']} · on hand ${item['onHand']}'),
+                    controlAffinity: ListTileControlAffinity.leading,
+                  )),
+                  if (quantity != null)
+                    SizedBox(width: 92, child: TextField(
+                      controller: quantity,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      onChanged: (_) => setState(() {}),
+                      decoration: const InputDecoration(labelText: 'Order qty'),
+                    )),
+                ]);
+              }),
+            ]),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: _supplier.text.trim().length < 2 || !_hasLines
+                ? null
+                : () {
+                    final lines = <Map<String, Object?>>[];
+                    for (final entry in _quantities.entries) {
+                      final amount = double.tryParse(entry.value.text.trim()) ?? 0;
+                      if (amount > 0) lines.add({'itemId': entry.key, 'quantity': amount});
+                    }
+                    Navigator.pop(context, <String, Object?>{
+                      'supplierName': _supplier.text.trim(),
+                      'supplierReference': _reference.text.trim(),
+                      'note': _note.text.trim(),
+                      'lines': lines,
+                    });
+                  },
+            child: const Text('Submit request'),
+          ),
+        ],
+      );
 }
 
 class _LiveStaffingPage extends ConsumerWidget {
@@ -2690,6 +2811,93 @@ Future<void> _respondToAvailabilityCheck(BuildContext context, WidgetRef ref, Ma
   }
 }
 
+Future<void> _createStockPurchaseOrder(BuildContext context, WidgetRef ref, String eventId, String venueId, {String? locationId, String? locationName}) async {
+    try {
+      final api = ref.read(operationsApiProvider);
+      final items = await api.inventoryItems(venueId, locationId: locationId);
+      if (items.isEmpty) {
+        if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Add active inventory items at ${locationName ?? 'the venue'} before requesting a purchase.')));
+        return;
+      }
+      if (!context.mounted) return;
+      final request = await showDialog<Map<String, Object?>>(
+        context: context,
+        builder: (_) => _StockPurchaseOrderComposer(items: items, locationName: locationName ?? 'Venue stock'),
+      );
+      if (request == null) return;
+      await api.createStockPurchaseOrder(
+        eventId, venueId, locationId,
+        request['supplierName'] as String,
+        request['supplierReference'] as String?,
+        request['note'] as String?,
+        (request['lines'] as List).cast<Map<String, Object?>>(),
+      );
+      ref.invalidate(eventStockPurchaseOrdersProvider(eventId));
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Purchase request submitted for independent approval.')));
+    } catch (error) {
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not create purchase request: $error')));
+    }
+  }
+
+Future<void> _stockPurchaseOrderAction(BuildContext context, WidgetRef ref, String eventId, String orderId, String action) async {
+    try {
+      await ref.read(operationsApiProvider).stockPurchaseOrderAction(eventId, orderId, action);
+      ref.invalidate(eventStockPurchaseOrdersProvider(eventId));
+    } catch (error) {
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not $action purchase request: $error')));
+    }
+  }
+
+  Future<void> _receiveStockPurchaseOrder(BuildContext context, WidgetRef ref, String eventId, Map<String, dynamic> order) async {
+    final lines = (order['lines'] as List? ?? const []).whereType<Map>().map((line) => Map<String, dynamic>.from(line)).toList();
+    final received = <String, TextEditingController>{};
+    for (final line in lines) {
+      final remaining = (double.tryParse('${line['orderedQuantity']}') ?? 0) - (double.tryParse('${line['receivedQuantity']}') ?? 0);
+      received[line['id'] as String] = TextEditingController(text: remaining > 0 ? '$remaining' : '');
+    }
+    final note = TextEditingController();
+    final result = await showDialog<Map<String, Object?>>(context: context, builder: (dialogContext) => AlertDialog(
+      title: const Text('Receive purchase order'),
+      content: SizedBox(width: 480, child: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
+        for (final line in lines) TextField(controller: received[line['id'] as String], keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: InputDecoration(labelText: '${line['name']} · remaining ${((double.tryParse('${line['orderedQuantity']}') ?? 0) - (double.tryParse('${line['receivedQuantity']}') ?? 0)).toStringAsFixed(3)} ${line['unit']}')),
+        TextField(controller: note, maxLength: 500, decoration: const InputDecoration(labelText: 'Receiving note (optional)')),
+      ]))),
+      actions: [TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')), FilledButton(onPressed: () {
+        final quantities = <Map<String, Object?>>[];
+        for (final line in lines) {
+          final value = double.tryParse(received[line['id'] as String]!.text.trim()) ?? 0;
+          if (value > 0) quantities.add({'lineId': line['id'], 'quantity': value});
+        }
+        Navigator.pop(dialogContext, quantities.isEmpty ? null : {'lines': quantities, 'note': note.text.trim()});
+      }, child: const Text('Save receipt'))],
+    ));
+    for (final controller in received.values) { controller.dispose(); }
+    note.dispose();
+    if (result == null || !context.mounted) return;
+    try {
+      await ref.read(operationsApiProvider).stockPurchaseOrderAction(eventId, order['id'] as String, 'receive', lines: (result['lines'] as List).cast<Map<String, Object?>>(), note: result['note'] as String?);
+      ref.invalidate(eventStockPurchaseOrdersProvider(eventId));
+      ref.invalidate(eventInventoryCountsProvider(eventId));
+    } catch (error) {
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not record purchase receipt: $error')));
+    }
+  }
+
+  Future<void> _closeShortStockPurchaseOrder(BuildContext context, WidgetRef ref, String eventId, String orderId) async {
+    final reason = TextEditingController();
+    final close = await showDialog<bool>(context: context, builder: (dialogContext) => AlertDialog(
+      title: const Text('Close purchase order short'),
+      content: TextField(controller: reason, minLines: 2, maxLines: 4, maxLength: 500, decoration: const InputDecoration(labelText: 'Explain the remaining quantity')),
+      actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Back')), FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Close with reason'))],
+    ));
+    if (close != true) { reason.dispose(); return; }
+    try {
+      await ref.read(operationsApiProvider).stockPurchaseOrderAction(eventId, orderId, 'close-short', reason: reason.text.trim());
+      ref.invalidate(eventStockPurchaseOrdersProvider(eventId));
+    } catch (error) {
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not close purchase order: $error')));
+    } finally { reason.dispose(); }
+  }
 Future<void> _showAvailabilityChecks(BuildContext context, WidgetRef ref, String eventId, String shiftId) async {
   try {
     final rows = await ref.read(operationsApiProvider).availabilityChecksForShift(eventId, shiftId);
@@ -2716,6 +2924,22 @@ Future<void> _showAvailabilityChecks(BuildContext context, WidgetRef ref, String
   } catch (error) {
     if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not load availability responses: $error')));
   }
+}
+
+Future<void> _cancelStockPurchaseOrder(BuildContext context, WidgetRef ref, String eventId, String orderId) async {
+  final reason = TextEditingController();
+  final confirmed = await showDialog<bool>(context: context, builder: (dialogContext) => AlertDialog(
+    title: const Text('Cancel purchase request'),
+    content: TextField(controller: reason, minLines: 2, maxLines: 4, maxLength: 500, decoration: const InputDecoration(labelText: 'Reason')),
+    actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Keep request')), FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Cancel request'))],
+  ));
+  if (confirmed != true) { reason.dispose(); return; }
+  try {
+    await ref.read(operationsApiProvider).stockPurchaseOrderAction(eventId, orderId, 'cancel', reason: reason.text.trim());
+    ref.invalidate(eventStockPurchaseOrdersProvider(eventId));
+  } catch (error) {
+    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not cancel purchase order: $error')));
+  } finally { reason.dispose(); }
 }
 
 Future<void> _suggestShiftAssignee(BuildContext context, WidgetRef ref, String eventId, Map<String, dynamic> shift) async {

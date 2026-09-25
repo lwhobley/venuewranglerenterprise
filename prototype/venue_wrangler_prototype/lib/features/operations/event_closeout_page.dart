@@ -284,7 +284,7 @@ class EventCloseoutPage extends ConsumerWidget {
         'TASK' => 'Operations',
         'ATTENDANCE' => 'Staffing',
         'HOSPITALITY' => 'Hospitality',
-        'STOCK_COUNT' || 'STOCK_TRANSFER' => 'Stock',
+        'STOCK_COUNT' || 'STOCK_TRANSFER' || 'STOCK_PURCHASE_ORDER' => 'Stock',
         _ => 'Today',
       };
 }

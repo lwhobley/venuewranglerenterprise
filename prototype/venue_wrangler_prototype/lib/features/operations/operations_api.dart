@@ -705,6 +705,66 @@ class OperationsApi {
               .whereType<Map>()
               .map((row) => Map<String, dynamic>.from(row))
               .toList()));
+  Future<List<Map<String, dynamic>>> stockPurchaseOrders(String eventId) async =>
+      (await _request((token) => _dio.get<List<dynamic>>(
+                '/api/v1/events/$eventId/inventory/purchase-orders',
+                options: Options(headers: {'Authorization': 'Bearer $token'}),
+              )))
+          .data!
+          .whereType<Map>()
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList();
+  Future<void> createStockPurchaseOrder(
+          String eventId, String venueId, String? locationId, String supplierName,
+          String? supplierReference, String? note,
+          List<Map<String, Object?>> lines) async =>
+      _command<void>(
+          {
+            'action': 'stock-purchase-order.create',
+            'eventId': eventId,
+            'venueId': venueId,
+            'locationId': locationId,
+            'supplierName': supplierName,
+            'supplierReference': supplierReference,
+            'note': note,
+            'lines': lines
+          },
+          (token, key) => _dio.post<void>(
+              '/api/v1/events/$eventId/inventory/purchase-orders',
+              data: {
+                'venueId': venueId,
+                if (locationId != null) 'locationId': locationId,
+                'supplierName': supplierName,
+                if (supplierReference != null) 'supplierReference': supplierReference,
+                if (note != null) 'note': note,
+                'lines': lines
+              },
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key
+              })));
+  Future<void> stockPurchaseOrderAction(String eventId, String orderId, String action,
+          {List<Map<String, Object?>>? lines, String? note, String? reason}) async =>
+      _command<void>(
+          {
+            'action': 'stock-purchase-order.$action',
+            'eventId': eventId,
+            'orderId': orderId,
+            'lines': lines,
+            'note': note,
+            'reason': reason
+          },
+          (token, key) => _dio.post<void>(
+              '/api/v1/events/$eventId/inventory/purchase-orders/$orderId/$action',
+              data: {
+                if (lines != null) 'lines': lines,
+                if (note != null) 'note': note,
+                if (reason != null) 'reason': reason
+              },
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key
+              })));
   Future<void> createStockTransfer(
           String eventId,
           String venueId,
@@ -1394,6 +1454,9 @@ final eventInventoryCountsProvider = FutureProvider.autoDispose
 final eventStockTransfersProvider = FutureProvider.autoDispose
     .family<List<Map<String, dynamic>>, String>(
         (ref, id) => ref.watch(operationsApiProvider).stockTransfers(id));
+final eventStockPurchaseOrdersProvider = FutureProvider.autoDispose
+    .family<List<Map<String, dynamic>>, String>(
+        (ref, id) => ref.watch(operationsApiProvider).stockPurchaseOrders(id));
 final eventHospitalityOrdersProvider = FutureProvider.autoDispose
     .family<List<Map<String, dynamic>>, String>(
         (ref, id) => ref.watch(operationsApiProvider).hospitalityOrders(id));

@@ -60,6 +60,25 @@ describe('CloseoutService', () => {
     expect(tx.commandReceipt.create).not.toHaveBeenCalled();
   });
 
+  it('keeps closeout open while a purchase order still needs approval or receiving', async () => {
+    const purchaseOrderId = '60000000-0000-4000-8000-000000000001';
+    const tx = {
+      $queryRaw: vi.fn((parts: TemplateStringsArray) => Promise.resolve(parts.join(' ').includes('stock_purchase_orders')
+        ? [{ id: purchaseOrderId, label: 'Purchase order awaiting approval, receipt, or quantity reconciliation' }]
+        : [])),
+      event: { findFirst: vi.fn().mockResolvedValue({ id: eventId, venueId: identity.venueIds[0], name: 'Fixture event' }) },
+      eventCloseout: { findUnique: vi.fn().mockResolvedValue(null) },
+      eventCloseoutFollowup: { findMany: vi.fn().mockResolvedValue([]) },
+      eventPostCloseCorrection: { findMany: vi.fn().mockResolvedValue([]) },
+      eventCloseoutAudit: { findMany: vi.fn().mockResolvedValue([]) },
+      ...emptyExceptionQueries(),
+    };
+    const service = serviceFor(tx);
+    const overview = await service.overview(identity, eventId);
+    expect(overview.exceptions).toContainEqual(expect.objectContaining({ sourceType: 'STOCK_PURCHASE_ORDER', sourceId: purchaseOrderId }));
+    expect(overview.canFinalize).toBe(false);
+  });
+
   it('rechecks a live exception and finalizes only after an audited acceptance', async () => {
     const finalized = { id: closeoutId, state: 'CLOSED', finalizedBy: identity.subject };
     const tx = {

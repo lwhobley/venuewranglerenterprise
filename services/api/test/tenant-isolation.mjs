@@ -79,6 +79,8 @@ try {
   let demandAuditBId;
   let stockTransferAId;
   let stockTransferBId;
+  let stockPurchaseOrderAId;
+  let stockPurchaseOrderBId;
   let stockCountAId;
   let stockCountBId;
   let hospitalityOrderAId;
@@ -153,6 +155,15 @@ try {
       await tx.pushDevice.create({ data: { organizationId: tenantA, subject: 'tenant-isolation-test', installationId: randomUUID(), registrationToken: pushTokenA, tokenSha256: createHash('sha256').update(pushTokenA).digest('hex'), platform: 'ios' } });
       const [stockItemA] = await tx.$queryRaw`INSERT INTO stock_items(organization_id,venue_id,location_id,sku,name,unit,on_hand)
         VALUES (${tenantA}::uuid,${venueA}::uuid,${locationA}::uuid,${`RLS-${randomUUID()}`},'Tenant A transfer fixture','case',8) RETURNING id`;
+      const [stockPurchaseOrderA] = await tx.$queryRaw`INSERT INTO stock_purchase_orders(organization_id,venue_id,event_id,location_id,supplier_name,requested_by)
+        VALUES (${tenantA}::uuid,${venueA}::uuid,${eventA}::uuid,${locationA}::uuid,'Tenant A Supply','tenant-isolation-test') RETURNING id`;
+      stockPurchaseOrderAId = stockPurchaseOrderA.id;
+      await tx.$executeRaw`INSERT INTO stock_purchase_order_lines(organization_id,event_id,venue_id,purchase_order_id,item_id,ordered_quantity,received_quantity)
+        VALUES (${tenantA}::uuid,${eventA}::uuid,${venueA}::uuid,${stockPurchaseOrderA.id}::uuid,${stockItemA.id}::uuid,4,2)`;
+      await tx.$executeRaw`INSERT INTO stock_purchase_order_audit(organization_id,purchase_order_id,actor_id,action)
+        VALUES (${tenantA}::uuid,${stockPurchaseOrderA.id}::uuid,'tenant-isolation-test','submitted')`;
+      await tx.$executeRaw`INSERT INTO stock_movements(organization_id,item_id,purchase_order_id,actor_id,movement_type,quantity_delta,reason)
+        VALUES (${tenantA}::uuid,${stockItemA.id}::uuid,${stockPurchaseOrderA.id}::uuid,'tenant-isolation-test','PURCHASE_RECEIPT',2,'isolation fixture')`;
       const [stockTransferA] = await tx.$queryRaw`INSERT INTO stock_transfers(organization_id,venue_id,event_id,source_location_id,destination_location_id,requested_by)
         VALUES (${tenantA}::uuid,${venueA}::uuid,${eventA}::uuid,${locationA}::uuid,NULL,'tenant-isolation-test') RETURNING id`;
       stockTransferAId = stockTransferA.id;
@@ -237,6 +248,15 @@ try {
       await tx.pushDevice.create({ data: { organizationId: tenantB, subject: 'tenant-isolation-test', installationId: randomUUID(), registrationToken: pushTokenB, tokenSha256: createHash('sha256').update(pushTokenB).digest('hex'), platform: 'android' } });
       const [stockItemB] = await tx.$queryRaw`INSERT INTO stock_items(organization_id,venue_id,location_id,sku,name,unit,on_hand)
         VALUES (${tenantB}::uuid,${venueB}::uuid,${locationB}::uuid,${`RLS-${randomUUID()}`},'Tenant B transfer fixture','case',6) RETURNING id`;
+      const [stockPurchaseOrderB] = await tx.$queryRaw`INSERT INTO stock_purchase_orders(organization_id,venue_id,event_id,location_id,supplier_name,requested_by)
+        VALUES (${tenantB}::uuid,${venueB}::uuid,${eventB}::uuid,${locationB}::uuid,'Tenant B Supply','tenant-isolation-test') RETURNING id`;
+      stockPurchaseOrderBId = stockPurchaseOrderB.id;
+      await tx.$executeRaw`INSERT INTO stock_purchase_order_lines(organization_id,event_id,venue_id,purchase_order_id,item_id,ordered_quantity)
+        VALUES (${tenantB}::uuid,${eventB}::uuid,${venueB}::uuid,${stockPurchaseOrderB.id}::uuid,${stockItemB.id}::uuid,6)`;
+      await tx.$executeRaw`INSERT INTO stock_purchase_order_audit(organization_id,purchase_order_id,actor_id,action)
+        VALUES (${tenantB}::uuid,${stockPurchaseOrderB.id}::uuid,'tenant-isolation-test','submitted')`;
+      await tx.$executeRaw`INSERT INTO stock_movements(organization_id,item_id,purchase_order_id,actor_id,movement_type,quantity_delta,reason)
+        VALUES (${tenantB}::uuid,${stockItemB.id}::uuid,${stockPurchaseOrderB.id}::uuid,'tenant-isolation-test','PURCHASE_RECEIPT',1,'isolation fixture')`;
       const [stockTransferB] = await tx.$queryRaw`INSERT INTO stock_transfers(organization_id,venue_id,event_id,source_location_id,destination_location_id,requested_by)
         VALUES (${tenantB}::uuid,${venueB}::uuid,${eventB}::uuid,${locationB}::uuid,NULL,'tenant-isolation-test') RETURNING id`;
       stockTransferBId = stockTransferB.id;
@@ -307,6 +327,10 @@ try {
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_count_lines WHERE count_id=${stockCountAId}::uuid`)[0].count, 1, 'tenant A sees its count lines');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_movements WHERE count_id=${stockCountAId}::uuid`)[0].count, 1, 'tenant A sees its inventory movements');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_count_audit WHERE count_id=${stockCountAId}::uuid`)[0].count, 1, 'tenant A sees its count audit');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_purchase_orders WHERE id=${stockPurchaseOrderAId}::uuid`)[0].count, 1, 'tenant A sees its purchase order');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_purchase_order_lines WHERE purchase_order_id=${stockPurchaseOrderAId}::uuid`)[0].count, 1, 'tenant A sees its purchase order lines');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_purchase_order_audit WHERE purchase_order_id=${stockPurchaseOrderAId}::uuid`)[0].count, 1, 'tenant A sees its purchase order audit');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_movements WHERE purchase_order_id=${stockPurchaseOrderAId}::uuid`)[0].count, 1, 'tenant A sees its receipt movement');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_orders WHERE id=${hospitalityOrderAId}::uuid`)[0].count, 1, 'tenant A sees its hospitality order');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_order_lines WHERE order_id=${hospitalityOrderAId}::uuid`)[0].count, 1, 'tenant A sees its hospitality order lines');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_order_fulfillments WHERE order_id=${hospitalityOrderAId}::uuid`)[0].count, 1, 'tenant A sees immutable hospitality fulfillment records');
@@ -482,6 +506,11 @@ try {
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_count_lines WHERE count_id=${stockCountAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A stock count lines');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_movements WHERE count_id=${stockCountAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A stock movements');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_count_audit WHERE count_id=${stockCountAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A stock count audit');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_purchase_orders WHERE id=${stockPurchaseOrderAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A purchase order');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_purchase_order_lines WHERE purchase_order_id=${stockPurchaseOrderAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A purchase order lines');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_purchase_order_audit WHERE purchase_order_id=${stockPurchaseOrderAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A purchase order audit');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_movements WHERE purchase_order_id=${stockPurchaseOrderAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A receipt movement');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_purchase_orders WHERE id=${stockPurchaseOrderBId}::uuid`)[0].count, 1, 'tenant B sees its own purchase order');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_orders WHERE id=${hospitalityOrderAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A hospitality orders');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_order_lines WHERE order_id=${hospitalityOrderAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A hospitality order lines');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_order_fulfillments WHERE order_id=${hospitalityOrderAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A fulfillment records');

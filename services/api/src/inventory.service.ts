@@ -2,7 +2,7 @@ import { ConflictException, Injectable, NotFoundException } from '@nestjs/common
 import { createHash } from 'node:crypto';
 import { assertCapability, assertScope, assertTenantAdmin, Identity } from './auth';
 import { PrismaService } from './prisma.service';
-import { ApproveStockCountDto, CancelStockTransferDto, CreateStockItemDto, CreateStockTransferDto, ReceiveStockTransferDto, RecordStockCountDto, StartStockCountDto } from './inventory.dto';
+import { ApproveStockCountDto, CancelStockTransferDto, CloseStockPurchaseOrderShortDto, CreateStockItemDto, CreateStockPurchaseOrderDto, CreateStockTransferDto, ReceiveStockPurchaseOrderDto, ReceiveStockTransferDto, RecordStockCountDto, StartStockCountDto } from './inventory.dto';
 
 @Injectable()
 export class InventoryService {
@@ -268,6 +268,144 @@ export class InventoryService {
       await this.transferAudit(tx, identity, transferId, 'cancelled', { state: 'REQUESTED' }, { state: 'CANCELLED' }, dto.reason.trim());
       return { id: transferId, state: 'CANCELLED' };
     });
+  }
+
+  async listPurchaseOrders(identity: Identity, eventId: string) {
+    assertScope(identity, 'operations:read', eventId);
+    return this.prisma.withTenant(identity, async tx => {
+      const event = await tx.event.findFirst({ where: { id: eventId, organizationId: identity.tenantId } });
+      if (!event) throw new NotFoundException('Event not found.');
+      assertScope(identity, 'operations:read', eventId, event.venueId);
+      return tx.$queryRaw`
+        SELECT p.id, p.event_id AS "eventId", p.venue_id AS "venueId", p.location_id AS "locationId",
+          p.supplier_name AS "supplierName", p.supplier_reference AS "supplierReference", p.note,
+          p.state, p.requested_by AS "requestedBy", p.approved_by AS "approvedBy", p.received_by AS "receivedBy",
+          p.close_reason AS "closeReason", p.created_at AS "createdAt", p.approved_at AS "approvedAt",
+          p.last_received_at AS "lastReceivedAt", p.closed_at AS "closedAt",
+          COALESCE(jsonb_agg(jsonb_build_object('id', l.id, 'itemId', i.id, 'sku', i.sku, 'name', i.name,
+            'unit', i.unit, 'orderedQuantity', l.ordered_quantity, 'receivedQuantity', l.received_quantity)
+            ORDER BY i.name) FILTER (WHERE l.id IS NOT NULL), '[]'::jsonb) AS lines
+        FROM stock_purchase_orders p
+        LEFT JOIN stock_purchase_order_lines l ON l.purchase_order_id=p.id AND l.organization_id=p.organization_id
+        LEFT JOIN stock_items i ON i.id=l.item_id AND i.organization_id=l.organization_id
+        WHERE p.organization_id=${identity.tenantId}::uuid AND p.event_id=${eventId}::uuid
+          AND (${identity.capabilities.includes('tenant:admin')} OR (p.venue_id=ANY(${identity.venueIds}::uuid[])
+            AND (p.location_id IS NULL OR p.location_id=ANY(${identity.locationIds}::uuid[]))))
+        GROUP BY p.id ORDER BY p.created_at DESC LIMIT 100`;
+    });
+  }
+
+  async createPurchaseOrder(identity: Identity, eventId: string, dto: CreateStockPurchaseOrderDto, key: string) {
+    assertScope(identity, 'operations:write', eventId, dto.venueId, dto.locationId);
+    if (dto.supplierName.trim().length < 2) throw new ConflictException('Enter a supplier name with at least two characters.');
+    const input = { eventId, ...dto, supplierName: dto.supplierName.trim(), supplierReference: dto.supplierReference?.trim() ?? '', note: dto.note?.trim() ?? '' };
+    return this.command(identity, key, 'stock-purchase-order.create', input, async tx => {
+      const event = await tx.event.findFirst({ where: { id: eventId, venueId: dto.venueId, organizationId: identity.tenantId } });
+      if (!event) throw new NotFoundException('Event not found in this venue.');
+      if (dto.locationId && !await tx.location.findFirst({ where: { id: dto.locationId, venueId: dto.venueId, organizationId: identity.tenantId } })) throw new NotFoundException('Purchase order location not found.');
+      const itemIds = dto.lines.map(line => line.itemId);
+      const items = await tx.$queryRaw`SELECT id, location_id AS "locationId" FROM stock_items
+        WHERE organization_id=${identity.tenantId}::uuid AND venue_id=${dto.venueId}::uuid
+          AND active AND id=ANY(${itemIds}::uuid[])` as { id: string; locationId: string | null }[];
+      if (items.length !== itemIds.length || items.some(item => item.locationId !== (dto.locationId ?? null))) throw new ConflictException('Every purchase-order item must be active and belong to the selected venue and inventory location.');
+      const rows = await tx.$queryRaw`INSERT INTO stock_purchase_orders(organization_id,venue_id,event_id,location_id,supplier_name,supplier_reference,note,requested_by)
+        VALUES (${identity.tenantId}::uuid,${dto.venueId}::uuid,${eventId}::uuid,${dto.locationId ?? null}::uuid,${input.supplierName},${input.supplierReference},${input.note},${identity.subject}) RETURNING id` as { id: string }[];
+      const orderId = rows[0].id;
+      for (const line of dto.lines) {
+        await tx.$executeRaw`INSERT INTO stock_purchase_order_lines(organization_id,event_id,venue_id,purchase_order_id,item_id,ordered_quantity)
+          VALUES (${identity.tenantId}::uuid,${eventId}::uuid,${dto.venueId}::uuid,${orderId}::uuid,${line.itemId}::uuid,${line.quantity}::numeric)`;
+      }
+      await this.purchaseOrderAudit(tx, identity, orderId, 'submitted', null, { supplierName: input.supplierName, lineCount: dto.lines.length });
+      return { id: orderId, eventId, venueId: dto.venueId, locationId: dto.locationId ?? null, supplierName: input.supplierName, supplierReference: input.supplierReference, note: input.note, state: 'SUBMITTED', requestedBy: identity.subject };
+    });
+  }
+
+  async approvePurchaseOrder(identity: Identity, eventId: string, orderId: string, key: string) {
+    assertScope(identity, 'operations:write', eventId);
+    return this.command(identity, key, 'stock-purchase-order.approve', { eventId, orderId }, async tx => {
+      const rows = await tx.$queryRaw`SELECT venue_id AS "venueId",location_id AS "locationId",state,requested_by AS "requestedBy"
+        FROM stock_purchase_orders WHERE id=${orderId}::uuid AND event_id=${eventId}::uuid AND organization_id=${identity.tenantId}::uuid FOR UPDATE` as { venueId: string; locationId: string | null; state: string; requestedBy: string }[];
+      const order = rows[0];
+      if (!order) throw new NotFoundException('Purchase order not found.');
+      assertScope(identity, 'operations:write', eventId, order.venueId, order.locationId ?? undefined);
+      if (order.state !== 'SUBMITTED') throw new ConflictException('Only a submitted purchase order can be approved.');
+      if (order.requestedBy === identity.subject) throw new ConflictException('A different scoped manager must approve the purchase order.');
+      await tx.$executeRaw`UPDATE stock_purchase_orders SET state='APPROVED',approved_by=${identity.subject},approved_at=now(),updated_at=now() WHERE id=${orderId}::uuid`;
+      await this.purchaseOrderAudit(tx, identity, orderId, 'approved', { state: 'SUBMITTED' }, { state: 'APPROVED' });
+      return { id: orderId, state: 'APPROVED' };
+    });
+  }
+
+  async receivePurchaseOrder(identity: Identity, eventId: string, orderId: string, dto: ReceiveStockPurchaseOrderDto, key: string) {
+    assertScope(identity, 'operations:write', eventId);
+    return this.command(identity, key, 'stock-purchase-order.receive', { eventId, orderId, ...dto }, async tx => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`stock-purchase-order:${identity.tenantId}:${orderId}`},0))`;
+      const rows = await tx.$queryRaw`SELECT venue_id AS "venueId",location_id AS "locationId",state,approved_by AS "approvedBy"
+        FROM stock_purchase_orders WHERE id=${orderId}::uuid AND event_id=${eventId}::uuid AND organization_id=${identity.tenantId}::uuid FOR UPDATE` as { venueId: string; locationId: string | null; state: string; approvedBy: string | null }[];
+      const order = rows[0];
+      if (!order) throw new NotFoundException('Purchase order not found.');
+      assertScope(identity, 'operations:write', eventId, order.venueId, order.locationId ?? undefined);
+      if (!['APPROVED', 'PARTIALLY_RECEIVED'].includes(order.state)) throw new ConflictException('Only an approved or partially received purchase order can receive stock.');
+      if (order.approvedBy === identity.subject) throw new ConflictException('A different scoped operator must verify physical receipt.');
+      const persisted = await tx.$queryRaw`SELECT id,item_id AS "itemId",ordered_quantity AS "orderedQuantity",received_quantity AS "receivedQuantity"
+        FROM stock_purchase_order_lines WHERE purchase_order_id=${orderId}::uuid AND organization_id=${identity.tenantId}::uuid ORDER BY id FOR UPDATE` as { id: string; itemId: string; orderedQuantity: string; receivedQuantity: string }[];
+      if (dto.lines.some(receipt => !persisted.some(line => line.id === receipt.lineId))) throw new ConflictException('A received line is not part of this purchase order.');
+      const milliunits = (value: string | number) => Math.round(Number(value) * 1000);
+      for (const receipt of dto.lines) {
+        const line = persisted.find(row => row.id === receipt.lineId)!;
+        if (milliunits(receipt.quantity) > milliunits(line.orderedQuantity) - milliunits(line.receivedQuantity)) throw new ConflictException('Received quantity cannot exceed the remaining ordered quantity.');
+        await tx.$executeRaw`UPDATE stock_purchase_order_lines SET received_quantity=received_quantity+${receipt.quantity}::numeric WHERE id=${line.id}::uuid AND organization_id=${identity.tenantId}::uuid`;
+        await tx.$executeRaw`UPDATE stock_items SET on_hand=on_hand+${receipt.quantity}::numeric,updated_at=now() WHERE id=${line.itemId}::uuid AND organization_id=${identity.tenantId}::uuid`;
+        await tx.$executeRaw`INSERT INTO stock_movements(organization_id,item_id,purchase_order_id,actor_id,movement_type,quantity_delta,reason)
+          VALUES (${identity.tenantId}::uuid,${line.itemId}::uuid,${orderId}::uuid,${identity.subject},'PURCHASE_RECEIPT',${receipt.quantity}::numeric,'Purchase order receipt')`;
+      }
+      const complete = persisted.every(line => milliunits(line.receivedQuantity) + milliunits(dto.lines.find(receipt => receipt.lineId === line.id)?.quantity ?? 0) === milliunits(line.orderedQuantity));
+      const nextState = complete ? 'RECEIVED' : 'PARTIALLY_RECEIVED';
+      await tx.$executeRaw`UPDATE stock_purchase_orders SET state=${nextState},received_by=${identity.subject},last_received_at=now(),updated_at=now(),closed_at=CASE WHEN ${complete} THEN now() ELSE NULL END WHERE id=${orderId}::uuid`;
+      await this.purchaseOrderAudit(tx, identity, orderId, complete ? 'received' : 'partially_received', { state: order.state }, { state: nextState, lines: dto.lines }, dto.note?.trim());
+      return { id: orderId, state: nextState };
+    });
+  }
+
+  async closePurchaseOrderShort(identity: Identity, eventId: string, orderId: string, dto: CloseStockPurchaseOrderShortDto, key: string) {
+    assertScope(identity, 'operations:write', eventId);
+    if (dto.reason.trim().length < 3) throw new ConflictException('Explain why the remaining purchase quantity is being closed short.');
+    return this.command(identity, key, 'stock-purchase-order.close-short', { eventId, orderId, reason: dto.reason.trim() }, async tx => {
+      const rows = await tx.$queryRaw`SELECT venue_id AS "venueId",location_id AS "locationId",state FROM stock_purchase_orders
+        WHERE id=${orderId}::uuid AND event_id=${eventId}::uuid AND organization_id=${identity.tenantId}::uuid FOR UPDATE` as { venueId: string; locationId: string | null; state: string }[];
+      const order = rows[0];
+      if (!order) throw new NotFoundException('Purchase order not found.');
+      assertScope(identity, 'operations:write', eventId, order.venueId, order.locationId ?? undefined);
+      if (order.state !== 'PARTIALLY_RECEIVED') throw new ConflictException('Only a partially received purchase order can be closed short.');
+      const remaining = await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_purchase_order_lines
+        WHERE purchase_order_id=${orderId}::uuid AND organization_id=${identity.tenantId}::uuid AND received_quantity < ordered_quantity` as { count: number }[];
+      if (!remaining[0]?.count) throw new ConflictException('This purchase order has no remaining quantity to reconcile.');
+      await tx.$executeRaw`UPDATE stock_purchase_orders SET state='CLOSED_SHORT',close_reason=${dto.reason.trim()},closed_at=now(),updated_at=now() WHERE id=${orderId}::uuid`;
+      await this.purchaseOrderAudit(tx, identity, orderId, 'closed_short', { state: order.state }, { state: 'CLOSED_SHORT' }, dto.reason.trim());
+      return { id: orderId, state: 'CLOSED_SHORT' };
+    });
+  }
+
+  async cancelPurchaseOrder(identity: Identity, eventId: string, orderId: string, dto: CancelStockTransferDto, key: string) {
+    assertScope(identity, 'operations:write', eventId);
+    if (dto.reason.trim().length < 3) throw new ConflictException('Explain why the submitted purchase order is being cancelled.');
+    return this.command(identity, key, 'stock-purchase-order.cancel', { eventId, orderId, reason: dto.reason.trim() }, async tx => {
+      const rows = await tx.$queryRaw`SELECT venue_id AS "venueId",location_id AS "locationId",state,requested_by AS "requestedBy"
+        FROM stock_purchase_orders WHERE id=${orderId}::uuid AND event_id=${eventId}::uuid AND organization_id=${identity.tenantId}::uuid FOR UPDATE` as { venueId: string; locationId: string | null; state: string; requestedBy: string }[];
+      const order = rows[0];
+      if (!order) throw new NotFoundException('Purchase order not found.');
+      assertScope(identity, 'operations:write', eventId, order.venueId, order.locationId ?? undefined);
+      if (order.state !== 'SUBMITTED') throw new ConflictException('Only an unapproved purchase order can be cancelled.');
+      if (order.requestedBy !== identity.subject && !identity.capabilities.includes('tenant:admin')) throw new ConflictException('Only the requester or a tenant administrator can cancel this purchase order before approval.');
+      await tx.$executeRaw`UPDATE stock_purchase_orders SET state='CANCELLED',cancel_reason=${dto.reason.trim()},cancelled_at=now(),updated_at=now() WHERE id=${orderId}::uuid`;
+      await this.purchaseOrderAudit(tx, identity, orderId, 'cancelled', { state: 'SUBMITTED' }, { state: 'CANCELLED' }, dto.reason.trim());
+      return { id: orderId, state: 'CANCELLED' };
+    });
+  }
+
+  private async purchaseOrderAudit(tx: any, identity: Identity, orderId: string, action: string, before: unknown, after: unknown, reason?: string) {
+    await tx.$executeRaw`INSERT INTO stock_purchase_order_audit(organization_id,purchase_order_id,actor_id,action,before,after,reason)
+      VALUES (${identity.tenantId}::uuid,${orderId}::uuid,${identity.subject},${action},${before == null ? null : JSON.stringify(before)}::jsonb,${after == null ? null : JSON.stringify(after)}::jsonb,${reason ?? null})`;
   }
 
   private assertTransferScope(identity: Identity, eventId: string, transfer: { venueId: string; sourceLocationId: string | null; destinationLocationId: string | null }) {
