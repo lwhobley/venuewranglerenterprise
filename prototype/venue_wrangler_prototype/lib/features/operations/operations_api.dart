@@ -410,6 +410,25 @@ class OperationsApi {
           (token, key) => _dio.post<void>('/api/v1/events/$eventId/inventory/counts/$countId/$action',
               data: action == 'approve' ? {'reason': reason} : null,
               options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
+  Future<List<Map<String, dynamic>>> inventoryItems(String venueId, {String? locationId}) async =>
+      (await _request((token) => _dio.get<List<dynamic>>('/api/v1/inventory/items',
+        queryParameters: {'venueId': venueId, if (locationId != null) 'locationId': locationId},
+        options: Options(headers: {'Authorization': 'Bearer $token'}),
+      ))).data!.whereType<Map>().map((row) => Map<String, dynamic>.from(row)).toList();
+  Future<List<Map<String, dynamic>>> stockTransfers(String eventId) async =>
+      (await _cachedGet('stock-transfers.$eventId', () async =>
+        (await _request((token) => _dio.get<List<dynamic>>('/api/v1/events/$eventId/inventory/transfers',
+          options: Options(headers: {'Authorization': 'Bearer $token'}),
+        ))).data!.whereType<Map>().map((row) => Map<String, dynamic>.from(row)).toList()));
+  Future<void> createStockTransfer(String eventId, String venueId, String? sourceLocationId, String? destinationLocationId, List<Map<String, Object?>> lines) async =>
+      _command<void>({'action': 'stock-transfer.create', 'eventId': eventId, 'venueId': venueId, 'sourceLocationId': sourceLocationId, 'destinationLocationId': destinationLocationId, 'lines': lines},
+        (token, key) => _dio.post<void>('/api/v1/events/$eventId/inventory/transfers',
+          data: {'venueId': venueId, if (sourceLocationId != null) 'sourceLocationId': sourceLocationId, if (destinationLocationId != null) 'destinationLocationId': destinationLocationId, 'lines': lines},
+          options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
+  Future<void> stockTransferAction(String eventId, String transferId, String action, {Map<String, Object?>? data}) async =>
+      _command<void>({'action': 'stock-transfer.$action', 'eventId': eventId, 'transferId': transferId, 'data': data},
+        (token, key) => _dio.post<void>('/api/v1/events/$eventId/inventory/transfers/$transferId/$action', data: data,
+          options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
   Future<List<Map<String, dynamic>>> hospitalityOrders(String eventId) async =>
       (await _cachedGet('hospitality.$eventId', () async =>
         (await _request((token) => _dio.get<List<dynamic>>(
@@ -691,6 +710,9 @@ final eventTasksProvider = FutureProvider.autoDispose
 final eventInventoryCountsProvider = FutureProvider.autoDispose
     .family<List<Map<String, dynamic>>, String>(
         (ref, id) => ref.watch(operationsApiProvider).inventoryCounts(id));
+final eventStockTransfersProvider = FutureProvider.autoDispose
+    .family<List<Map<String, dynamic>>, String>(
+        (ref, id) => ref.watch(operationsApiProvider).stockTransfers(id));
 final eventHospitalityOrdersProvider = FutureProvider.autoDispose
     .family<List<Map<String, dynamic>>, String>(
         (ref, id) => ref.watch(operationsApiProvider).hospitalityOrders(id));

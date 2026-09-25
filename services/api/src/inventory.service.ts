@@ -2,7 +2,7 @@ import { ConflictException, Injectable, NotFoundException } from '@nestjs/common
 import { createHash } from 'node:crypto';
 import { assertCapability, assertScope, assertTenantAdmin, Identity } from './auth';
 import { PrismaService } from './prisma.service';
-import { ApproveStockCountDto, CreateStockItemDto, RecordStockCountDto, StartStockCountDto } from './inventory.dto';
+import { ApproveStockCountDto, CancelStockTransferDto, CreateStockItemDto, CreateStockTransferDto, ReceiveStockTransferDto, RecordStockCountDto, StartStockCountDto } from './inventory.dto';
 
 @Injectable()
 export class InventoryService {
@@ -135,6 +135,149 @@ export class InventoryService {
       await this.audit(tx, identity, countId, 'approved', { state: 'SUBMITTED' }, { state: 'APPROVED', reviewerId: identity.subject }, dto.reason.trim());
       return { id: countId, state: 'APPROVED', adjustments: lines.filter(line => Number(line.counted) !== Number(line.expected)).length };
     });
+  }
+
+  async listTransfers(identity: Identity, eventId: string) {
+    assertScope(identity, 'operations:read', eventId);
+    return this.prisma.withTenant(identity, async tx => {
+      const rows = await tx.$queryRaw`
+        SELECT t.id, t.event_id AS "eventId", t.venue_id AS "venueId", t.source_location_id AS "sourceLocationId",
+          t.destination_location_id AS "destinationLocationId", t.state, t.requested_by AS "requestedBy",
+          t.dispatched_by AS "dispatchedBy", t.received_by AS "receivedBy", t.request_note AS "requestNote",
+          t.reconciliation_reason AS "reconciliationReason", t.cancel_reason AS "cancelReason",
+          t.created_at AS "createdAt", t.dispatched_at AS "dispatchedAt", t.received_at AS "receivedAt", t.cancelled_at AS "cancelledAt"
+        FROM stock_transfers t WHERE t.organization_id=${identity.tenantId}::uuid AND t.event_id=${eventId}::uuid
+          AND (${identity.capabilities.includes('tenant:admin')} OR (t.venue_id = ANY(${identity.venueIds}::uuid[])
+            AND (t.source_location_id IS NULL OR t.source_location_id = ANY(${identity.locationIds}::uuid[]))
+            AND (t.destination_location_id IS NULL OR t.destination_location_id = ANY(${identity.locationIds}::uuid[]))))
+        ORDER BY t.created_at DESC LIMIT 100` as Record<string, unknown>[];
+      if (!rows.length) return [];
+      const transferIds = rows.map(row => row.id as string);
+      const lines = await tx.$queryRaw`
+        SELECT l.id, l.transfer_id AS "transferId", l.source_item_id AS "sourceItemId", l.destination_item_id AS "destinationItemId",
+          i.sku, i.name, i.unit, l.requested_quantity AS "requestedQuantity", l.received_quantity AS "receivedQuantity"
+        FROM stock_transfer_lines l JOIN stock_items i ON i.id=l.source_item_id AND i.organization_id=l.organization_id
+        WHERE l.organization_id=${identity.tenantId}::uuid AND l.transfer_id=ANY(${transferIds}::uuid[])
+        ORDER BY i.name` as Record<string, unknown>[];
+      return rows.map(row => ({ ...row, lines: lines.filter(line => line.transferId === row.id) }));
+    });
+  }
+
+  async createTransfer(identity: Identity, eventId: string, dto: CreateStockTransferDto, key: string) {
+    assertScope(identity, 'operations:write', eventId, dto.venueId, dto.sourceLocationId);
+    if (dto.destinationLocationId) assertScope(identity, 'operations:write', eventId, dto.venueId, dto.destinationLocationId);
+    if ((dto.sourceLocationId ?? null) === (dto.destinationLocationId ?? null)) throw new ConflictException('Choose different source and destination locations.');
+    const input = { eventId, ...dto };
+    return this.command(identity, key, 'stock-transfer.create', input, async tx => {
+      const event = await tx.event.findFirst({ where: { id: eventId, venueId: dto.venueId, organizationId: identity.tenantId } });
+      if (!event) throw new NotFoundException('Event not found in the selected venue.');
+      for (const locationId of [dto.sourceLocationId, dto.destinationLocationId].filter((id): id is string => Boolean(id))) {
+        if (!await tx.location.findFirst({ where: { id: locationId, venueId: dto.venueId, organizationId: identity.tenantId } })) throw new NotFoundException('Transfer location not found in this venue.');
+      }
+      const rows = await tx.$queryRaw`INSERT INTO stock_transfers(organization_id,venue_id,event_id,source_location_id,destination_location_id,requested_by)
+        VALUES (${identity.tenantId}::uuid,${dto.venueId}::uuid,${eventId}::uuid,${dto.sourceLocationId ?? null}::uuid,${dto.destinationLocationId ?? null}::uuid,${identity.subject}) RETURNING id` as { id: string }[];
+      const transferId = rows[0].id;
+      for (const line of dto.lines) {
+        const items = await tx.$queryRaw`SELECT id FROM stock_items WHERE id=${line.itemId}::uuid AND organization_id=${identity.tenantId}::uuid AND venue_id=${dto.venueId}::uuid AND location_id IS NOT DISTINCT FROM ${dto.sourceLocationId ?? null}::uuid AND active` as { id: string }[];
+        if (!items.length) throw new NotFoundException('A selected stock item is not active in the source location.');
+        await tx.$executeRaw`INSERT INTO stock_transfer_lines(organization_id,transfer_id,source_item_id,requested_quantity)
+          VALUES (${identity.tenantId}::uuid,${transferId}::uuid,${line.itemId}::uuid,${line.quantity})`;
+      }
+      await this.transferAudit(tx, identity, transferId, 'requested', null, { ...input, state: 'REQUESTED' });
+      return { id: transferId, eventId, venueId: dto.venueId, sourceLocationId: dto.sourceLocationId ?? null, destinationLocationId: dto.destinationLocationId ?? null, state: 'REQUESTED' };
+    });
+  }
+
+  async dispatchTransfer(identity: Identity, eventId: string, transferId: string, key: string) {
+    assertScope(identity, 'operations:write', eventId);
+    return this.command(identity, key, 'stock-transfer.dispatch', { eventId, transferId }, async tx => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`stock-transfer:${identity.tenantId}:${transferId}`},0))`;
+      const transfers = await tx.$queryRaw`SELECT venue_id AS "venueId",source_location_id AS "sourceLocationId",destination_location_id AS "destinationLocationId",state,requested_by AS "requestedBy"
+        FROM stock_transfers WHERE id=${transferId}::uuid AND event_id=${eventId}::uuid AND organization_id=${identity.tenantId}::uuid FOR UPDATE` as { venueId: string; sourceLocationId: string | null; destinationLocationId: string | null; state: string; requestedBy: string }[];
+      const transfer = transfers[0];
+      if (!transfer) throw new NotFoundException('Stock transfer not found.');
+      this.assertTransferScope(identity, eventId, transfer);
+      if (transfer.state !== 'REQUESTED') throw new ConflictException('Only a requested transfer can be dispatched.');
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`stock-transfer-dispatch:${identity.tenantId}:${transfer.venueId}`},0))`;
+      const lines = await tx.$queryRaw`SELECT l.id,l.source_item_id AS "sourceItemId",l.requested_quantity AS quantity,i.sku,i.name,i.unit,i.on_hand AS "onHand"
+        FROM stock_transfer_lines l JOIN stock_items i ON i.id=l.source_item_id AND i.organization_id=l.organization_id
+        WHERE l.transfer_id=${transferId}::uuid AND l.organization_id=${identity.tenantId}::uuid ORDER BY l.source_item_id FOR UPDATE OF i` as { id: string; sourceItemId: string; quantity: string; sku: string; name: string; unit: string; onHand: string }[];
+      for (const line of lines) if (Number(line.onHand) < Number(line.quantity)) throw new ConflictException(`Insufficient stock for ${line.name}; refresh the inventory and edit the transfer request.`);
+      for (const line of lines) {
+        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`stock-item:${identity.tenantId}:${transfer.venueId}:${transfer.destinationLocationId ?? 'venue'}:${line.sku.toLowerCase()}`},0))`;
+        let destination = await tx.$queryRaw`SELECT id FROM stock_items WHERE organization_id=${identity.tenantId}::uuid AND venue_id=${transfer.venueId}::uuid AND location_id IS NOT DISTINCT FROM ${transfer.destinationLocationId}::uuid AND lower(sku)=lower(${line.sku}) AND active FOR UPDATE` as { id: string }[];
+        if (!destination.length) {
+          const created = await tx.$queryRaw`INSERT INTO stock_items(organization_id,venue_id,location_id,sku,name,unit)
+            VALUES (${identity.tenantId}::uuid,${transfer.venueId}::uuid,${transfer.destinationLocationId}::uuid,${line.sku},${line.name},${line.unit})
+            RETURNING id` as { id: string }[];
+          destination = created;
+        }
+        await tx.$executeRaw`UPDATE stock_items SET on_hand=on_hand-${line.quantity}::numeric,updated_at=now() WHERE id=${line.sourceItemId}::uuid AND organization_id=${identity.tenantId}::uuid AND on_hand >= ${line.quantity}::numeric`;
+        await tx.$executeRaw`UPDATE stock_transfer_lines SET destination_item_id=${destination[0].id}::uuid WHERE id=${line.id}::uuid AND organization_id=${identity.tenantId}::uuid`;
+        await tx.$executeRaw`INSERT INTO stock_movements(organization_id,item_id,transfer_id,actor_id,movement_type,quantity_delta,reason)
+          VALUES (${identity.tenantId}::uuid,${line.sourceItemId}::uuid,${transferId}::uuid,${identity.subject},'TRANSFER_OUT',-${line.quantity}::numeric,'Dispatched stock transfer')`;
+      }
+      await tx.$executeRaw`UPDATE stock_transfers SET state='IN_TRANSIT',dispatched_by=${identity.subject},dispatched_at=now() WHERE id=${transferId}::uuid`;
+      await this.transferAudit(tx, identity, transferId, 'dispatched', { state: 'REQUESTED' }, { state: 'IN_TRANSIT', dispatchedBy: identity.subject });
+      return { id: transferId, state: 'IN_TRANSIT', dispatchedLines: lines.length };
+    });
+  }
+
+  async receiveTransfer(identity: Identity, eventId: string, transferId: string, dto: ReceiveStockTransferDto, key: string) {
+    assertScope(identity, 'operations:write', eventId);
+    return this.command(identity, key, 'stock-transfer.receive', { eventId, transferId, ...dto }, async tx => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`stock-transfer:${identity.tenantId}:${transferId}`},0))`;
+      const rows = await tx.$queryRaw`SELECT venue_id AS "venueId",source_location_id AS "sourceLocationId",destination_location_id AS "destinationLocationId",state,dispatched_by AS "dispatchedBy",requested_by AS "requestedBy"
+        FROM stock_transfers WHERE id=${transferId}::uuid AND event_id=${eventId}::uuid AND organization_id=${identity.tenantId}::uuid FOR UPDATE` as { venueId: string; sourceLocationId: string | null; destinationLocationId: string | null; state: string; dispatchedBy: string | null; requestedBy: string }[];
+      const transfer = rows[0];
+      if (!transfer) throw new NotFoundException('Stock transfer not found.');
+      this.assertTransferScope(identity, eventId, transfer);
+      if (transfer.state !== 'IN_TRANSIT') throw new ConflictException('Only an in-transit transfer can be received.');
+      if (transfer.dispatchedBy === identity.subject) throw new ConflictException('A different scoped operator must confirm receipt.');
+      const persisted = await tx.$queryRaw`SELECT id,destination_item_id AS "destinationItemId",requested_quantity AS "requestedQuantity"
+        FROM stock_transfer_lines WHERE transfer_id=${transferId}::uuid AND organization_id=${identity.tenantId}::uuid ORDER BY id FOR UPDATE` as { id: string; destinationItemId: string; requestedQuantity: string }[];
+      if (dto.lines.length !== persisted.length || persisted.some(line => !dto.lines.some(receipt => receipt.lineId === line.id))) throw new ConflictException('Submit a received quantity for every transfer line exactly once.');
+      const hasVariance = persisted.some(line => Number(dto.lines.find(receipt => receipt.lineId === line.id)!.quantity) !== Number(line.requestedQuantity));
+      if (hasVariance && !dto.reason?.trim()) throw new ConflictException('A reconciliation reason is required when a received quantity differs from the dispatched quantity.');
+      for (const line of persisted) {
+        const quantity = dto.lines.find(receipt => receipt.lineId === line.id)!.quantity;
+        if (quantity > Number(line.requestedQuantity)) throw new ConflictException('Received quantity cannot exceed the dispatched quantity.');
+        if (quantity > 0) {
+          await tx.$executeRaw`UPDATE stock_items SET on_hand=on_hand+${quantity}::numeric,updated_at=now() WHERE id=${line.destinationItemId}::uuid AND organization_id=${identity.tenantId}::uuid`;
+          await tx.$executeRaw`INSERT INTO stock_movements(organization_id,item_id,transfer_id,actor_id,movement_type,quantity_delta,reason)
+            VALUES (${identity.tenantId}::uuid,${line.destinationItemId}::uuid,${transferId}::uuid,${identity.subject},'TRANSFER_IN',${quantity}::numeric,'Received stock transfer')`;
+        }
+        await tx.$executeRaw`UPDATE stock_transfer_lines SET received_quantity=${quantity}::numeric WHERE id=${line.id}::uuid AND organization_id=${identity.tenantId}::uuid`;
+      }
+      await tx.$executeRaw`UPDATE stock_transfers SET state='RECEIVED',received_by=${identity.subject},received_at=now(),reconciliation_reason=${dto.reason?.trim() ?? null} WHERE id=${transferId}::uuid`;
+      await this.transferAudit(tx, identity, transferId, hasVariance ? 'received_with_variance' : 'received', { state: 'IN_TRANSIT' }, { state: 'RECEIVED', quantities: dto.lines }, dto.reason?.trim());
+      return { id: transferId, state: 'RECEIVED', varianceLines: persisted.filter(line => Number(dto.lines.find(receipt => receipt.lineId === line.id)!.quantity) !== Number(line.requestedQuantity)).length };
+    });
+  }
+
+  async cancelTransfer(identity: Identity, eventId: string, transferId: string, dto: CancelStockTransferDto, key: string) {
+    assertScope(identity, 'operations:write', eventId);
+    return this.command(identity, key, 'stock-transfer.cancel', { eventId, transferId, ...dto }, async tx => {
+      const rows = await tx.$queryRaw`SELECT venue_id AS "venueId",source_location_id AS "sourceLocationId",destination_location_id AS "destinationLocationId",state,requested_by AS "requestedBy"
+        FROM stock_transfers WHERE id=${transferId}::uuid AND event_id=${eventId}::uuid AND organization_id=${identity.tenantId}::uuid FOR UPDATE` as { venueId: string; sourceLocationId: string | null; destinationLocationId: string | null; state: string; requestedBy: string }[];
+      const transfer = rows[0];
+      if (!transfer) throw new NotFoundException('Stock transfer not found.');
+      this.assertTransferScope(identity, eventId, transfer);
+      if (transfer.state !== 'REQUESTED') throw new ConflictException('Only a requested transfer can be cancelled.');
+      await tx.$executeRaw`UPDATE stock_transfers SET state='CANCELLED',cancel_reason=${dto.reason.trim()},cancelled_at=now() WHERE id=${transferId}::uuid`;
+      await this.transferAudit(tx, identity, transferId, 'cancelled', { state: 'REQUESTED' }, { state: 'CANCELLED' }, dto.reason.trim());
+      return { id: transferId, state: 'CANCELLED' };
+    });
+  }
+
+  private assertTransferScope(identity: Identity, eventId: string, transfer: { venueId: string; sourceLocationId: string | null; destinationLocationId: string | null }) {
+    assertScope(identity, 'operations:write', eventId, transfer.venueId, transfer.sourceLocationId ?? undefined);
+    if (transfer.destinationLocationId) assertScope(identity, 'operations:write', eventId, transfer.venueId, transfer.destinationLocationId);
+  }
+
+  private async transferAudit(tx: any, identity: Identity, transferId: string, action: string, before: unknown, after: unknown, reason?: string) {
+    await tx.$executeRaw`INSERT INTO stock_transfer_audit(organization_id,transfer_id,actor_id,action,before,after,reason)
+      VALUES (${identity.tenantId}::uuid,${transferId}::uuid,${identity.subject},${action},${before == null ? null : JSON.stringify(before)}::jsonb,${after == null ? null : JSON.stringify(after)}::jsonb,${reason ?? null})`;
   }
 
   private async audit(tx: any, identity: Identity, countId: string, action: string, before: unknown, after: unknown, reason?: string) {

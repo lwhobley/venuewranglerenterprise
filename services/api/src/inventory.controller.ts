@@ -2,7 +2,7 @@ import { Body, ConflictException, Controller, Get, Headers, Param, ParseUUIDPipe
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { JwtIdentityGuard } from './auth';
-import { ApproveStockCountDto, CreateStockItemDto, RecordStockCountDto, StartStockCountDto } from './inventory.dto';
+import { ApproveStockCountDto, CancelStockTransferDto, CreateStockItemDto, CreateStockTransferDto, ReceiveStockTransferDto, RecordStockCountDto, StartStockCountDto } from './inventory.dto';
 import { InventoryService } from './inventory.service';
 
 @Controller('v1')
@@ -18,5 +18,10 @@ export class InventoryController {
   @Put('events/:eventId/inventory/counts/:countId/lines/:lineId') record(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Param('countId', new ParseUUIDPipe()) countId: string, @Param('lineId', new ParseUUIDPipe()) lineId: string, @Body() dto: RecordStockCountDto, @Headers('idempotency-key') key: string) { return this.inventory.recordCount(req.identity, eventId, countId, lineId, dto, this.key(key)); }
   @Post('events/:eventId/inventory/counts/:countId/submit') submit(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Param('countId', new ParseUUIDPipe()) countId: string, @Headers('idempotency-key') key: string) { return this.inventory.submit(req.identity, eventId, countId, this.key(key)); }
   @Post('events/:eventId/inventory/counts/:countId/approve') approve(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Param('countId', new ParseUUIDPipe()) countId: string, @Body() dto: ApproveStockCountDto, @Headers('idempotency-key') key: string) { return this.inventory.approve(req.identity, eventId, countId, dto, this.key(key)); }
+  @Get('events/:eventId/inventory/transfers') transfers(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string) { return this.inventory.listTransfers(req.identity, eventId); }
+  @Post('events/:eventId/inventory/transfers') createTransfer(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Body() dto: CreateStockTransferDto, @Headers('idempotency-key') key: string) { return this.inventory.createTransfer(req.identity, eventId, dto, this.key(key)); }
+  @Post('events/:eventId/inventory/transfers/:transferId/dispatch') dispatchTransfer(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Param('transferId', new ParseUUIDPipe()) transferId: string, @Headers('idempotency-key') key: string) { return this.inventory.dispatchTransfer(req.identity, eventId, transferId, this.key(key)); }
+  @Post('events/:eventId/inventory/transfers/:transferId/receive') receiveTransfer(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Param('transferId', new ParseUUIDPipe()) transferId: string, @Body() dto: ReceiveStockTransferDto, @Headers('idempotency-key') key: string) { return this.inventory.receiveTransfer(req.identity, eventId, transferId, dto, this.key(key)); }
+  @Post('events/:eventId/inventory/transfers/:transferId/cancel') cancelTransfer(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Param('transferId', new ParseUUIDPipe()) transferId: string, @Body() dto: CancelStockTransferDto, @Headers('idempotency-key') key: string) { return this.inventory.cancelTransfer(req.identity, eventId, transferId, dto, this.key(key)); }
   private key(key?: string) { if (!key || key.length < 16 || key.length > 200) throw new ConflictException('An Idempotency-Key between 16 and 200 characters is required.'); return key; }
 }

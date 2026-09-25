@@ -1211,7 +1211,30 @@ class _LiveInventoryPage extends ConsumerWidget {
           if (canWrite) FilledButton.icon(onPressed: () => _startStockCount(context, ref, eventId, venueId), icon: const Icon(Icons.playlist_add_check), label: const Text('Start venue count')),
           for (final location in locations.where((row) => row['venueId'] == venueId)) if (canWrite) OutlinedButton.icon(onPressed: () => _startStockCount(context, ref, eventId, venueId, locationId: location['id'] as String), icon: const Icon(Icons.location_on_outlined), label: Text('Count ${location['name']}')),
           if (isAdmin) OutlinedButton.icon(onPressed: () => _addStockItem(context, ref, venueId, eventId), icon: const Icon(Icons.add_box_outlined), label: const Text('Add stock item')),
+          if (canWrite) OutlinedButton.icon(onPressed: () => _requestStockTransfer(context, ref, eventId, venueId), icon: const Icon(Icons.swap_horiz), label: const Text('Request transfer')),
         ])),
+        ref.watch(eventStockTransfersProvider(eventId)).when(
+          loading: () => const LinearProgressIndicator(),
+          error: (error, _) => ListTile(title: const Text('Transfers unavailable'), subtitle: Text('$error')),
+          data: (transfers) => transfers.isEmpty ? const SizedBox.shrink() : SizedBox(height: 190, child: ListView.builder(itemCount: transfers.length, itemBuilder: (context, index) {
+            final transfer = transfers[index];
+            final source = locations.where((row) => row['id'] == transfer['sourceLocationId']);
+            final destination = locations.where((row) => row['id'] == transfer['destinationLocationId']);
+            final sourceName = source.isEmpty ? 'Venue stock' : source.first['name'] as String? ?? 'Source';
+            final destinationName = destination.isEmpty ? 'Venue stock' : destination.first['name'] as String? ?? 'Destination';
+            final state = transfer['state'] as String? ?? 'REQUESTED';
+            return Card(child: ListTile(
+              leading: const Icon(Icons.swap_horiz),
+              title: Text('$sourceName → $destinationName · $state'),
+              subtitle: Text(((transfer['lines'] as List? ?? const []).whereType<Map>().map((line) => '${line['name']}: ${line['receivedQuantity'] ?? line['requestedQuantity']} ${line['unit']}')).join(' · ')),
+              trailing: canWrite ? Wrap(children: [
+                if (state == 'REQUESTED') IconButton(tooltip: 'Dispatch', icon: const Icon(Icons.local_shipping_outlined), onPressed: () => _stockTransferAction(context, ref, eventId, transfer['id'] as String, 'dispatch')),
+                if (state == 'REQUESTED') IconButton(tooltip: 'Cancel', icon: const Icon(Icons.cancel_outlined), onPressed: () => _cancelStockTransfer(context, ref, eventId, transfer['id'] as String)),
+                if (state == 'IN_TRANSIT') IconButton(tooltip: 'Confirm receipt', icon: const Icon(Icons.inventory_2_outlined), onPressed: () => _receiveStockTransfer(context, ref, eventId, transfer)),
+              ]) : null,
+            ));
+          })),
+        ),
         if (counts.isEmpty) const Expanded(child: Center(child: Text('No stock counts for this event. Start a count or add items to the catalog.')))
         else Expanded(child: ListView.builder(itemCount: counts.length, itemBuilder: (context, index) {
           final count = counts[index];
@@ -1281,6 +1304,57 @@ class _LiveInventoryPage extends ConsumerWidget {
     if (save != true) return;
     try { await ref.read(operationsApiProvider).createInventoryItem(venueId, sku.text.trim(), name.text.trim(), unit.text.trim()); ref.invalidate(eventInventoryCountsProvider(eventId)); if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Catalog item added.'))); }
     catch (error) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not add catalog item: $error'))); }
+  }
+
+  Future<void> _requestStockTransfer(BuildContext context, WidgetRef ref, String eventId, String venueId) async {
+    final venueLocations = locations.where((row) => row['venueId'] == venueId).toList();
+    if (venueLocations.length < 2) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Create at least two locations before requesting a transfer.'))); return; }
+    String sourceId = venueLocations.first['id'] as String;
+    String destinationId = (venueLocations.length > 1 ? venueLocations[1] : venueLocations.first)['id'] as String;
+    final quantity = TextEditingController(text: '1');
+    Map<String, dynamic>? selectedItem;
+    final chosen = await showDialog<Map<String, Object?>?>(context: context, builder: (dialogContext) => StatefulBuilder(builder: (context, setState) => AlertDialog(
+      title: const Text('Request stock transfer'),
+      content: SizedBox(width: 420, child: Column(mainAxisSize: MainAxisSize.min, children: [
+        DropdownButtonFormField<String>(initialValue: sourceId, decoration: const InputDecoration(labelText: 'From'), items: venueLocations.map((row) => DropdownMenuItem(value: row['id'] as String, child: Text(row['name'] as String? ?? 'Location'))).toList(), onChanged: (value) { if (value != null) setState(() { sourceId = value; if (destinationId == value) destinationId = venueLocations.firstWhere((row) => row['id'] != value)['id'] as String; selectedItem = null; }); }),
+        DropdownButtonFormField<String>(initialValue: destinationId, decoration: const InputDecoration(labelText: 'To'), items: venueLocations.where((row) => row['id'] != sourceId).map((row) => DropdownMenuItem(value: row['id'] as String, child: Text(row['name'] as String? ?? 'Location'))).toList(), onChanged: (value) { if (value != null) setState(() => destinationId = value); }),
+        const SizedBox(height: 8),
+        FutureBuilder<List<Map<String, dynamic>>>(future: ref.read(operationsApiProvider).inventoryItems(venueId, locationId: sourceId), builder: (context, snapshot) {
+          final items = snapshot.data ?? const <Map<String, dynamic>>[];
+          if (snapshot.connectionState == ConnectionState.waiting) return const LinearProgressIndicator();
+          if (snapshot.hasError) return Text('Catalog unavailable: ${snapshot.error}');
+          return DropdownButtonFormField<String>(initialValue: selectedItem?['id'] as String?, decoration: const InputDecoration(labelText: 'Item'), items: items.map((item) => DropdownMenuItem(value: item['id'] as String, child: Text('${item['name']} · ${item['onHand']} ${item['unit']}'))).toList(), onChanged: (id) => setState(() => selectedItem = items.where((item) => item['id'] == id).firstOrNull));
+        }),
+        TextField(controller: quantity, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Quantity')),
+      ])),
+      actions: [TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')), FilledButton(onPressed: selectedItem == null ? null : () => Navigator.pop(dialogContext, {'itemId': selectedItem!['id'] as String, 'quantity': double.tryParse(quantity.text) ?? 0}), child: const Text('Create request'))],
+    )));
+    if (chosen == null) return;
+    try { await ref.read(operationsApiProvider).createStockTransfer(eventId, venueId, sourceId, destinationId, [chosen]); ref.invalidate(eventStockTransfersProvider(eventId)); }
+    catch (error) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not request transfer: $error'))); }
+  }
+
+  Future<void> _stockTransferAction(BuildContext context, WidgetRef ref, String eventId, String transferId, String action) async {
+    try { await ref.read(operationsApiProvider).stockTransferAction(eventId, transferId, action); ref.invalidate(eventStockTransfersProvider(eventId)); ref.invalidate(eventInventoryCountsProvider(eventId)); }
+    catch (error) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not $action transfer: $error'))); }
+  }
+
+  Future<void> _cancelStockTransfer(BuildContext context, WidgetRef ref, String eventId, String transferId) async {
+    final reason = TextEditingController();
+    final confirmed = await showDialog<bool>(context: context, builder: (dialogContext) => AlertDialog(title: const Text('Cancel transfer'), content: TextField(controller: reason, decoration: const InputDecoration(labelText: 'Reason (required)')), actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Keep request')), FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Cancel transfer'))]));
+    if (confirmed != true || reason.text.trim().length < 3) return;
+    try { await ref.read(operationsApiProvider).stockTransferAction(eventId, transferId, 'cancel', data: {'reason': reason.text.trim()}); ref.invalidate(eventStockTransfersProvider(eventId)); }
+    catch (error) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not cancel transfer: $error'))); }
+  }
+
+  Future<void> _receiveStockTransfer(BuildContext context, WidgetRef ref, String eventId, Map<String, dynamic> transfer) async {
+    final lines = (transfer['lines'] as List? ?? const []).whereType<Map>().map((line) => Map<String, dynamic>.from(line)).toList();
+    final controllers = lines.map((line) => TextEditingController(text: line['requestedQuantity'].toString())).toList();
+    final reason = TextEditingController();
+    final confirmed = await showDialog<bool>(context: context, builder: (dialogContext) => AlertDialog(title: const Text('Confirm received quantities'), content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [for (var i = 0; i < lines.length; i++) TextField(controller: controllers[i], keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: InputDecoration(labelText: '${lines[i]['name']} · dispatched ${lines[i]['requestedQuantity']}')), TextField(controller: reason, decoration: const InputDecoration(labelText: 'Variance reason (if short)'))])), actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Back')), FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Confirm receipt'))]));
+    if (confirmed != true) return;
+    try { await ref.read(operationsApiProvider).stockTransferAction(eventId, transfer['id'] as String, 'receive', data: {'lines': [for (var i = 0; i < lines.length; i++) {'lineId': lines[i]['id'], 'quantity': double.tryParse(controllers[i].text) ?? -1}], if (reason.text.trim().isNotEmpty) 'reason': reason.text.trim()}); ref.invalidate(eventStockTransfersProvider(eventId)); ref.invalidate(eventInventoryCountsProvider(eventId)); }
+    catch (error) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not confirm receipt: $error'))); }
   }
 }
 
