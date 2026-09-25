@@ -2038,7 +2038,7 @@ class _StockPurchaseOrderComposerState extends State<_StockPurchaseOrderComposer
           width: 500,
           child: SingleChildScrollView(
             child: Column(mainAxisSize: MainAxisSize.min, children: [
-              const Align(
+              Align(
                 alignment: Alignment.centerLeft,
                 child: Text('${widget.locationName} · a different manager must approve before receipt.'),
               ),
