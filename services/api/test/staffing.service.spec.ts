@@ -26,6 +26,7 @@ function harness(current?: Record<string, unknown>, restMinutes: number | null =
       update: vi.fn().mockImplementation(({ data }) => ({ id: 'demand-1', ...data })),
     },
     staffingDemandAudit: { create: vi.fn().mockResolvedValue({}) },
+    staffingVendorRequest: { findMany: vi.fn().mockResolvedValue([]), count: vi.fn().mockResolvedValue(0) },
     location: { findFirst: vi.fn().mockResolvedValue({ id: 'location-1' }) },
     person: {
       findFirst: vi.fn().mockResolvedValue({ id: 'person-1' }),
@@ -77,6 +78,21 @@ describe('event staffing workflow', () => {
     expect(forecasts[0]).toMatchObject({ role: 'Usher', requiredHeadcount: 5, sampleEventCount: 2, confidence: 'LIMITED_HISTORY', requiredQualificationCodes: ['SAFETY'], source: 'HISTORICAL_PLANNED_DEMAND' });
     expect(tx.event.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ startsAt: { lt: new Date('2026-10-10T17:00:00Z') } }) }));
     expect(tx.staffingDemand.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ eventId: { in: ['past-1', 'past-2'] }, organizationId: 'tenant-1', venueId: 'venue-1', OR: [{ locationId: null }, { locationId: { in: ['location-1'] } }] }) }));
+  });
+
+  it('reports vendor commitments separately and reserves outstanding requests against duplicate staffing', async () => {
+    const { service, tx } = harness();
+    tx.event.findFirst.mockResolvedValue({ id: 'event-1', venueId: 'venue-1' });
+    tx.staffingDemand.findMany.mockResolvedValue([{ id: 'demand-1', eventId: 'event-1', venueId: 'venue-1', locationId: null, role: 'Usher', startsAt: new Date('2026-10-01T17:00:00Z'), endsAt: new Date('2026-10-01T22:00:00Z'), requiredHeadcount: 5 }]);
+    tx.staffShift.findMany.mockResolvedValue([]);
+    tx.staffingVendorRequest.findMany.mockResolvedValue([
+      { state: 'SENT', requestedHeadcount: 3, committedHeadcount: 0 },
+      { state: 'PARTIALLY_COMMITTED', requestedHeadcount: 2, committedHeadcount: 1 },
+    ]);
+
+    const [coverage] = await service.coverageRequirements(manager, 'event-1');
+
+    expect(coverage).toMatchObject({ vendorRequestedHeadcount: 5, vendorCommittedHeadcount: 1, vendorReservedHeadcount: 4, unfilledHeadcount: 1 });
   });
 
   it('reports unfilled slots separately from assigned, published, and acknowledged coverage', async () => {

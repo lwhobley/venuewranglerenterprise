@@ -26,6 +26,7 @@ function emptyExceptionQueries() {
     operationalTask: { findMany: vi.fn().mockResolvedValue([]) },
     staffAttendanceClaim: { findMany: vi.fn().mockResolvedValue([]) },
     hospitalityOrder: { findMany: vi.fn().mockResolvedValue([]) },
+    staffingVendorRequest: { findMany: vi.fn().mockResolvedValue([]) },
   };
 }
 

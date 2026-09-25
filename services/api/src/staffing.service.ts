@@ -50,11 +50,18 @@ export class StaffingService {
           organizationId: identity.tenantId, eventId, venueId: demand.venueId, ...(demand.locationId !== null ? { locationId: demand.locationId } : {}),
           role: demand.role, state: { in: ['DRAFT', 'PUBLISHED'] }, startsAt: { lte: demand.startsAt }, endsAt: { gte: demand.endsAt },
         }, select: { id: true, state: true, response: true, responseRevision: true, revision: true, assignedSubject: true } });
+        const vendorRequests = await tx.staffingVendorRequest.findMany({
+          where: { organizationId: identity.tenantId, demandId: demand.id, state: { in: ['SENT', 'ACKNOWLEDGED', 'PARTIALLY_COMMITTED', 'COMMITTED'] } },
+          select: { state: true, requestedHeadcount: true, committedHeadcount: true },
+        });
         const scheduled = shifts.length;
         const published = shifts.filter((shift) => shift.state === 'PUBLISHED').length;
         const assigned = shifts.filter((shift) => shift.assignedSubject !== null).length;
         const confirmed = shifts.filter((shift) => shift.state === 'PUBLISHED' && shift.assignedSubject !== null && shift.response === 'ACKNOWLEDGED' && shift.responseRevision === shift.revision).length;
-        coverage.push({ ...demand, scheduledHeadcount: scheduled, publishedHeadcount: published, assignedHeadcount: assigned, confirmedHeadcount: confirmed, unfilledHeadcount: Math.max(0, demand.requiredHeadcount - scheduled), unconfirmedHeadcount: Math.max(0, demand.requiredHeadcount - confirmed) });
+        const vendorRequested = vendorRequests.reduce((total, request) => total + request.requestedHeadcount, 0);
+        const vendorCommitted = vendorRequests.reduce((total, request) => total + request.committedHeadcount, 0);
+        const vendorReserved = vendorRequests.reduce((total, request) => total + (['SENT', 'ACKNOWLEDGED'].includes(request.state) ? request.requestedHeadcount : request.committedHeadcount), 0);
+        coverage.push({ ...demand, scheduledHeadcount: scheduled, publishedHeadcount: published, assignedHeadcount: assigned, confirmedHeadcount: confirmed, vendorRequestedHeadcount: vendorRequested, vendorCommittedHeadcount: vendorCommitted, vendorReservedHeadcount: vendorReserved, unfilledHeadcount: Math.max(0, demand.requiredHeadcount - scheduled - vendorReserved), unconfirmedHeadcount: Math.max(0, demand.requiredHeadcount - confirmed) });
       }
       return coverage;
     });
@@ -184,6 +191,7 @@ export class StaffingService {
     if (Object.keys(patch).length === 0) throw new BadRequestException('Provide at least one coverage change.');
     return this.command(identity, key, 'staffing-coverage.update', { eventId, demandId, patch: { ...patch, startsAt: patch.startsAt?.toISOString(), endsAt: patch.endsAt?.toISOString() }, reason }, async (tx) => {
       await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`staff-demand:${identity.tenantId}:${demandId}`}, 0))`;
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`vendor-demand:${identity.tenantId}:${demandId}`}, 0))`;
       const current = await tx.staffingDemand.findFirst({ where: { id: demandId, eventId, organizationId: identity.tenantId } });
       if (!current) throw new NotFoundException('Coverage requirement not found.');
       assertScope(identity, 'operations:write', eventId, current.venueId, current.locationId ?? undefined);
@@ -202,6 +210,17 @@ export class StaffingService {
       if (shapeChanged && await tx.staffShift.count({ where: { organizationId: identity.tenantId, staffingDemandId: demandId, state: { in: ['DRAFT', 'PUBLISHED'] } } })) {
         throw new ConflictException('Edit or cancel generated shifts before changing the role, area, qualification, or coverage window.');
       }
+      if (shapeChanged && await tx.staffingVendorRequest.count({ where: { organizationId: identity.tenantId, demandId, state: { in: ['SENT', 'ACKNOWLEDGED', 'PARTIALLY_COMMITTED', 'COMMITTED'] } } })) {
+        throw new ConflictException('Resolve or cancel outstanding vendor requests before changing the role, area, qualification, or coverage window.');
+      }
+      if (patch.requiredHeadcount !== undefined) {
+        const [scheduled, requests] = await Promise.all([
+          tx.staffShift.count({ where: { organizationId: identity.tenantId, eventId, venueId: current.venueId, ...(current.locationId !== null ? { locationId: current.locationId } : {}), role: current.role, state: { in: ['DRAFT', 'PUBLISHED'] }, startsAt: { lte: current.startsAt }, endsAt: { gte: current.endsAt } } }),
+          tx.staffingVendorRequest.findMany({ where: { organizationId: identity.tenantId, demandId, state: { in: ['SENT', 'ACKNOWLEDGED', 'PARTIALLY_COMMITTED', 'COMMITTED'] } }, select: { state: true, requestedHeadcount: true, committedHeadcount: true } }),
+        ]);
+        const reserved = requests.reduce((total, request) => total + (['SENT', 'ACKNOWLEDGED'].includes(request.state) ? request.requestedHeadcount : request.committedHeadcount), 0);
+        if (patch.requiredHeadcount < scheduled + reserved) throw new ConflictException('The target cannot be lower than its scheduled shifts and active vendor reservations.');
+      }
       const updated = await tx.staffingDemand.update({ where: { id: demandId }, data: { ...patch, updatedBy: identity.subject } });
       const changed = ['role', 'locationId', 'startsAt', 'endsAt', 'requiredHeadcount', 'requiredQualificationCodes'].some((field) => JSON.stringify(current[field as keyof typeof current]) !== JSON.stringify(updated[field as keyof typeof updated]));
       if (!changed) throw new ConflictException('The coverage requirement has no changes to save.');
@@ -214,6 +233,7 @@ export class StaffingService {
     assertScope(identity, 'operations:write', eventId);
     return this.command(identity, key, 'staffing-coverage.generate', { eventId, demandId }, async (tx) => {
       await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`staff-demand:${identity.tenantId}:${demandId}`}, 0))`;
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`vendor-demand:${identity.tenantId}:${demandId}`}, 0))`;
       const demand = await tx.staffingDemand.findFirst({ where: { id: demandId, eventId, organizationId: identity.tenantId } });
       if (!demand) throw new NotFoundException('Coverage requirement not found.');
       assertScope(identity, 'operations:write', eventId, demand.venueId, demand.locationId ?? undefined);
@@ -221,7 +241,9 @@ export class StaffingService {
         organizationId: identity.tenantId, eventId, venueId: demand.venueId, ...(demand.locationId !== null ? { locationId: demand.locationId } : {}),
         role: demand.role, state: { in: ['DRAFT', 'PUBLISHED'] }, startsAt: { lte: demand.startsAt }, endsAt: { gte: demand.endsAt },
       } });
-      const deficit = Math.max(0, demand.requiredHeadcount - existing);
+      const requests = await tx.staffingVendorRequest.findMany({ where: { organizationId: identity.tenantId, demandId, state: { in: ['SENT', 'ACKNOWLEDGED', 'PARTIALLY_COMMITTED', 'COMMITTED'] } }, select: { state: true, requestedHeadcount: true, committedHeadcount: true } });
+      const reserved = requests.reduce((total, request) => total + (['SENT', 'ACKNOWLEDGED'].includes(request.state) ? request.requestedHeadcount : request.committedHeadcount), 0);
+      const deficit = Math.max(0, demand.requiredHeadcount - existing - reserved);
       const created = [];
       for (let index = 0; index < deficit; index += 1) {
         const shift = await tx.staffShift.create({ data: {
@@ -232,7 +254,7 @@ export class StaffingService {
         await this.audit(tx, identity, shift.id, 'created_from_coverage_demand', undefined, shift);
         created.push(shift);
       }
-      return { demandId: demand.id, requiredHeadcount: demand.requiredHeadcount, createdShifts: created, scheduledHeadcount: existing + created.length, unfilledHeadcount: Math.max(0, demand.requiredHeadcount - existing - created.length) };
+      return { demandId: demand.id, requiredHeadcount: demand.requiredHeadcount, createdShifts: created, scheduledHeadcount: existing + created.length, vendorReservedHeadcount: reserved, unfilledHeadcount: Math.max(0, demand.requiredHeadcount - existing - created.length - reserved) };
     });
   }
 

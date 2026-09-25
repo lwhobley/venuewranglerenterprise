@@ -68,6 +68,8 @@ try {
   let closeoutBId;
   let closeoutFollowupAId;
   let closeoutFollowupBId;
+  let vendorRequestAId;
+  let vendorRequestBId;
   try {
     await prisma.$transaction(async (tx) => {
       await setTenant(tx, tenantA);
@@ -99,6 +101,9 @@ try {
       demandAId = demandA.id;
       const demandAuditA = await tx.staffingDemandAudit.create({ data: { organizationId: tenantA, demandId: demandA.id, actorId: 'tenant-isolation-test', action: 'created' } });
       demandAuditAId = demandAuditA.id;
+      const vendorRequestA = await tx.staffingVendorRequest.create({ data: { organizationId: tenantA, venueId: venueA, eventId: eventA, locationId: locationA, demandId: demandA.id, requesterSubject: 'tenant-isolation-test', vendorSubject: subjectA, requestedHeadcount: 1, responseDueAt: new Date(Date.now() + 86400000) } });
+      vendorRequestAId = vendorRequestA.id;
+      await tx.staffingVendorRequestAudit.create({ data: { organizationId: tenantA, requestId: vendorRequestA.id, actorId: 'tenant-isolation-test', action: 'sent' } });
       const breakA = await tx.staffBreak.create({ data: { organizationId: tenantA, shiftId: shiftA.id, workerSubject: subjectA, kind: 'REST', startedAt: new Date('2026-10-01T19:00:00Z') } });
       breakAId = breakA.id;
       const claimA = await tx.staffAttendanceClaim.create({ data: { organizationId: tenantA, eventId: eventA, shiftId: shiftA.id, workerSubject: subjectA, action: 'CHECK_OUT', recordedAt: new Date('2026-10-01T22:00:00Z') } });
@@ -170,6 +175,9 @@ try {
       demandBId = demandB.id;
       const demandAuditB = await tx.staffingDemandAudit.create({ data: { organizationId: tenantB, demandId: demandB.id, actorId: 'tenant-isolation-test', action: 'created' } });
       demandAuditBId = demandAuditB.id;
+      const vendorRequestB = await tx.staffingVendorRequest.create({ data: { organizationId: tenantB, venueId: venueB, eventId: eventB, locationId: locationB, demandId: demandB.id, requesterSubject: 'tenant-isolation-test', vendorSubject: subjectB, requestedHeadcount: 1, responseDueAt: new Date(Date.now() + 86400000) } });
+      vendorRequestBId = vendorRequestB.id;
+      await tx.staffingVendorRequestAudit.create({ data: { organizationId: tenantB, requestId: vendorRequestB.id, actorId: 'tenant-isolation-test', action: 'sent' } });
       const breakB = await tx.staffBreak.create({ data: { organizationId: tenantB, shiftId: shiftB.id, workerSubject: subjectB, kind: 'MEAL', startedAt: new Date('2026-10-01T19:00:00Z') } });
       breakBId = breakB.id;
       const claimB = await tx.staffAttendanceClaim.create({ data: { organizationId: tenantB, eventId: eventB, shiftId: shiftB.id, workerSubject: subjectB, action: 'CHECK_OUT', recordedAt: new Date('2026-10-01T22:00:00Z') } });
@@ -221,6 +229,15 @@ try {
       assert.equal(await tx.staffAttendanceClaim.count({ where: { organizationId: tenantA } }), 1, 'tenant A sees its pending attendance claims');
       assert.equal(await tx.staffingDemand.count({ where: { organizationId: tenantA } }), 1, 'tenant A sees its staffing demand');
       assert.equal(await tx.staffingDemandAudit.count({ where: { organizationId: tenantA } }), 1, 'tenant A sees its staffing demand audit');
+      assert.equal(await tx.staffingVendorRequest.count({ where: { organizationId: tenantA } }), 1, 'tenant A sees its vendor request');
+      assert.equal(await tx.staffingVendorRequestAudit.count({ where: { organizationId: tenantA } }), 1, 'tenant A sees its vendor request audit');
+      await tx.$executeRawUnsafe('SAVEPOINT vendor_request_rls_insert_probe');
+      let crossTenantVendorRequestError;
+      try {
+        await tx.staffingVendorRequest.create({ data: { organizationId: tenantB, venueId: venueB, eventId: eventB, locationId: locationB, demandId: demandBId, requesterSubject: 'forbidden-cross-tenant', vendorSubject: subjectB, requestedHeadcount: 1, responseDueAt: new Date(Date.now() + 86400000) } });
+      } catch (error) { crossTenantVendorRequestError = error; }
+      await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT vendor_request_rls_insert_probe');
+      assert.equal(crossTenantVendorRequestError?.meta?.code, '42501', 'cross-tenant vendor request insert must fail RLS WITH CHECK');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_transfers WHERE id=${stockTransferAId}::uuid`)[0].count, 1, 'tenant A sees its stock transfer');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_transfer_lines WHERE transfer_id=${stockTransferAId}::uuid`)[0].count, 1, 'tenant A sees its transfer lines');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_transfer_audit WHERE transfer_id=${stockTransferAId}::uuid`)[0].count, 1, 'tenant A sees its transfer audit');
@@ -329,6 +346,10 @@ try {
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeouts WHERE id=${closeoutBId}::uuid`)[0].count, 1, 'tenant B sees its event closeout');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeout_followups WHERE closeout_id=${closeoutBId}::uuid`)[0].count, 1, 'tenant B sees its closeout follow-up');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeout_audit WHERE closeout_id=${closeoutBId}::uuid`)[0].count, 1, 'tenant B sees its closeout audit');
+      assert.equal(await tx.staffingVendorRequest.count({ where: { organizationId: tenantB } }), 1, 'tenant B sees its vendor request');
+      assert.equal(await tx.staffingVendorRequestAudit.count({ where: { organizationId: tenantB } }), 1, 'tenant B sees its vendor request audit');
+      assert.equal((await tx.staffingVendorRequest.count({ where: { id: vendorRequestAId } })), 0, 'tenant B cannot read tenant A vendor request');
+      assert.equal((await tx.staffingVendorRequestAudit.count({ where: { requestId: vendorRequestAId } })), 0, 'tenant B cannot read tenant A vendor request audit');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_transfers WHERE id=${stockTransferAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A stock transfers');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_transfer_lines WHERE transfer_id=${stockTransferAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A transfer lines');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_transfer_audit WHERE transfer_id=${stockTransferAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A transfer audit');
@@ -357,6 +378,13 @@ try {
       }
       await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT closed_event_write_probe');
       assert.equal(closedEventWriteError?.meta?.code, '23514', 'ordinary operational writes must be rejected after closeout finalization');
+      await tx.$executeRawUnsafe('SAVEPOINT closed_vendor_request_write_probe');
+      let closedVendorRequestWriteError;
+      try {
+        await tx.staffingVendorRequest.update({ where: { id: vendorRequestAId }, data: { instructions: 'forbidden post-close edit' } });
+      } catch (error) { closedVendorRequestWriteError = error; }
+      await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT closed_vendor_request_write_probe');
+      assert.equal(closedVendorRequestWriteError?.meta?.code, '23514', 'vendor requests must also be immutable after event closeout');
       await tx.$executeRawUnsafe('SAVEPOINT closed_event_child_write_probe');
       await tx.$executeRaw`UPDATE event_closeouts SET state='CLOSED',finalized_by='tenant-isolation-test',finalized_at=now() WHERE id=${closeoutAId}::uuid`;
       let closedEventChildWriteError;

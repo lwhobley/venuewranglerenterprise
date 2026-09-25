@@ -31,6 +31,8 @@ import { HospitalityController } from './hospitality.controller';
 import { HospitalityService } from './hospitality.service';
 import { CloseoutController } from './closeout.controller';
 import { CloseoutService } from './closeout.service';
+import { VendorStaffingController } from './vendor-staffing.controller';
+import { VendorStaffingService } from './vendor-staffing.service';
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true, validate: (env) => {
@@ -43,7 +45,7 @@ import { CloseoutService } from './closeout.service';
     }
     return env;
   } })],
-  controllers: [AuthController, HealthController, IssuesController, OperationsController, StaffingController, StaffAvailabilityController, InventoryController, HospitalityController, CloseoutController, NotificationsController, ScimController, IntegrationController, PushDevicesController, AuditController],
-  providers: [AuthProvidersService, PrismaService, JwtIdentityGuard, IssuesService, OperationsService, StaffingService, StaffAvailabilityService, InventoryService, HospitalityService, CloseoutService, NotificationsService, EvidenceService, ScimService, IntegrationService, PushDevicesService, PushNotificationsService, AuditService],
+  controllers: [AuthController, HealthController, IssuesController, OperationsController, StaffingController, StaffAvailabilityController, InventoryController, HospitalityController, CloseoutController, VendorStaffingController, NotificationsController, ScimController, IntegrationController, PushDevicesController, AuditController],
+  providers: [AuthProvidersService, PrismaService, JwtIdentityGuard, IssuesService, OperationsService, StaffingService, StaffAvailabilityService, InventoryService, HospitalityService, CloseoutService, VendorStaffingService, NotificationsService, EvidenceService, ScimService, IntegrationService, PushDevicesService, PushNotificationsService, AuditService],
 })
 export class AppModule {}

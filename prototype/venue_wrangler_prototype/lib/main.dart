@@ -17,6 +17,7 @@ import 'features/issues/secure_evidence_store.dart';
 import 'features/operations/operations_api.dart';
 import 'features/notifications/push_notifications.dart';
 import 'features/operations/event_closeout_page.dart';
+import 'features/operations/vendor_staffing_page.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -296,6 +297,7 @@ class _LiveOperationsHome extends ConsumerWidget {
       if (caps.contains('hospitality:order') || caps.contains('hospitality:fulfill') || caps.contains('operations:write') || isAdmin) 'Hospitality',
       if (caps.contains('operations:read')) 'Stock',
       if (caps.contains('operations:read')) 'Staffing',
+      if (caps.contains('operations:read') || caps.contains('operations:write') || caps.contains('vendor:staffing') || isAdmin) 'Vendors',
       if (caps.contains('event:closeout')) 'Closeout',
       if (isAdmin) 'Setup'
     ];
@@ -359,6 +361,12 @@ class _LiveOperationsHome extends ConsumerWidget {
                         .whereType<Map>()
                         .map((e) => Map<String, dynamic>.from(e))
                         .toList()),
+                'Vendors' => VendorStaffingPage(
+                    event: event,
+                    canManage: caps.contains('operations:write') || isAdmin,
+                    isVendor: caps.contains('vendor:staffing') && !caps.contains('operations:write') && !isAdmin,
+                    assignableUserIds: (identity['assignableUserIds'] as List? ?? const []).whereType<String>().toSet(),
+                    people: (data['people'] as List? ?? const []).whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList()),
                 'Setup' => _TenantSetupPage(
                     venues: venues,
                     people: (data['people'] as List? ?? const [])
@@ -671,7 +679,8 @@ class _NotificationInboxState extends ConsumerState<_NotificationInbox> {
                                             ref.invalidate(
                                                 userNotificationsProvider);
                                             final closeoutNotice = notification['kind'] == 'event_closeout_followup';
-                                            if ((notification['shiftId'] is String || notification['hospitalityOrderId'] is String || closeoutNotice) && notification['eventId'] is String) {
+                                            final vendorNotice = notification['kind'] == 'vendor_staffing_request' || notification['kind'] == 'vendor_staffing_response';
+                                            if ((notification['shiftId'] is String || notification['hospitalityOrderId'] is String || closeoutNotice || vendorNotice) && notification['eventId'] is String) {
                                               final identity = ref.read(operationsBootstrapProvider).valueOrNull?['identity'] as Map<String, dynamic>? ?? const {};
                                               final capabilities = (identity['capabilities'] as List? ?? const []).whereType<String>().toSet();
                                               final tabs = <String>[
@@ -681,11 +690,12 @@ class _NotificationInboxState extends ConsumerState<_NotificationInbox> {
                                                 if (capabilities.contains('hospitality:order') || capabilities.contains('hospitality:fulfill') || capabilities.contains('operations:write') || capabilities.contains('tenant:admin')) 'Hospitality',
                                                 if (capabilities.contains('operations:read')) 'Stock',
                                                 if (capabilities.contains('operations:read')) 'Staffing',
+                                                if (capabilities.contains('operations:read') || capabilities.contains('operations:write') || capabilities.contains('vendor:staffing') || capabilities.contains('tenant:admin')) 'Vendors',
                                                 if (capabilities.contains('event:closeout')) 'Closeout',
                                                 if (capabilities.contains('tenant:admin')) 'Setup',
                                               ];
                                               ref.read(_selectedLiveEventProvider.notifier).state = notification['eventId'] as String;
-                                              final targetTab = closeoutNotice ? 'Closeout' : notification['hospitalityOrderId'] is String ? 'Hospitality' : 'Staffing';
+                                              final targetTab = closeoutNotice ? 'Closeout' : vendorNotice ? 'Vendors' : notification['hospitalityOrderId'] is String ? 'Hospitality' : 'Staffing';
                                               final targetIndex = tabs.indexOf(targetTab);
                                               if (targetIndex >= 0) ref.read(_liveTabProvider.notifier).state = targetIndex;
                                               if (context.mounted) Navigator.pop(context);
@@ -1779,6 +1789,8 @@ class _CoveragePlanningPanel extends ConsumerWidget {
                   final scheduled = row['scheduledHeadcount'] as int? ?? 0;
                   final confirmed = row['confirmedHeadcount'] as int? ?? 0;
                   final unconfirmed = row['unconfirmedHeadcount'] as int? ?? 0;
+                  final vendorRequested = row['vendorRequestedHeadcount'] as int? ?? 0;
+                  final vendorCommitted = row['vendorCommittedHeadcount'] as int? ?? 0;
                   final locationId = row['locationId'] as String?;
                   final matches = locations.where((location) => location['id'] == locationId);
                   final area = matches.isEmpty ? 'All areas' : matches.first['name'] as String? ?? 'Area';
@@ -1787,7 +1799,7 @@ class _CoveragePlanningPanel extends ConsumerWidget {
                   return ListTile(
                     dense: true,
                     title: Text('${row['role']} · $area'),
-                    subtitle: Text('${_shiftTimeLabel(start, end)} · $confirmed/${row['requiredHeadcount']} acknowledged · $scheduled/${row['requiredHeadcount']} scheduled ($published published)${remaining > 0 ? ' · $remaining slots missing' : ''}${unconfirmed > 0 ? ' · $unconfirmed need assignment or worker confirmation' : ''}'),
+                    subtitle: Text('${_shiftTimeLabel(start, end)} · $confirmed/${row['requiredHeadcount']} acknowledged · $scheduled/${row['requiredHeadcount']} scheduled ($published published)${remaining > 0 ? ' · $remaining unreserved slots' : ''}${unconfirmed > 0 ? ' · $unconfirmed need assignment or worker confirmation' : ''}${vendorCommitted > 0 ? ' · $vendorCommitted vendor committed (not named on roster)' : ''}${vendorRequested > vendorCommitted ? ' · ${vendorRequested - vendorCommitted} vendor requested, awaiting commitment' : ''}'),
                     trailing: Column(mainAxisSize: MainAxisSize.min, children: [
                       IconButton(tooltip: 'Adjust demand target', onPressed: () => _adjustTarget(context, ref, row), icon: const Icon(Icons.edit_outlined)),
                       if (remaining > 0)

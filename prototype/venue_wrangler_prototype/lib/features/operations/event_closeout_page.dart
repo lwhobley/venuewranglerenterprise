@@ -186,6 +186,7 @@ class EventCloseoutPage extends ConsumerWidget {
   }
 
   String _workflowTab(String sourceType) => switch (sourceType) {
+        'VENDOR_REQUEST' => 'Vendors',
         'ISSUE' => 'Issues',
         'TASK' => 'Operations',
         'ATTENDANCE' => 'Staffing',

@@ -124,13 +124,14 @@ export class CloseoutService {
   }
 
   private async exceptions(tx: Prisma.TransactionClient, tenantId: string, eventId: string): Promise<Exception[]> {
-    const [issues, tasks, claims, orders, counts, transfers] = await Promise.all([
+    const [issues, tasks, claims, orders, counts, transfers, vendorRequests] = await Promise.all([
       tx.issue.findMany({ where: { organizationId: tenantId, eventId, state: { notIn: ['VERIFIED', 'CLOSED'] } }, select: { id: true, title: true, state: true } }),
       tx.operationalTask.findMany({ where: { organizationId: tenantId, eventId, state: { not: 'DONE' } }, select: { id: true, title: true } }),
       tx.staffAttendanceClaim.findMany({ where: { organizationId: tenantId, eventId, status: 'PENDING_REVIEW' }, select: { id: true, action: true, workerSubject: true } }),
       tx.hospitalityOrder.findMany({ where: { organizationId: tenantId, eventId, state: { notIn: ['PICKED_UP', 'REJECTED', 'CANCELLED'] } }, select: { id: true, state: true } }),
       tx.$queryRaw<Array<{ id: string; label: string }>>`SELECT id::text, 'Inventory count awaiting approval' AS label FROM stock_counts WHERE organization_id = ${tenantId}::uuid AND event_id = ${eventId}::uuid AND state IN ('IN_PROGRESS','SUBMITTED')`,
       tx.$queryRaw<Array<{ id: string; label: string }>>`SELECT id::text, 'Stock transfer awaiting receipt or cancellation' AS label FROM stock_transfers WHERE organization_id = ${tenantId}::uuid AND event_id = ${eventId}::uuid AND state IN ('REQUESTED','IN_TRANSIT')`,
+      tx.staffingVendorRequest.findMany({ where: { organizationId: tenantId, eventId, state: { in: ['SENT', 'ACKNOWLEDGED', 'PARTIALLY_COMMITTED', 'COMMITTED'] } }, select: { id: true, state: true, requestedHeadcount: true, committedHeadcount: true } }),
     ]);
     return [
       ...issues.map((row) => ({ sourceType: 'ISSUE', sourceId: row.id, title: `Issue: ${row.title} (${row.state.toLowerCase()})` })),
@@ -139,6 +140,7 @@ export class CloseoutService {
       ...orders.map((row) => ({ sourceType: 'HOSPITALITY', sourceId: row.id, title: `Hospitality order awaiting completion (${row.state.toLowerCase()})` })),
       ...counts.map((row) => ({ sourceType: 'STOCK_COUNT', sourceId: row.id, title: row.label })),
       ...transfers.map((row) => ({ sourceType: 'STOCK_TRANSFER', sourceId: row.id, title: row.label })),
+      ...vendorRequests.map((row) => ({ sourceType: 'VENDOR_REQUEST', sourceId: row.id, title: `Vendor staffing request needs closure (${row.committedHeadcount}/${row.requestedHeadcount} committed; ${row.state.toLowerCase()})` })),
     ];
   }
 
