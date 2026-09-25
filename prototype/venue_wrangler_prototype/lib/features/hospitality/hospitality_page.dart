@@ -1,8 +1,26 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../operations/operations_api.dart';
 import 'hospitality_admin_dialogs.dart';
+
+List<List<Offset>> _signatureStrokes(Object? value) {
+  if (value is! List) return const [];
+  return value
+      .whereType<List>()
+      .map((stroke) => stroke.whereType<Map>().map((point) {
+            final x = point['x'];
+            final y = point['y'];
+            return Offset(
+              x is num ? x.toDouble() : 0,
+              y is num ? y.toDouble() : 0,
+            );
+          }).toList())
+      .where((stroke) => stroke.length >= 2)
+      .toList();
+}
 
 class HospitalityPage extends ConsumerWidget {
   const HospitalityPage(
@@ -334,10 +352,36 @@ class _HospitalityOrderCard extends ConsumerWidget {
                 'Received by ${(order['deliveryReceipt'] as Map)['receivedByName']}'),
             subtitle: Text([
               'Handoff acknowledged · ${DateTime.tryParse((order['deliveryReceipt'] as Map)['acknowledgedAt']?.toString() ?? '')?.toLocal().toString() ?? 'time unavailable'}',
+              if ((order['deliveryReceipt'] as Map)['receiverSignature'] is List)
+                'Receiver signature captured',
               if (((order['deliveryReceipt'] as Map)['note'] as String? ?? '')
                   .isNotEmpty)
                 (order['deliveryReceipt'] as Map)['note'] as String,
             ].join(' · ')),
+            trailing: (order['deliveryReceipt'] as Map)['receiverSignature'] is List
+                ? TextButton(
+                    onPressed: () => showDialog<void>(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: const Text('Receiver handoff signature'),
+                        content: SizedBox(
+                          width: 420,
+                          height: 120,
+                          child: CustomPaint(
+                            painter: _ReceiverSignaturePainter(_signatureStrokes(
+                                (order['deliveryReceipt'] as Map)['receiverSignature'])),
+                          ),
+                        ),
+                        actions: [
+                          TextButton(
+                              onPressed: () => Navigator.pop(context),
+                              child: const Text('Close')),
+                        ],
+                      ),
+                    ),
+                    child: const Text('View signature'),
+                  )
+                : null,
           ),
         if (actions.isNotEmpty)
           Padding(
@@ -375,6 +419,7 @@ class _HospitalityOrderCard extends ConsumerWidget {
     String? receivedByName;
     String? receiptNote;
     bool? receiverAcknowledged;
+    String? receiverSignature;
     if (action == 'fulfill') {
       final result = await showDialog<Map<String, Object?>>(
         context: context,
@@ -427,6 +472,7 @@ class _HospitalityOrderCard extends ConsumerWidget {
       receivedByName = receipt['receivedByName'] as String;
       receiptNote = receipt['receiptNote'] as String?;
       receiverAcknowledged = receipt['receiverAcknowledged'] as bool;
+      receiverSignature = receipt['receiverSignature'] as String;
     }
     try {
       await ref.read(operationsApiProvider).hospitalityOrderAction(
@@ -435,7 +481,8 @@ class _HospitalityOrderCard extends ConsumerWidget {
           fulfillments: fulfillments,
           receivedByName: receivedByName,
           receiptNote: receiptNote,
-          receiverAcknowledged: receiverAcknowledged);
+          receiverAcknowledged: receiverAcknowledged,
+          receiverSignature: receiverSignature);
       ref.invalidate(eventHospitalityOrdersProvider(eventId));
     } catch (error) {
       if (context.mounted) {
@@ -616,7 +663,31 @@ class _PickupReceiptDialog extends StatefulWidget {
 class _PickupReceiptDialogState extends State<_PickupReceiptDialog> {
   final _receiver = TextEditingController();
   final _note = TextEditingController();
+  final List<List<Offset>> _strokes = [];
+  List<Offset>? _activeStroke;
   bool _acknowledged = false;
+
+  void _addPoint(Offset position, Size size, {bool start = false}) {
+    if (_strokes.fold<int>(0, (sum, stroke) => sum + stroke.length) >= 512) return;
+    final point = Offset(
+      (position.dx / size.width).clamp(0.0, 1.0).toDouble(),
+      (position.dy / size.height).clamp(0.0, 1.0).toDouble(),
+    );
+    setState(() {
+      if (start || _activeStroke == null) {
+        _activeStroke = <Offset>[point];
+        _strokes.add(_activeStroke!);
+      } else {
+        _activeStroke!.add(point);
+      }
+    });
+  }
+
+  String _signatureJson() => jsonEncode(_strokes
+      .map((stroke) => stroke
+          .map((point) => {'x': point.dx, 'y': point.dy})
+          .toList())
+      .toList());
 
   @override
   void dispose() {
@@ -631,7 +702,9 @@ class _PickupReceiptDialogState extends State<_PickupReceiptDialog> {
         content: SingleChildScrollView(
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             const Text(
-                'Record who received the completed order. This is an in-person acknowledgement, not a captured signature.'),
+                'Record who received the completed order and capture their signature for the handoff record.'),
+            const Text(
+                'The signature mark is stored with this order as operational evidence.'),
             const SizedBox(height: 12),
             TextField(
               controller: _receiver,
@@ -645,6 +718,55 @@ class _PickupReceiptDialogState extends State<_PickupReceiptDialog> {
               maxLength: 500,
               decoration:
                   const InputDecoration(labelText: 'Handoff note (optional)'),
+            ),
+            const SizedBox(height: 12),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text('Receiver signature',
+                  style: Theme.of(context).textTheme.titleSmall),
+            ),
+            const SizedBox(height: 6),
+            SizedBox(
+              height: 120,
+              width: double.infinity,
+              child: LayoutBuilder(builder: (context, constraints) {
+                final size = Size(constraints.maxWidth, constraints.maxHeight);
+                return GestureDetector(
+                  onPanStart: (details) =>
+                      _addPoint(details.localPosition, size, start: true),
+                  onPanUpdate: (details) => _addPoint(details.localPosition, size),
+                  onPanEnd: (_) => setState(() {
+                    if ((_activeStroke?.length ?? 0) < 2 && _strokes.isNotEmpty) {
+                      _strokes.removeLast();
+                    }
+                    _activeStroke = null;
+                  }),
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.surfaceContainerLow,
+                      border: Border.all(color: Theme.of(context).dividerColor),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: CustomPaint(
+                      painter: _ReceiverSignaturePainter(_strokes),
+                      child: const SizedBox.expand(),
+                    ),
+                  ),
+                );
+              }),
+            ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: _strokes.isEmpty
+                    ? null
+                    : () => setState(() {
+                          _strokes.clear();
+                          _activeStroke = null;
+                        }),
+                icon: const Icon(Icons.undo),
+                label: const Text('Clear signature'),
+              ),
             ),
             CheckboxListTile(
               contentPadding: EdgeInsets.zero,
@@ -661,17 +783,47 @@ class _PickupReceiptDialogState extends State<_PickupReceiptDialog> {
               onPressed: () => Navigator.pop(context),
               child: const Text('Back')),
           FilledButton(
-            onPressed: _receiver.text.trim().length >= 2 && _acknowledged
+            onPressed: _receiver.text.trim().length >= 2 &&
+                    _acknowledged &&
+                    _strokes.isNotEmpty
                 ? () => Navigator.pop(context, {
                       'receivedByName': _receiver.text.trim(),
                       'receiptNote': _note.text.trim(),
                       'receiverAcknowledged': true,
+                      'receiverSignature': _signatureJson(),
                     })
                 : null,
             child: const Text('Save receipt'),
           ),
         ],
       );
+}
+
+class _ReceiverSignaturePainter extends CustomPainter {
+  const _ReceiverSignaturePainter(this.strokes);
+  final List<List<Offset>> strokes;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = const Color(0xFF17202B)
+      ..strokeWidth = 2.4
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..style = PaintingStyle.stroke;
+    for (final stroke in strokes) {
+      if (stroke.length < 2) continue;
+      final path = Path()
+        ..moveTo(stroke.first.dx * size.width, stroke.first.dy * size.height);
+      for (final point in stroke.skip(1)) {
+        path.lineTo(point.dx * size.width, point.dy * size.height);
+      }
+      canvas.drawPath(path, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ReceiverSignaturePainter oldDelegate) => true;
 }
 
 class _OrderComposer extends ConsumerStatefulWidget {

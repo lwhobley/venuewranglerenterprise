@@ -192,10 +192,12 @@ describe('hospitality order lifecycle', () => {
     const { service, tx } = harness({ state: 'DISTRIBUTED', lines: [{ id: 'line-1', itemName: 'Sparkling water', quantity: 2, fulfilledQuantity: 2, unit: 'case', fulfillments: [] }] });
     await service.act(requester, eventId, '00000000-0000-0000-0000-000000000099', {
       action: 'pickup', receivedByName: 'Jordan Lee', receiptNote: 'Suite 14 host stand', receiverAcknowledged: true,
+      receiverSignature: JSON.stringify([[{ x: 0.12, y: 0.72 }, { x: 0.35, y: 0.4 }, { x: 0.72, y: 0.68 }]]),
     }, 'hospitality-pickup-key-0001');
     expect(tx.hospitalityDeliveryReceipt.create).toHaveBeenCalledWith({ data: expect.objectContaining({
       organizationId: tenantId, eventId, actorId: requester.subject, receivedByName: 'Jordan Lee',
       note: 'Suite 14 host stand', receiverAcknowledged: true,
+      receiverSignature: [[{ x: 0.12, y: 0.72 }, { x: 0.35, y: 0.4 }, { x: 0.72, y: 0.68 }]],
     }) });
     expect(tx.hospitalityOrder.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ state: 'PICKED_UP' }) }));
     expect(tx.hospitalityOrderAudit.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ action: 'pickup' }) }));
@@ -217,6 +219,14 @@ describe('hospitality order lifecycle', () => {
     }, 'hospitality-pickup-key-0002')).rejects.toBeInstanceOf(ConflictException);
     expect(tx.hospitalityDeliveryReceipt.create).not.toHaveBeenCalled();
     expect(tx.hospitalityOrder.update).not.toHaveBeenCalled();
+  });
+
+  it('requires a captured receiver signature for pickup', async () => {
+    const { service, tx } = harness({ state: 'DISTRIBUTED', lines: [{ id: 'line-1', itemName: 'Sparkling water', quantity: 2, fulfilledQuantity: 2, unit: 'case', fulfillments: [] }] });
+    await expect(service.act(requester, eventId, '00000000-0000-0000-0000-000000000099', {
+      action: 'pickup', receivedByName: 'Jordan Lee', receiverAcknowledged: true,
+    }, 'hospitality-pickup-key-0004')).rejects.toBeInstanceOf(ConflictException);
+    expect(tx.hospitalityDeliveryReceipt.create).not.toHaveBeenCalled();
   });
 
   it('requires a reason when kitchen rejects an order', async () => {

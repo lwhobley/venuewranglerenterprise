@@ -60,4 +60,5 @@ export class HospitalityOrderActionDto {
   @ApiPropertyOptional({ description: 'Name of the person receiving the completed hospitality order.' }) @IsOptional() @IsString() @Length(2, 120) receivedByName?: string;
   @ApiPropertyOptional({ description: 'Short non-sensitive note recorded with the handoff.' }) @IsOptional() @IsString() @Length(0, 500) receiptNote?: string;
   @ApiPropertyOptional({ description: 'Must be true to confirm an in-person handoff.' }) @IsOptional() @IsBoolean() receiverAcknowledged?: boolean;
+  @ApiPropertyOptional({ description: 'JSON array of normalized signature strokes captured from the receiver. Required for pickup.' }) @IsOptional() @IsString() @Length(2, 20000) receiverSignature?: string;
 }

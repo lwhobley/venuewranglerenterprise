@@ -322,10 +322,12 @@ export class HospitalityService {
       if (dto.action === 'pickup') {
         const receivedByName = dto.receivedByName?.trim();
         if (!receivedByName || receivedByName.length < 2 || !dto.receiverAcknowledged) throw new ConflictException('Confirm the receiver name and in-person handoff acknowledgement to record pickup.');
+        const receiverSignature = this.parseReceiverSignature(dto.receiverSignature);
         if (current.lines.length === 0 || current.lines.some(line => Number(line.fulfilledQuantity) < Number(line.quantity))) throw new ConflictException('Pickup requires every order line to be fully fulfilled.');
         await tx.hospitalityDeliveryReceipt.create({ data: {
           organizationId: identity.tenantId, eventId, orderId, actorId: identity.subject,
           receivedByName, note: dto.receiptNote?.trim() ?? '', receiverAcknowledged: true,
+          receiverSignature,
         } });
       }
       const updated = await tx.hospitalityOrder.update({ where: { id: orderId }, data: {
@@ -340,6 +342,26 @@ export class HospitalityService {
     });
     this.deliver(identity, result.notification);
     return result.order;
+  }
+
+  private parseReceiverSignature(value?: string): Prisma.InputJsonValue {
+    if (!value) throw new ConflictException('Capture the receiver signature before recording pickup.');
+    let parsed: unknown;
+    try { parsed = JSON.parse(value); } catch { throw new ConflictException('The receiver signature is not valid. Please capture it again.'); }
+    if (!Array.isArray(parsed) || parsed.length < 1 || parsed.length > 8) throw new ConflictException('The receiver signature is not valid. Please capture it again.');
+    let pointCount = 0;
+    for (const stroke of parsed) {
+      if (!Array.isArray(stroke) || stroke.length < 2) throw new ConflictException('The receiver signature is not valid. Please capture it again.');
+      pointCount += stroke.length;
+      if (pointCount > 512) throw new ConflictException('The receiver signature is too detailed. Please capture it again.');
+      for (const point of stroke) {
+        const coordinates = point as { x?: unknown; y?: unknown };
+        if (!coordinates || typeof coordinates !== 'object' || !Number.isFinite(coordinates.x) || !Number.isFinite(coordinates.y) || Number(coordinates.x) < 0 || Number(coordinates.x) > 1 || Number(coordinates.y) < 0 || Number(coordinates.y) > 1) {
+          throw new ConflictException('The receiver signature is not valid. Please capture it again.');
+        }
+      }
+    }
+    return parsed as Prisma.InputJsonValue;
   }
 
   private nextState(state: HospitalityOrderState, action: HospitalityOrderActionDto['action'], isRequester: boolean, canFulfillOrManage: boolean): HospitalityOrderState {

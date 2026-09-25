@@ -606,6 +606,7 @@ model HospitalityDeliveryReceipt {
   receivedByName        String           @map("received_by_name")
   note                  String           @default("")
   receiverAcknowledged  Boolean          @map("receiver_acknowledged")
+  receiverSignature     Json?             @map("receiver_signature") @db.JsonB
   acknowledgedAt        DateTime         @default(now()) @map("acknowledged_at")
   organization          Organization     @relation(fields: [organizationId], references: [id])
   order                 HospitalityOrder @relation(fields: [orderId, eventId, organizationId], references: [id, eventId, organizationId], map: "hospitality_delivery_receipts_order_tenant_fk")

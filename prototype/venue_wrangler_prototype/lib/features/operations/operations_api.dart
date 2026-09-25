@@ -923,7 +923,8 @@ class OperationsApi {
           List<Map<String, Object?>>? fulfillments,
           String? receivedByName,
           String? receiptNote,
-          bool? receiverAcknowledged}) async =>
+          bool? receiverAcknowledged,
+          String? receiverSignature}) async =>
       _command<void>(
           {
             'action': 'hospitality.order.$action',
@@ -933,7 +934,8 @@ class OperationsApi {
             'fulfillments': fulfillments,
             'receivedByName': receivedByName,
             'receiptNote': receiptNote,
-            'receiverAcknowledged': receiverAcknowledged
+            'receiverAcknowledged': receiverAcknowledged,
+            'receiverSignature': receiverSignature
           },
           (token, key) => _dio.post<void>(
               '/api/v1/events/$eventId/hospitality/orders/$orderId/actions',
@@ -944,7 +946,9 @@ class OperationsApi {
                 if (receivedByName != null) 'receivedByName': receivedByName,
                 if (receiptNote != null) 'receiptNote': receiptNote,
                 if (receiverAcknowledged != null)
-                  'receiverAcknowledged': receiverAcknowledged
+                  'receiverAcknowledged': receiverAcknowledged,
+                if (receiverSignature != null)
+                  'receiverSignature': receiverSignature
               },
               options: Options(headers: {
                 'Authorization': 'Bearer $token',
