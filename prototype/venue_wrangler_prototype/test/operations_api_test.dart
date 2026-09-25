@@ -11,6 +11,9 @@ class _FixedTokenAuth extends AuthRepository {
 
   @override
   Future<String?> validAccessToken() async => 'test-access-token';
+
+  @override
+  Future<String?> offlineCacheScope() async => 'test-scope';
 }
 
 class _SseFixtureAdapter implements HttpClientAdapter {
@@ -32,7 +35,27 @@ class _SseFixtureAdapter implements HttpClientAdapter {
   void close({bool force = false}) {}
 }
 
+class _StatusAdapter implements HttpClientAdapter {
+  _StatusAdapter(this.status, {this.failTransport = false});
+  final int status;
+  final bool failTransport;
+  int requests = 0;
+
+  @override
+  Future<ResponseBody> fetch(RequestOptions options,
+      Stream<Uint8List>? requestStream, Future<void>? cancelFuture) async {
+    requests++;
+    if (failTransport) throw DioException(requestOptions: options);
+    return ResponseBody.fromString('', status);
+  }
+
+  @override
+  void close({bool force = false}) {}
+}
+
 void main() {
+  setUp(() => FlutterSecureStorage.setMockInitialValues({}));
+
   test('replays authorized issue SSE frames and ignores non-issue events',
       () async {
     final adapter = _SseFixtureAdapter('''
@@ -57,5 +80,52 @@ data: {"issueId":"issue-1","action":"reported"}
     expect(adapter.lastRequest?.headers['Authorization'],
         'Bearer test-access-token');
     expect(adapter.lastRequest?.headers['Last-Event-ID'], '0');
+  });
+
+  test(
+      'queues closeout summary in scoped secure storage and removes it after sync',
+      () async {
+    final offline = _StatusAdapter(200, failTransport: true);
+    final dio = Dio(BaseOptions(baseUrl: 'https://venue.example'))
+      ..httpClientAdapter = offline;
+    const storage = FlutterSecureStorage();
+    final api = OperationsApi(_FixedTokenAuth(), storage, dio: dio);
+
+    expect(
+        await api.saveCloseoutSummary('event-1', 'Late gate close recorded.'),
+        isTrue);
+    final key = 'venue.closeout.summary.outbox.test-scope.event-1';
+    final queued = await storage.read(key: key);
+    expect(queued, isNotNull);
+    expect(queued, contains('Late gate close recorded.'));
+
+    final online = _StatusAdapter(200);
+    dio.httpClientAdapter = online;
+    await api.synchronizeOfflineCloseoutSummaries();
+
+    expect(online.requests, 1);
+    expect(await storage.read(key: key), isNull);
+  });
+
+  test(
+      'retains rejected offline closeout notes for review without retry looping',
+      () async {
+    final offline = _StatusAdapter(200, failTransport: true);
+    final dio = Dio(BaseOptions(baseUrl: 'https://venue.example'))
+      ..httpClientAdapter = offline;
+    const storage = FlutterSecureStorage();
+    final api = OperationsApi(_FixedTokenAuth(), storage, dio: dio);
+    await api.saveCloseoutSummary('event-1', 'Manager note from venue log.');
+
+    final rejected = _StatusAdapter(409);
+    dio.httpClientAdapter = rejected;
+    await api.synchronizeOfflineCloseoutSummaries();
+    final key = 'venue.closeout.summary.outbox.test-scope.event-1';
+    final draft = await storage.read(key: key);
+    expect(draft, contains('needs_review'));
+    expect(draft, contains('Manager note from venue log.'));
+
+    await api.synchronizeOfflineCloseoutSummaries();
+    expect(rejected.requests, 1);
   });
 }

@@ -308,7 +308,10 @@ class OperationsApi {
     if (scope == null) return;
     final prefix = 'venue.closeout.summary.outbox.$scope.';
     final rows = await _storage.readAll();
-    for (final entry in rows.entries.where((row) => row.key.startsWith(prefix))) {
+    final pending = rows.entries
+        .where((row) => row.key.startsWith(prefix))
+        .toList(growable: false);
+    for (final entry in pending) {
       final draft = jsonDecode(entry.value) as Map<String, dynamic>;
       if (draft['state'] == 'needs_review') continue;
       final eventId = draft['eventId'] as String;
