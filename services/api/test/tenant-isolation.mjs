@@ -409,7 +409,7 @@ try {
       try {
         await tx.$executeRaw`UPDATE event_post_close_corrections SET headline='forbidden rewrite' WHERE id=${correctionA.id}::uuid`;
       } catch (error) { immutableCorrectionError = error; }
-      assert.equal(immutableCorrectionError?.meta?.code, '23514', 'post-close corrections must be immutable');
+      assert.equal(immutableCorrectionError?.meta?.code, 'P0001', 'post-close corrections must be immutable');
       await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT post_close_correction_rls_probe');
       throw rollback;
     });
