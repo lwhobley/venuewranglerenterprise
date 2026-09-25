@@ -9,7 +9,7 @@ type AuditRow = {
   id: string;
   actorId: string;
   action: string;
-  resourceType: 'issue' | 'task' | 'person';
+  resourceType: 'issue' | 'task' | 'person' | 'organization' | 'venue' | 'location' | 'event';
   resourceId: string;
   eventId: string | null;
   changedFields: string[] | null;
@@ -60,6 +60,11 @@ export class AuditService {
           SELECT id, actor_id, action, 'person'::text, person_id,
                  NULL::uuid, changed_fields, created_at
           FROM person_audit_events
+          WHERE organization_id = ${identity.tenantId}::uuid
+          UNION ALL
+          SELECT id, actor_id, action, resource_type, resource_id,
+                 event_id, changed_fields, created_at
+          FROM tenant_setup_audit_events
           WHERE organization_id = ${identity.tenantId}::uuid
         )
         SELECT id::text AS id, actor_id, action, resource_type, resource_id::text,

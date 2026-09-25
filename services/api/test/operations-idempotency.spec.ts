@@ -29,6 +29,7 @@ describe('tenant setup command idempotency', () => {
         }),
       },
       venue: { create: createVenue },
+      tenantSetupAuditEvent: { create: vi.fn().mockResolvedValue({}) },
     };
     const prisma = {
       withTenant: vi.fn((_identity: Identity, action: (transaction: never) => Promise<unknown>) => action(tx as never)),
@@ -40,6 +41,7 @@ describe('tenant setup command idempotency', () => {
 
     expect(replay).toEqual(first);
     expect(createVenue).toHaveBeenCalledOnce();
+    expect(tx.tenantSetupAuditEvent.create).toHaveBeenCalledOnce();
     expect(tx.commandReceipt.create).toHaveBeenCalledOnce();
   });
 
@@ -57,6 +59,7 @@ describe('tenant setup command idempotency', () => {
         }),
       },
       venue: { create: createVenue },
+      tenantSetupAuditEvent: { create: vi.fn().mockResolvedValue({}) },
     };
     const prisma = {
       withTenant: vi.fn((_identity: Identity, action: (transaction: never) => Promise<unknown>) => action(tx as never)),

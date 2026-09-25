@@ -12,11 +12,26 @@ export class OperationsService {
   async bootstrap(identity: Identity, claims: { email?: string; name?: string }) {
     return this.prisma.withTenant(identity, async (tx) => {
       const slug = identity.organizationSlug;
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`org-bootstrap:${identity.tenantId}`}, 0))`;
+      const previousOrg = await tx.organization.findUnique({ where: { id: identity.tenantId } });
       const org = await tx.organization.upsert({
         where: { id: identity.tenantId },
         create: { id: identity.tenantId, name: slug ? this.title(slug) : 'Venue organization', slug },
         update: slug ? { slug } : {},
       });
+      const changedFields = previousOrg
+        ? (previousOrg.slug !== org.slug ? ['slug'] : [])
+        : ['name', ...(org.slug ? ['slug'] : [])];
+      if (changedFields.length > 0) {
+        await tx.tenantSetupAuditEvent.create({ data: {
+          organizationId: identity.tenantId,
+          actorId: identity.subject,
+          action: previousOrg ? 'updated' : 'created',
+          resourceType: 'organization',
+          resourceId: org.id,
+          changedFields,
+        } });
+      }
       const email = claims.email?.trim().toLowerCase();
       if (email && email.length <= 320) {
         await tx.person.upsert({
@@ -37,7 +52,18 @@ export class OperationsService {
   async createVenue(identity: Identity, dto: CreateVenueDto, key: string) {
     assertTenantAdmin(identity);
     const input = { name: dto.name.trim() };
-    return this.command(identity, key, 'venue.create', input, (tx) => tx.venue.create({ data: { organizationId: identity.tenantId, ...input } }));
+    return this.command(identity, key, 'venue.create', input, async (tx) => {
+      const venue = await tx.venue.create({ data: { organizationId: identity.tenantId, ...input } });
+      await tx.tenantSetupAuditEvent.create({ data: {
+        organizationId: identity.tenantId,
+        actorId: identity.subject,
+        action: 'created',
+        resourceType: 'venue',
+        resourceId: venue.id,
+        changedFields: ['name'],
+      } });
+      return venue;
+    });
   }
 
   async createLocation(identity: Identity, dto: CreateLocationDto, key: string) {
@@ -46,7 +72,16 @@ export class OperationsService {
     return this.command(identity, key, 'location.create', input, async (tx) => {
       const venue = await tx.venue.findFirst({ where: { id: dto.venueId, organizationId: identity.tenantId } });
       if (!venue) throw new NotFoundException('Venue not found in this organization.');
-      return tx.location.create({ data: { organizationId: identity.tenantId, venueId: venue.id, name: dto.name.trim() } });
+      const location = await tx.location.create({ data: { organizationId: identity.tenantId, venueId: venue.id, name: dto.name.trim() } });
+      await tx.tenantSetupAuditEvent.create({ data: {
+        organizationId: identity.tenantId,
+        actorId: identity.subject,
+        action: 'created',
+        resourceType: 'location',
+        resourceId: location.id,
+        changedFields: ['name', 'venue_id'],
+      } });
+      return location;
     });
   }
 
@@ -56,7 +91,17 @@ export class OperationsService {
     return this.command(identity, key, 'event.create', input, async (tx) => {
       const venue = await tx.venue.findFirst({ where: { id: dto.venueId, organizationId: identity.tenantId } });
       if (!venue) throw new NotFoundException('Venue not found in this organization.');
-      return tx.event.create({ data: { organizationId: identity.tenantId, venueId: venue.id, name: dto.name.trim(), startsAt: new Date(input.startsAt) } });
+      const event = await tx.event.create({ data: { organizationId: identity.tenantId, venueId: venue.id, name: dto.name.trim(), startsAt: new Date(input.startsAt) } });
+      await tx.tenantSetupAuditEvent.create({ data: {
+        organizationId: identity.tenantId,
+        actorId: identity.subject,
+        action: 'created',
+        resourceType: 'event',
+        resourceId: event.id,
+        eventId: event.id,
+        changedFields: ['name', 'starts_at', 'venue_id'],
+      } });
+      return event;
     });
   }
 

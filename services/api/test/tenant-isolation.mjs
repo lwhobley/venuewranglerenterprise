@@ -63,6 +63,7 @@ try {
       await tx.commandReceipt.create({ data: { organizationId: tenantA, key: `tenant-a-${randomUUID()}`, fingerprint: 'a', action: 'test', response: {} } });
       await tx.issueDomainEvent.create({ data: { organizationId: tenantA, eventId: eventA, issueId: issueA.id, action: 'reported', payload: { issueId: issueA.id } } });
       await tx.person.create({ data: { organizationId: tenantA, externalSubject: `tenant-a-${randomUUID()}`, email: `${randomUUID()}@example.invalid`, displayName: 'Tenant A' } });
+      const setupAuditA = await tx.tenantSetupAuditEvent.create({ data: { organizationId: tenantA, actorId: 'tenant-isolation-test', action: 'created', resourceType: 'venue', resourceId: venueA, changedFields: ['name'] } });
       await tx.externalIntegrationEvent.create({ data: { organizationId: tenantA, eventId: eventA, source: 'test-labor', externalId: `tenant-a-${randomUUID()}`, eventType: 'test.snapshot', occurredAt: new Date(), payload: { tenant: 'a' }, bodySha256: 'a'.repeat(64) } });
       const taskA = await tx.operationalTask.create({ data: { organizationId: tenantA, venueId: venueA, eventId: eventA, locationId: locationA, kind: 'SERVICE', title: `Tenant A ${randomUUID()}`, createdBy: 'tenant-isolation-test', updatedBy: 'tenant-isolation-test' } });
       await tx.operationalTaskAudit.create({ data: { organizationId: tenantA, taskId: taskA.id, actorId: 'tenant-isolation-test', action: 'created' } });
@@ -83,6 +84,7 @@ try {
       await tx.commandReceipt.create({ data: { organizationId: tenantB, key: `tenant-b-${randomUUID()}`, fingerprint: 'b', action: 'test', response: {} } });
       await tx.issueDomainEvent.create({ data: { organizationId: tenantB, eventId: eventB, issueId: issueB.id, action: 'reported', payload: { issueId: issueB.id } } });
       await tx.person.create({ data: { organizationId: tenantB, externalSubject: `tenant-b-${randomUUID()}`, email: `${randomUUID()}@example.invalid`, displayName: 'Tenant B' } });
+      const setupAuditB = await tx.tenantSetupAuditEvent.create({ data: { organizationId: tenantB, actorId: 'tenant-isolation-test', action: 'created', resourceType: 'venue', resourceId: venueB, changedFields: ['name'] } });
       await tx.externalIntegrationEvent.create({ data: { organizationId: tenantB, eventId: eventB, source: 'test-labor', externalId: `tenant-b-${randomUUID()}`, eventType: 'test.snapshot', occurredAt: new Date(), payload: { tenant: 'b' }, bodySha256: 'b'.repeat(64) } });
       const taskB = await tx.operationalTask.create({ data: { organizationId: tenantB, venueId: venueB, eventId: eventB, locationId: locationB, kind: 'SERVICE', title: `Tenant B ${randomUUID()}`, createdBy: 'tenant-isolation-test', updatedBy: 'tenant-isolation-test' } });
       await tx.operationalTaskAudit.create({ data: { organizationId: tenantB, taskId: taskB.id, actorId: 'tenant-isolation-test', action: 'created' } });
@@ -107,7 +109,8 @@ try {
       assert.ok(auditA.items.some((row) => row.resourceId === issueA.id && row.resourceType === 'issue'));
       assert.ok(auditA.items.some((row) => row.resourceId === taskA.id && row.resourceType === 'task'));
       assert.ok(auditA.items.some((row) => row.resourceType === 'person'));
-      assert.equal(auditA.items.some((row) => row.resourceId === issueB.id || row.resourceId === taskB.id), false, 'tenant A audit feed must exclude tenant B records');
+      assert.ok(auditA.items.some((row) => row.id === setupAuditA.id && row.resourceType === 'venue'));
+      assert.equal(auditA.items.some((row) => row.resourceId === issueB.id || row.resourceId === taskB.id || row.id === setupAuditB.id), false, 'tenant A audit feed must exclude tenant B records');
 
       const auditB = await auditService.list({
         subject: 'tenant-isolation-test',
@@ -117,7 +120,8 @@ try {
       }, '100');
       assert.ok(auditB.items.some((row) => row.resourceId === issueB.id && row.resourceType === 'issue'));
       assert.ok(auditB.items.some((row) => row.resourceId === taskB.id && row.resourceType === 'task'));
-      assert.equal(auditB.items.some((row) => row.resourceId === issueA.id || row.resourceId === taskA.id), false, 'tenant B audit feed must exclude tenant A records');
+      assert.ok(auditB.items.some((row) => row.id === setupAuditB.id && row.resourceType === 'venue'));
+      assert.equal(auditB.items.some((row) => row.resourceId === issueA.id || row.resourceId === taskA.id || row.id === setupAuditA.id), false, 'tenant B audit feed must exclude tenant A records');
 
       await setTenant(tx, tenantA);
       await assertTenantCannotRead(tx, tenantA, tenantB, issueB.id, taskB.id);
@@ -174,6 +178,7 @@ async function assertTenantCannotRead(tx, visibleTenant, hiddenTenant, hiddenIss
   assert.equal(await tx.issueDomainEvent.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} event outbox isolation`);
   assert.equal(await tx.person.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} people isolation`);
   assert.equal(await tx.personAuditEvent.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} person audit isolation`);
+  assert.equal(await tx.tenantSetupAuditEvent.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} setup audit isolation`);
   assert.equal(await tx.operationalTask.count({ where: { id: hiddenTaskId } }), 0, `${visibleTenant} operational task isolation`);
   assert.equal(await tx.operationalTaskAudit.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} task audit isolation`);
   assert.equal(await tx.userNotification.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} notification isolation`);

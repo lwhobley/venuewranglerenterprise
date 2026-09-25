@@ -56,6 +56,7 @@ The server never accepts a tenant identifier from a request body. It derives ten
 
 - Each mutation requires an `Idempotency-Key`; a repeated key returns the original command response.
 - Tenant setup writes (venue, location, event, and person provisioning) and operational task create/update use tenant-scoped command receipts. The Flutter client persists each pending key in secure storage under a hash of the command plus the current identity/capability scope, so a retry after a transport failure replays the original response rather than duplicating the write. Reusing a key with a different actor, command, or payload is rejected.
+- Organization bootstrap and setup-resource creation append actor, action, resource type/ID, event reference where applicable, and changed field names to an RLS-protected immutable audit table. The audit feed never exposes stored record payloads.
 - The API writes the business change, immutable audit event, command receipt, and realtime event inside one database transaction.
 - Issue activity captures actor, transition, before/after values, and optional reason. Database triggers prevent edits or deletion of audit rows.
 - Every event query and command sets `app.tenant_id` transaction-locally before using Prisma. RLS policies use this setting.

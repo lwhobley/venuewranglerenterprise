@@ -74,15 +74,16 @@ describe('tenant audit history', () => {
       identity.tenantId,
       identity.tenantId,
       identity.tenantId,
+      identity.tenantId,
       null,
       null,
       null,
       3,
     );
     await new AuditService(prisma).list(identity, '2', result.nextCursor!);
-    expect(queryRaw.mock.calls[1][4]).toBe(cursor.createdAt);
     expect(queryRaw.mock.calls[1][5]).toBe(cursor.createdAt);
-    expect(queryRaw.mock.calls[1][6]).toBe(cursor.id);
+    expect(queryRaw.mock.calls[1][6]).toBe(cursor.createdAt);
+    expect(queryRaw.mock.calls[1][7]).toBe(cursor.id);
   });
 
   it('requires tenant administrator capability before querying audit data', async () => {
