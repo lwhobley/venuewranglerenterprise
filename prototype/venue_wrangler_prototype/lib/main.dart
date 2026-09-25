@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
@@ -877,6 +878,14 @@ class _LiveIssuesPage extends ConsumerWidget {
                                       subtitle: Text(
                                           '${item['state']} · ${item['severity']} · ${item['category']}\n${item['description'] ?? ''}'),
                                       isThreeLine: true),
+                                  if (item['latitude'] != null && item['longitude'] != null)
+                                    Padding(
+                                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                                      child: Text(
+                                        'Device location evidence · ${item['latitude']}, ${item['longitude']} · ±${item['locationAccuracyMeters']} m · ${item['locationCapturedAt']}',
+                                        style: const TextStyle(fontSize: 12, color: Color(0xFF59645D)),
+                                      ),
+                                    ),
                                   TextButton.icon(
                                       onPressed: () => _showIssueEvidence(
                                           context,
@@ -2352,6 +2361,7 @@ Future<void> _newLiveIssue(BuildContext context, WidgetRef ref,
       .where((location) => location['venueId'] == event['venueId'])
       .toList();
   String? locationId;
+  Position? locationEvidence;
   final evidence = <LocalIssueEvidence>[];
   final result = await showDialog<bool>(
       context: context,
@@ -2412,6 +2422,21 @@ Future<void> _newLiveIssue(BuildContext context, WidgetRef ref,
                                 ))
                             .toList(),
                       ),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: OutlinedButton.icon(
+                        onPressed: () async {
+                          try {
+                            final position = await _captureIssueLocation();
+                            if (position != null) setState(() => locationEvidence = position);
+                          } catch (error) {
+                            if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not capture location: $error')));
+                          }
+                        },
+                        icon: Icon(locationEvidence == null ? Icons.add_location_alt_outlined : Icons.location_on),
+                        label: Text(locationEvidence == null ? 'Add device location (optional)' : 'Location attached · ±${locationEvidence!.accuracy.toStringAsFixed(0)} m'),
+                      ),
+                    ),
                     DropdownButtonFormField<String?>(
                         initialValue: locationId,
                         decoration:
@@ -2457,6 +2482,10 @@ Future<void> _newLiveIssue(BuildContext context, WidgetRef ref,
       eventId: event['id'] as String,
       venueId: venueId,
       locationId: locationId,
+      latitude: locationEvidence?.latitude,
+      longitude: locationEvidence?.longitude,
+      locationAccuracyMeters: locationEvidence?.accuracy,
+      locationCapturedAt: locationEvidence?.timestamp,
       title: title.text.trim(),
       description: description.text.trim(),
       category: 'Operations',
@@ -2467,6 +2496,20 @@ Future<void> _newLiveIssue(BuildContext context, WidgetRef ref,
   ref.invalidate(eventIssuesProvider(event['id'] as String));
   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
       content: Text('Issue saved securely and queued to sync.')));
+}
+
+Future<Position?> _captureIssueLocation() async {
+  if (!await Geolocator.isLocationServiceEnabled()) {
+    throw StateError('Turn on device location services, then try again.');
+  }
+  var permission = await Geolocator.checkPermission();
+  if (permission == LocationPermission.denied) permission = await Geolocator.requestPermission();
+  if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+    throw StateError('Allow location access while using the app to attach location evidence.');
+  }
+  return Geolocator.getCurrentPosition(
+    locationSettings: const LocationSettings(accuracy: LocationAccuracy.medium, timeLimit: Duration(seconds: 15)),
+  );
 }
 
 Future<void> _newLiveTask(

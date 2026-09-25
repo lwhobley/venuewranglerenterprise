@@ -17,6 +17,10 @@ class PendingIssueReport {
       required this.eventId,
       required this.venueId,
       this.locationId,
+      this.latitude,
+      this.longitude,
+      this.locationAccuracyMeters,
+      this.locationCapturedAt,
       this.sessionScope,
       required this.title,
       required this.description,
@@ -29,6 +33,10 @@ class PendingIssueReport {
   final String eventId;
   final String venueId;
   final String? locationId;
+  final double? latitude;
+  final double? longitude;
+  final double? locationAccuracyMeters;
+  final DateTime? locationCapturedAt;
   final String? sessionScope;
   final String title;
   final String description;
@@ -43,6 +51,10 @@ class PendingIssueReport {
         eventId: eventId,
         venueId: venueId,
         locationId: locationId,
+        latitude: latitude,
+        longitude: longitude,
+        locationAccuracyMeters: locationAccuracyMeters,
+        locationCapturedAt: locationCapturedAt,
         sessionScope: value,
         title: title,
         description: description,
@@ -131,6 +143,10 @@ class SecureIssueOutbox implements IssueOutbox {
         'eventId': item.eventId,
         'venueId': item.venueId,
         'locationId': item.locationId,
+        'latitude': item.latitude,
+        'longitude': item.longitude,
+        'locationAccuracyMeters': item.locationAccuracyMeters,
+        'locationCapturedAt': item.locationCapturedAt?.toUtc().toIso8601String(),
         'sessionScope': item.sessionScope,
         'title': item.title,
         'description': item.description,
@@ -147,6 +163,10 @@ class SecureIssueOutbox implements IssueOutbox {
         eventId: value['eventId'] as String,
         venueId: value['venueId'] as String,
         locationId: value['locationId'] as String?,
+        latitude: (value['latitude'] as num?)?.toDouble(),
+        longitude: (value['longitude'] as num?)?.toDouble(),
+        locationAccuracyMeters: (value['locationAccuracyMeters'] as num?)?.toDouble(),
+        locationCapturedAt: value['locationCapturedAt'] == null ? null : DateTime.parse(value['locationCapturedAt'] as String),
         sessionScope: value['sessionScope'] as String?,
         title: value['title'] as String,
         description: value['description'] as String,
@@ -184,6 +204,12 @@ class DioIssueApi implements IssueApi {
         'severity': command.severity,
         'venueId': command.venueId,
         if (command.locationId != null) 'locationId': command.locationId,
+        if (command.latitude != null && command.longitude != null) ...{
+          'latitude': command.latitude,
+          'longitude': command.longitude,
+          'locationAccuracyMeters': command.locationAccuracyMeters,
+          'locationCapturedAt': command.locationCapturedAt?.toUtc().toIso8601String(),
+        },
       },
       options: Options(headers: {
         'Authorization': 'Bearer $token',

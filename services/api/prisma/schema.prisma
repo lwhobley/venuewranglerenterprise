@@ -216,6 +216,10 @@ model Issue {
   eventId        String             @map("event_id") @db.Uuid
   venueId        String             @map("venue_id") @db.Uuid
   locationId     String?            @map("location_id") @db.Uuid
+  latitude                Decimal?   @db.Decimal(8, 5)
+  longitude               Decimal?   @db.Decimal(8, 5)
+  locationAccuracyMeters  Decimal?   @map("location_accuracy_meters") @db.Decimal(7, 2)
+  locationCapturedAt      DateTime?  @map("location_captured_at") @db.Timestamptz(6)
   title          String
   description    String
   category       String

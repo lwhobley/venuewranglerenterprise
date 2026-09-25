@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { IssueState, Prisma } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { Observable, concatMap, exhaustMap, from, map, timer } from 'rxjs';
@@ -75,6 +75,20 @@ export class IssuesService {
 
   async create(identity: Identity, eventId: string, dto: CreateIssueDto, key: string) {
     assertScope(identity, 'issue:report', eventId, dto.venueId, dto.locationId);
+    const hasLatitude = dto.latitude !== undefined && dto.latitude !== null;
+    const hasLongitude = dto.longitude !== undefined && dto.longitude !== null;
+    if (hasLatitude !== hasLongitude || (hasLatitude && (dto.locationAccuracyMeters === undefined || !dto.locationCapturedAt))) {
+      throw new BadRequestException('Location evidence requires latitude, longitude, accuracy, and capture time together.');
+    }
+    if (!hasLatitude && (dto.locationAccuracyMeters !== undefined || dto.locationCapturedAt !== undefined)) {
+      throw new BadRequestException('Location accuracy and capture time require coordinates.');
+    }
+    if (dto.locationCapturedAt) {
+      const capturedAt = new Date(dto.locationCapturedAt).getTime();
+      if (!Number.isFinite(capturedAt) || capturedAt > Date.now() + 60_000) {
+        throw new BadRequestException('Location evidence capture time cannot be in the future.');
+      }
+    }
     const fingerprint = this.fingerprint('reported', { actorId: identity.subject, eventId, dto });
     const transaction = await this.prisma.withTenant(identity, async (tx) => {
       await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${identity.tenantId + key}, 0))`;
@@ -86,7 +100,7 @@ export class IssuesService {
         const location = await tx.location.findFirst({ where: { id: dto.locationId, venueId: dto.venueId } });
         if (!location) throw new NotFoundException('This location is unavailable in the selected venue.');
       }
-      const issue = await tx.issue.create({ data: { organizationId: identity.tenantId, eventId, venueId: dto.venueId, locationId: dto.locationId, title: dto.title, description: dto.description, category: dto.category, severity: dto.severity, reporterId: identity.subject } });
+      const issue = await tx.issue.create({ data: { organizationId: identity.tenantId, eventId, venueId: dto.venueId, locationId: dto.locationId, latitude: dto.latitude, longitude: dto.longitude, locationAccuracyMeters: dto.locationAccuracyMeters, locationCapturedAt: dto.locationCapturedAt ? new Date(dto.locationCapturedAt) : undefined, title: dto.title, description: dto.description, category: dto.category, severity: dto.severity, reporterId: identity.subject } });
       await tx.issueAuditEvent.create({ data: { organizationId: identity.tenantId, issueId: issue.id, actorId: identity.subject, action: 'reported', after: issue as unknown as Prisma.InputJsonValue } });
       const result = { issue, replayed: false };
       await tx.commandReceipt.create({ data: { organizationId: identity.tenantId, key, fingerprint, action: 'reported', response: result as unknown as Prisma.InputJsonValue } });

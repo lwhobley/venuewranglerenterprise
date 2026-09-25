@@ -1,4 +1,4 @@
-import { IsEnum, IsOptional, IsString, IsUUID, Length } from 'class-validator';
+import { IsDateString, IsEnum, IsNumber, IsOptional, IsString, IsUUID, Length, Max, Min } from 'class-validator';
 import { IssueSeverity } from '@prisma/client';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
@@ -9,6 +9,10 @@ export class CreateIssueDto {
   @ApiProperty({ enum: IssueSeverity }) @IsEnum(IssueSeverity) severity!: IssueSeverity;
   @ApiProperty({ format: 'uuid' }) @IsUUID() venueId!: string;
   @ApiPropertyOptional({ format: 'uuid' }) @IsOptional() @IsUUID() locationId?: string;
+  @ApiPropertyOptional({ minimum: -90, maximum: 90 }) @IsOptional() @IsNumber() @Min(-90) @Max(90) latitude?: number;
+  @ApiPropertyOptional({ minimum: -180, maximum: 180 }) @IsOptional() @IsNumber() @Min(-180) @Max(180) longitude?: number;
+  @ApiPropertyOptional({ minimum: 0, maximum: 10000 }) @IsOptional() @IsNumber() @Min(0) @Max(10000) locationAccuracyMeters?: number;
+  @ApiPropertyOptional({ format: 'date-time' }) @IsOptional() @IsDateString() locationCapturedAt?: string;
 }
 export class AssignIssueDto { @ApiProperty() @IsString() @Length(1, 160) ownerId!: string; @ApiPropertyOptional() @IsOptional() @IsString() @Length(1, 1000) reason?: string; }
 export class IssueNoteDto { @ApiProperty() @IsString() @Length(1, 1000) reason!: string; }
