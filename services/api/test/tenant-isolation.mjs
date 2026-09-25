@@ -234,7 +234,8 @@ try {
       await tx.$executeRawUnsafe('SAVEPOINT vendor_request_rls_insert_probe');
       let crossTenantVendorRequestError;
       try {
-        await tx.staffingVendorRequest.create({ data: { organizationId: tenantB, venueId: venueB, eventId: eventB, locationId: locationB, demandId: demandBId, requesterSubject: 'forbidden-cross-tenant', vendorSubject: subjectB, requestedHeadcount: 1, responseDueAt: new Date(Date.now() + 86400000) } });
+        await tx.$executeRaw`INSERT INTO staffing_vendor_requests(organization_id,venue_id,event_id,location_id,demand_id,requester_subject,vendor_subject,requested_headcount,response_due_at)
+          VALUES (${tenantB}::uuid,${venueB}::uuid,${eventB}::uuid,${locationB}::uuid,${demandBId}::uuid,'forbidden-cross-tenant',${subjectB},1,now()+interval '1 day')`;
       } catch (error) { crossTenantVendorRequestError = error; }
       await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT vendor_request_rls_insert_probe');
       assert.equal(crossTenantVendorRequestError?.meta?.code, '42501', 'cross-tenant vendor request insert must fail RLS WITH CHECK');
