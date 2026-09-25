@@ -150,6 +150,7 @@ model Organization {
   staffUnavailabilityAudits    StaffUnavailabilityAudit[]
   qualifications               PersonQualification[]
   hospitalityApprovalThreshold Decimal?                      @map("hospitality_approval_threshold") @db.Decimal(10, 3)
+  hospitalityCurrencyCode      String                         @default("USD") @map("hospitality_currency_code") @db.Char(3)
   hospitalityMenuItems         HospitalityMenuItem[]
   hospitalityOrders            HospitalityOrder[]
   hospitalityOrderAudits       HospitalityOrderAudit[]
@@ -534,6 +535,7 @@ model HospitalityOrderLine {
   note              String                        @default("")
   fulfilledQuantity Decimal                       @default(0) @map("fulfilled_quantity") @db.Decimal(10, 3)
   menuItemId        String?                       @map("menu_item_id") @db.Uuid
+  unitPrice         Decimal?                      @map("unit_price") @db.Decimal(10, 2)
   order             HospitalityOrder              @relation(fields: [orderId, organizationId], references: [id, organizationId], map: "hospitality_order_lines_order_tenant_fk")
   menuItem          HospitalityMenuItem?          @relation(fields: [menuItemId, organizationId], references: [id, organizationId], map: "hospitality_order_lines_menu_item_fk")
   fulfillments      HospitalityOrderFulfillment[]
@@ -550,7 +552,8 @@ model HospitalityMenuItem {
   name           String
   description    String                 @default("")
   category       String                 @default("General")
-  unit           String                 @default("each")
+  defaultUnit    String                 @default("each") @map("default_unit")
+  unitPrice      Decimal                @map("unit_price") @db.Decimal(10, 2)
   active         Boolean                @default(true)
   createdAt      DateTime               @default(now()) @map("created_at")
   updatedAt      DateTime               @updatedAt @map("updated_at")

@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsDateString, IsIn, IsNumber, IsOptional, IsString, IsUUID, Length, Max, Min, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsDateString, IsIn, IsNumber, IsOptional, IsString, IsUUID, Length, Matches, Max, Min, ValidateNested } from 'class-validator';
 
 export class HospitalityOrderLineDto {
   @ApiPropertyOptional({ description: 'Optional link to a venue menu catalog item.' }) @IsOptional() @IsUUID() menuItemId?: string;
@@ -26,15 +26,23 @@ export class CreateHospitalityMenuItemDto {
   @ApiPropertyOptional() @IsOptional() @IsString() @Length(0, 1000) description?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() @Length(1, 80) category?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() @Length(1, 24) unit?: string;
+  @ApiProperty({ description: 'Unit price in the tenant configured currency.' }) @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) @Max(99999999) unitPrice!: number;
+}
+
+export class SetHospitalityMenuItemStatusDto {
+  @ApiProperty() @IsBoolean() active!: boolean;
 }
 
 export class UpdateHospitalityPolicyDto {
-  @ApiPropertyOptional({ description: 'Tenant-configured order quantity approval threshold. A threshold set by the tenant is not a legal rule.' })
+  @ApiPropertyOptional({ description: 'Tenant-configured estimated order value threshold in the tenant configured currency.' })
   @IsOptional()
-  @IsNumber({ maxDecimalPlaces: 3 })
+  @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
-  @Max(100000)
+  @Max(99999999)
   hospitalityApprovalThreshold?: number | null;
+  @ApiPropertyOptional({ description: 'ISO 4217 currency code used for menu prices and approval threshold.' })
+  @IsOptional() @IsString() @Matches(/^[A-Z]{3}$/)
+  hospitalityCurrencyCode?: string;
 }
 
 export class HospitalityFulfillmentLineDto {

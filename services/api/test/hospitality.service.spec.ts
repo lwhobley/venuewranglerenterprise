@@ -22,7 +22,7 @@ function harness(order: Record<string, unknown> = {}, orgSettings: Record<string
     person: { findFirst: vi.fn().mockResolvedValue({ id: 'person-1' }) },
     organization: {
       findUnique: vi.fn().mockResolvedValue({ id: tenantId, hospitalityApprovalThreshold: null, ...orgSettings }),
-      update: vi.fn().mockImplementation(({ data }) => ({ id: tenantId, ...data })),
+      update: vi.fn().mockImplementation(({ data }) => ({ id: tenantId, hospitalityCurrencyCode: 'USD', ...orgSettings, ...data })),
     },
     hospitalityMenuItem: {
       findFirst: vi.fn().mockResolvedValue(null),
@@ -62,7 +62,7 @@ describe('hospitality order lifecycle', () => {
     expect(push.deliver).toHaveBeenCalled();
   });
 
-  it('routes orders exceeding the tenant approval threshold to AWAITING_APPROVAL', async () => {
+  it('holds unpriced custom lines for manager approval when a monetary threshold is configured', async () => {
     const { service, tx } = harness({}, { hospitalityApprovalThreshold: 10 });
     const order = await service.create(requester, eventId, {
       venueId, serviceAt: '2026-10-20T18:00:00Z', assignedTo: 'kitchen-1',
@@ -75,6 +75,22 @@ describe('hospitality order lifecycle', () => {
     }));
     expect(tx.hospitalityOrderAudit.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ action: 'submitted_awaiting_approval' }),
+    }));
+  });
+
+  it('uses server-owned menu prices to calculate threshold and snapshots catalog data', async () => {
+    const menuItemId = '00000000-0000-0000-0000-000000000010';
+    const { service, tx } = harness({}, { hospitalityApprovalThreshold: 50, hospitalityCurrencyCode: 'USD' });
+    tx.hospitalityMenuItem.findFirst.mockResolvedValueOnce({ id: menuItemId, name: 'Coffee urn', defaultUnit: 'urn', unitPrice: 30 });
+    await service.create(requester, eventId, {
+      venueId, serviceAt: '2026-10-20T18:00:00Z',
+      lines: [{ menuItemId, itemName: 'tampered item name', quantity: 2, unit: 'each' }],
+    }, 'hospitality-priced-menu-key');
+    expect(tx.hospitalityOrder.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        state: 'AWAITING_APPROVAL',
+        lines: { create: [expect.objectContaining({ itemName: 'Coffee urn', unit: 'urn', unitPrice: 30, menuItemId })] },
+      }),
     }));
   });
 
@@ -217,11 +233,11 @@ describe('hospitality order lifecycle', () => {
   it('creates and lists venue menu catalog items with audit history', async () => {
     const { service, tx } = harness();
     const item = await service.createMenuItem(admin, {
-      venueId, name: 'Premium Coffee Urn', description: 'Fresh brew', category: 'Beverage', unit: 'urn',
+      venueId, name: 'Premium Coffee Urn', description: 'Fresh brew', category: 'Beverage', unit: 'urn', unitPrice: 32.5,
     }, 'menu-item-create-key-01');
     expect(item).toMatchObject({ id: 'menu-1', name: 'Premium Coffee Urn' });
     expect(tx.hospitalityMenuItem.create).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({ name: 'Premium Coffee Urn', venueId, category: 'Beverage', unit: 'urn' }),
+      data: expect.objectContaining({ name: 'Premium Coffee Urn', venueId, category: 'Beverage', defaultUnit: 'urn', unitPrice: 32.5 }),
     }));
     expect(tx.tenantSetupAuditEvent.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ action: 'created', resourceType: 'hospitality_menu_item' }),
@@ -245,10 +261,10 @@ describe('hospitality order lifecycle', () => {
   it('manages tenant hospitality approval threshold policy', async () => {
     const { service, tx } = harness({}, { hospitalityApprovalThreshold: 25 });
     const current = await service.getHospitalityPolicy(admin);
-    expect(current).toEqual({ hospitalityApprovalThreshold: 25 });
+    expect(current).toEqual({ hospitalityApprovalThreshold: 25, hospitalityCurrencyCode: 'USD' });
 
     const updated = await service.updateHospitalityPolicy(admin, { hospitalityApprovalThreshold: 50 }, 'policy-update-key');
-    expect(updated).toEqual({ hospitalityApprovalThreshold: 50 });
+    expect(updated).toEqual({ hospitalityApprovalThreshold: 50, hospitalityCurrencyCode: 'USD' });
     expect(tx.organization.update).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: tenantId },
       data: { hospitalityApprovalThreshold: 50 },

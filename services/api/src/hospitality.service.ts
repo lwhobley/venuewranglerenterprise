@@ -11,18 +11,26 @@ export class HospitalityService {
   private readonly logger = new Logger(HospitalityService.name);
   constructor(private readonly prisma: PrismaService, private readonly push: PushNotificationsService) {}
 
-  async listMenuItems(identity: Identity, venueId: string) {
+  async listMenuItems(identity: Identity, venueId: string, includeInactive = false) {
     if (!identity.capabilities.some(c => ['hospitality:order', 'hospitality:fulfill', 'operations:read', 'operations:write', 'tenant:admin'].includes(c))) {
       throw new ForbiddenException('Hospitality access is required to view menu items.');
     }
     if (!identity.venueIds.includes(venueId) && !identity.capabilities.includes('tenant:admin')) {
       throw new ForbiddenException('This venue is outside your assigned scope.');
     }
+    if (includeInactive && !identity.capabilities.includes('operations:write') && !identity.capabilities.includes('tenant:admin')) {
+      throw new ForbiddenException('Menu administration access is required.');
+    }
     return this.prisma.withTenant(identity, async tx => {
-      return tx.hospitalityMenuItem.findMany({
-        where: { organizationId: identity.tenantId, venueId, active: true },
+      const items = await tx.hospitalityMenuItem.findMany({
+        where: { organizationId: identity.tenantId, venueId, ...(includeInactive ? {} : { active: true }) },
         orderBy: [{ category: 'asc' }, { name: 'asc' }],
       });
+      const organization = await tx.organization.findUnique({
+        where: { id: identity.tenantId },
+        select: { hospitalityCurrencyCode: true },
+      });
+      return items.map(item => ({ ...item, currencyCode: organization?.hospitalityCurrencyCode ?? 'USD' }));
     });
   }
 
@@ -48,7 +56,8 @@ export class HospitalityService {
           name,
           description: dto.description?.trim() ?? '',
           category: dto.category?.trim() ?? 'General',
-          unit: dto.unit?.trim() ?? 'each',
+          defaultUnit: dto.unit?.trim() ?? 'each',
+          unitPrice: dto.unitPrice,
           active: true,
         },
       });
@@ -59,9 +68,36 @@ export class HospitalityService {
           action: 'created',
           resourceType: 'hospitality_menu_item',
           resourceId: item.id,
-          changedFields: ['name', 'category', 'unit'],
+          changedFields: ['name', 'category', 'default_unit', 'unit_price'],
         },
       });
+      return item;
+    });
+  }
+
+  async setMenuItemStatus(identity: Identity, venueId: string, itemId: string, active: boolean, key: string) {
+    if (!identity.capabilities.includes('tenant:admin') && !identity.capabilities.includes('operations:write')) {
+      throw new ForbiddenException('Only a tenant administrator or operations manager can manage menu items.');
+    }
+    if (!identity.venueIds.includes(venueId) && !identity.capabilities.includes('tenant:admin')) {
+      throw new ForbiddenException('This venue is outside your assigned scope.');
+    }
+    return this.command(identity, key, `hospitality.menu_item.${active ? 'activate' : 'deactivate'}`, { venueId, itemId, active }, async tx => {
+      const current = await tx.hospitalityMenuItem.findFirst({ where: { id: itemId, venueId, organizationId: identity.tenantId } });
+      if (!current) throw new NotFoundException('Menu item not found in this venue.');
+      const item = await tx.hospitalityMenuItem.update({ where: { id: itemId }, data: { active } });
+      if (current.active !== active) {
+        await tx.tenantSetupAuditEvent.create({
+          data: {
+            organizationId: identity.tenantId,
+            actorId: identity.subject,
+            action: active ? 'activated' : 'deactivated',
+            resourceType: 'hospitality_menu_item',
+            resourceId: item.id,
+            changedFields: ['active'],
+          },
+        });
+      }
       return item;
     });
   }
@@ -73,9 +109,12 @@ export class HospitalityService {
     return this.prisma.withTenant(identity, async tx => {
       const org = await tx.organization.findUnique({
         where: { id: identity.tenantId },
-        select: { hospitalityApprovalThreshold: true },
+        select: { hospitalityApprovalThreshold: true, hospitalityCurrencyCode: true },
       });
-      return { hospitalityApprovalThreshold: org?.hospitalityApprovalThreshold != null ? Number(org.hospitalityApprovalThreshold) : null };
+      return {
+        hospitalityApprovalThreshold: org?.hospitalityApprovalThreshold != null ? Number(org.hospitalityApprovalThreshold) : null,
+        hospitalityCurrencyCode: org?.hospitalityCurrencyCode ?? 'USD',
+      };
     });
   }
 
@@ -86,8 +125,11 @@ export class HospitalityService {
     return this.command(identity, key, 'hospitality.policy.update', dto, async tx => {
       const updated = await tx.organization.update({
         where: { id: identity.tenantId },
-        data: { hospitalityApprovalThreshold: dto.hospitalityApprovalThreshold != null ? dto.hospitalityApprovalThreshold : null },
-        select: { id: true, hospitalityApprovalThreshold: true },
+        data: {
+          ...(Object.hasOwn(dto, 'hospitalityApprovalThreshold') ? { hospitalityApprovalThreshold: dto.hospitalityApprovalThreshold } : {}),
+          ...(dto.hospitalityCurrencyCode ? { hospitalityCurrencyCode: dto.hospitalityCurrencyCode } : {}),
+        },
+        select: { id: true, hospitalityApprovalThreshold: true, hospitalityCurrencyCode: true },
       });
       await tx.tenantSetupAuditEvent.create({
         data: {
@@ -96,10 +138,16 @@ export class HospitalityService {
           action: 'updated',
           resourceType: 'hospitality_policy',
           resourceId: updated.id,
-          changedFields: ['hospitality_approval_threshold'],
+          changedFields: [
+            ...(Object.hasOwn(dto, 'hospitalityApprovalThreshold') ? ['hospitality_approval_threshold'] : []),
+            ...(dto.hospitalityCurrencyCode ? ['hospitality_currency_code'] : []),
+          ],
         },
       });
-      return { hospitalityApprovalThreshold: updated.hospitalityApprovalThreshold != null ? Number(updated.hospitalityApprovalThreshold) : null };
+      return {
+        hospitalityApprovalThreshold: updated.hospitalityApprovalThreshold != null ? Number(updated.hospitalityApprovalThreshold) : null,
+        hospitalityCurrencyCode: updated.hospitalityCurrencyCode,
+      };
     });
   }
 
@@ -150,12 +198,16 @@ export class HospitalityService {
         const person = await tx.person.findFirst({ where: { organizationId: identity.tenantId, externalSubject: dto.assignedTo, active: true }, select: { id: true } });
         if (!person) throw new NotFoundException('The selected kitchen operator is not an active tenant user.');
       }
+      const orderLines = [] as Array<(typeof input.lines)[number] & { unitPrice: Prisma.Decimal | null }>;
       for (const line of input.lines) {
         if (line.menuItemId) {
           const menuItem = await tx.hospitalityMenuItem.findFirst({
             where: { id: line.menuItemId, venueId: dto.venueId, organizationId: identity.tenantId, active: true },
           });
           if (!menuItem) throw new ConflictException('The selected menu item is not active for this venue.');
+          orderLines.push({ ...line, itemName: menuItem.name, unit: menuItem.defaultUnit, unitPrice: menuItem.unitPrice });
+        } else {
+          orderLines.push({ ...line, unitPrice: null });
         }
       }
       const org = await tx.organization.findUnique({
@@ -163,8 +215,9 @@ export class HospitalityService {
         select: { hospitalityApprovalThreshold: true },
       });
       const threshold = org?.hospitalityApprovalThreshold != null ? Number(org.hospitalityApprovalThreshold) : null;
-      const totalQuantity = input.lines.reduce((sum, line) => sum + line.quantity, 0);
-      const requiresApproval = threshold !== null && totalQuantity > threshold;
+      const hasUnpricedCustomLine = orderLines.some(line => line.unitPrice === null);
+      const estimatedSubtotal = orderLines.reduce((sum, line) => sum + Number(line.unitPrice ?? 0) * line.quantity, 0);
+      const requiresApproval = threshold !== null && (hasUnpricedCustomLine || estimatedSubtotal > threshold);
       const initialState: HospitalityOrderState = requiresApproval ? 'AWAITING_APPROVAL' : 'SUBMITTED';
 
       const order = await tx.hospitalityOrder.create({ data: {
@@ -172,7 +225,7 @@ export class HospitalityService {
         requestedBy: identity.subject, assignedTo: dto.assignedTo, serviceAt: new Date(dto.serviceAt),
         beoReference: input.beoReference ?? null,
         instructions: dto.instructions?.trim() ?? '', state: initialState,
-        lines: { create: input.lines.map(line => ({ itemName: line.itemName, quantity: line.quantity, unit: line.unit, note: line.note, menuItemId: line.menuItemId ?? null })) },
+        lines: { create: orderLines.map(line => ({ itemName: line.itemName, quantity: line.quantity, unit: line.unit, note: line.note, menuItemId: line.menuItemId ?? null, unitPrice: line.unitPrice })) },
       }, include: { lines: { orderBy: { itemName: 'asc' }, include: { fulfillments: { orderBy: { createdAt: 'asc' } } } } } });
       await this.audit(tx, identity, order.id, requiresApproval ? 'submitted_awaiting_approval' : 'submitted', null, order);
       const noticeTitle = requiresApproval ? 'Hospitality order awaiting approval' : 'New hospitality order';

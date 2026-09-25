@@ -2,7 +2,7 @@ import { Body, ConflictException, Controller, Get, Headers, Param, ParseUUIDPipe
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { JwtIdentityGuard } from './auth';
-import { CreateHospitalityMenuItemDto, CreateHospitalityOrderDto, HospitalityOrderActionDto, UpdateHospitalityPolicyDto } from './hospitality.dto';
+import { CreateHospitalityMenuItemDto, CreateHospitalityOrderDto, HospitalityOrderActionDto, SetHospitalityMenuItemStatusDto, UpdateHospitalityPolicyDto } from './hospitality.dto';
 import { HospitalityService } from './hospitality.service';
 
 @Controller('v1')
@@ -17,9 +17,19 @@ export class HospitalityController {
     return this.hospitality.listMenuItems(req.identity, venueId);
   }
 
+  @Get('admin/venues/:venueId/hospitality/menu-items')
+  listAdminMenuItems(@Req() req: Request, @Param('venueId', new ParseUUIDPipe()) venueId: string) {
+    return this.hospitality.listMenuItems(req.identity, venueId, true);
+  }
+
   @Post('admin/venues/:venueId/hospitality/menu-items')
   createMenuItem(@Req() req: Request, @Param('venueId', new ParseUUIDPipe()) venueId: string, @Body() dto: CreateHospitalityMenuItemDto, @Headers('idempotency-key') key: string) {
     return this.hospitality.createMenuItem(req.identity, { ...dto, venueId }, this.key(key));
+  }
+
+  @Put('admin/venues/:venueId/hospitality/menu-items/:itemId')
+  setMenuItemStatus(@Req() req: Request, @Param('venueId', new ParseUUIDPipe()) venueId: string, @Param('itemId', new ParseUUIDPipe()) itemId: string, @Body() dto: SetHospitalityMenuItemStatusDto, @Headers('idempotency-key') key: string) {
+    return this.hospitality.setMenuItemStatus(req.identity, venueId, itemId, dto.active, this.key(key));
   }
 
   @Get('admin/hospitality-policy')

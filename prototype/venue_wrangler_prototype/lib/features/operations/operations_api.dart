@@ -770,6 +770,62 @@ class OperationsApi {
               .data!
               .map((row) => Map<String, dynamic>.from(row as Map))
               .toList()));
+  Future<void> createHospitalityMenuItem(
+          String venueId, Map<String, Object?> data) async =>
+      _command<void>(
+          {'action': 'hospitality.menu_item.create', 'venueId': venueId, 'data': data},
+          (token, key) => _dio.post<void>(
+                '/api/v1/admin/venues/$venueId/hospitality/menu-items',
+                data: data,
+                options: Options(headers: {
+                  'Authorization': 'Bearer $token',
+                  'Idempotency-Key': key,
+                }),
+              ));
+  Future<List<Map<String, dynamic>>> adminHospitalityMenuItems(
+          String venueId) async =>
+      (await _request((token) => _dio.get<List<dynamic>>(
+                '/api/v1/admin/venues/$venueId/hospitality/menu-items',
+                options: Options(headers: {'Authorization': 'Bearer $token'}),
+              )))
+          .data!
+          .map((row) => Map<String, dynamic>.from(row as Map))
+          .toList();
+  Future<void> setHospitalityMenuItemActive(
+          String venueId, String itemId, bool active) async =>
+      _command<void>(
+          {'action': 'hospitality.menu_item.status', 'venueId': venueId, 'itemId': itemId, 'active': active},
+          (token, key) => _dio.put<void>(
+                '/api/v1/admin/venues/$venueId/hospitality/menu-items/$itemId',
+                data: {'active': active},
+                options: Options(headers: {
+                  'Authorization': 'Bearer $token',
+                  'Idempotency-Key': key,
+                }),
+              ));
+  Future<Map<String, dynamic>> hospitalityPolicy() async =>
+      (await _request((token) => _dio.get<Map<String, dynamic>>(
+            '/api/v1/admin/hospitality-policy',
+            options: Options(headers: {'Authorization': 'Bearer $token'}),
+          )))
+          .data!;
+  Future<void> updateHospitalityPolicy({
+    required double? threshold,
+    required String currencyCode,
+  }) async =>
+      _command<void>(
+          {'action': 'hospitality.policy.update', 'threshold': threshold, 'currencyCode': currencyCode},
+          (token, key) => _dio.put<void>(
+                '/api/v1/admin/hospitality-policy',
+                data: {
+                  'hospitalityApprovalThreshold': threshold,
+                  'hospitalityCurrencyCode': currencyCode,
+                },
+                options: Options(headers: {
+                  'Authorization': 'Bearer $token',
+                  'Idempotency-Key': key,
+                }),
+              ));
   Future<List<Map<String, dynamic>>> hospitalityDrafts(String eventId) async {
     final scope = await _auth.offlineCacheScope();
     if (scope == null) return const [];

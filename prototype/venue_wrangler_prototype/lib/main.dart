@@ -345,6 +345,9 @@ class _LiveOperationsHome extends ConsumerWidget {
                     event: event,
                     canOrder: caps.contains('hospitality:order') || caps.contains('operations:write') || isAdmin,
                     canFulfill: caps.contains('hospitality:fulfill') || isAdmin,
+                    canApprove: caps.contains('operations:write') || isAdmin,
+                    canManageMenu: caps.contains('operations:write') || isAdmin,
+                    canManagePolicy: isAdmin,
                     subject: identity['subject'] as String? ?? '',
                     locations: locations),
                 'Stock' => _LiveInventoryPage(

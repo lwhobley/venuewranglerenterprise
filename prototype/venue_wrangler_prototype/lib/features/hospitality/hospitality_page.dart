@@ -9,11 +9,17 @@ class HospitalityPage extends ConsumerWidget {
       required this.event,
       required this.canOrder,
       required this.canFulfill,
+      this.canApprove = false,
+      this.canManageMenu = false,
+      this.canManagePolicy = false,
       required this.subject,
       required this.locations});
   final Map<String, dynamic> event;
   final bool canOrder;
   final bool canFulfill;
+  final bool canApprove;
+  final bool canManageMenu;
+  final bool canManagePolicy;
   final String subject;
   final List<Map<String, dynamic>> locations;
 
@@ -92,6 +98,7 @@ class HospitalityPage extends ConsumerWidget {
                   subject: subject,
                   canOrder: canOrder,
                   canFulfill: canFulfill,
+                  canApprove: canApprove,
                 ),
               )),
           ]),
@@ -170,12 +177,14 @@ class _HospitalityOrderCard extends ConsumerWidget {
       required this.eventId,
       required this.subject,
       required this.canOrder,
-      required this.canFulfill});
+      required this.canFulfill,
+      required this.canApprove});
   final Map<String, dynamic> order;
   final String eventId;
   final String subject;
   final bool canOrder;
   final bool canFulfill;
+  final bool canApprove;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -188,8 +197,10 @@ class _HospitalityOrderCard extends ConsumerWidget {
         .toList();
     final actions = <(String, String)>[];
     if (state == 'AWAITING_APPROVAL') {
-      if (canOrder || canFulfill) {
+      if (canApprove) {
         actions.add(('approve', 'Approve request'));
+      }
+      if (canApprove || canFulfill) {
         actions.add(('reject', 'Reject'));
       }
       if (isRequester) {

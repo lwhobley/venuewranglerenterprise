@@ -2,7 +2,9 @@ ALTER TYPE hospitality_order_state ADD VALUE 'AWAITING_APPROVAL';
 
 ALTER TABLE organizations
   ADD COLUMN hospitality_approval_threshold numeric(10,3)
-  CHECK (hospitality_approval_threshold IS NULL OR hospitality_approval_threshold >= 0);
+  CHECK (hospitality_approval_threshold IS NULL OR hospitality_approval_threshold >= 0),
+  ADD COLUMN hospitality_currency_code char(3) NOT NULL DEFAULT 'USD'
+  CHECK (hospitality_currency_code ~ '^[A-Z]{3}$');
 
 ALTER TABLE hospitality_orders
   ADD COLUMN beo_reference text;
@@ -18,7 +20,8 @@ CREATE TABLE hospitality_menu_items (
   name text NOT NULL CHECK (length(btrim(name)) BETWEEN 2 AND 160),
   description text NOT NULL DEFAULT '' CHECK (length(description) <= 1000),
   category text NOT NULL DEFAULT 'General' CHECK (length(btrim(category)) BETWEEN 1 AND 80),
-  unit text NOT NULL DEFAULT 'each' CHECK (length(btrim(unit)) BETWEEN 1 AND 24),
+  default_unit text NOT NULL DEFAULT 'each' CHECK (length(btrim(default_unit)) BETWEEN 1 AND 24),
+  unit_price numeric(10,2) NOT NULL CHECK (unit_price >= 0),
   active boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
@@ -31,6 +34,7 @@ CREATE UNIQUE INDEX hospitality_menu_items_venue_name_unique ON hospitality_menu
 
 ALTER TABLE hospitality_order_lines
   ADD COLUMN menu_item_id uuid,
+  ADD COLUMN unit_price numeric(10,2) CHECK (unit_price IS NULL OR unit_price >= 0),
   ADD CONSTRAINT hospitality_order_lines_menu_item_fk
     FOREIGN KEY (menu_item_id, organization_id)
     REFERENCES hospitality_menu_items(id, organization_id);
