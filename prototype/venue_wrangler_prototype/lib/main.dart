@@ -1260,12 +1260,13 @@ class _ResponsiveIssueWorkspaceState extends State<ResponsiveIssueWorkspace> {
               child: DropdownButtonFormField<String>(
                 key: const ValueKey('issue-state-filter'),
                 initialValue: _stateFilter,
+                isExpanded: true,
                 decoration: const InputDecoration(
                   labelText: 'State',
                   isDense: true,
                 ),
                 items: const [
-                  DropdownMenuItem(value: 'ALL', child: Text('All issues')),
+                  DropdownMenuItem(value: 'ALL', child: Text('All')),
                   DropdownMenuItem(value: 'OPEN', child: Text('Open')),
                   DropdownMenuItem(value: 'CLOSED', child: Text('Closed')),
                 ],
