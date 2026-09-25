@@ -400,6 +400,35 @@ class _LiveOperationsHome extends ConsumerWidget {
                       }
                     }),
               };
+    final isCompact = MediaQuery.sizeOf(context).width < 600;
+    final isDesktop = MediaQuery.sizeOf(context).width >= 1024;
+    final mobilePrimaryTabs = <String>['Today'];
+    if (isAdmin) mobilePrimaryTabs.add('Setup');
+    if (caps.contains('vendor:staffing') && !caps.contains('operations:write')) {
+      mobilePrimaryTabs.add('Vendors');
+    }
+    if (caps.contains('hospitality:fulfill') && !caps.contains('operations:write')) {
+      mobilePrimaryTabs.add('Hospitality');
+    }
+    if (caps.contains('operations:write')) mobilePrimaryTabs.add('Staffing');
+    if (caps.contains('issue:read') || caps.contains('issue:report')) {
+      mobilePrimaryTabs.add('Issues');
+    }
+    if (caps.contains('operations:read')) mobilePrimaryTabs.add('Operations');
+    if (tabs.contains('Hospitality')) mobilePrimaryTabs.add('Hospitality');
+    if (tabs.contains('Stock')) mobilePrimaryTabs.add('Stock');
+    if (tabs.contains('Staffing')) mobilePrimaryTabs.add('Staffing');
+    if (tabs.contains('Vendors')) mobilePrimaryTabs.add('Vendors');
+    if (tabs.contains('Closeout')) mobilePrimaryTabs.add('Closeout');
+    final mobileTabs = mobilePrimaryTabs
+        .where((tab) => tabs.contains(tab))
+        .toSet()
+        .take(4)
+        .toList();
+    void selectTab(String tab) {
+      final target = tabs.indexOf(tab);
+      if (target >= 0) ref.read(_liveTabProvider.notifier).state = target;
+    }
     return Scaffold(
       appBar: AppBar(
         title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -456,25 +485,53 @@ class _LiveOperationsHome extends ConsumerWidget {
         ],
       ),
       body: SafeArea(
-          child: Column(children: [
-        if (tabs.length > 1)
-          Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-              child: SegmentedButton<int>(
-                  segments: [
-                    for (var i = 0; i < tabs.length; i++)
-                      ButtonSegment(value: i, label: Text(tabs[i]))
-                  ],
-                  selected: {
-                    selectedTab
-                  },
-                  onSelectionChanged: (value) =>
-                      ref.read(_liveTabProvider.notifier).state = value.first)),
-        Expanded(
-            child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-                child: page)),
-      ])),
+        child: isCompact
+            ? Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                child: page)
+            : Row(children: [
+                ResponsiveWorkspaceNavigation(
+                    tabs: tabs,
+                    selectedTab: selectedTab,
+                    desktop: isDesktop,
+                    onSelect: selectTab),
+                const VerticalDivider(width: 1, thickness: 1),
+                Expanded(
+                    child: Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                        child: page)),
+              ]),
+      ),
+      bottomNavigationBar: isCompact && tabs.length > 1
+          ? ResponsiveMobileNavigation(
+              primaryTabs: mobileTabs,
+              selectedTab: tabs[selectedTab],
+              hasMore: tabs.any((tab) => !mobileTabs.contains(tab)),
+              onSelect: selectTab,
+              onMore: () {
+                final overflowTabs =
+                    tabs.where((tab) => !mobileTabs.contains(tab)).toList();
+                showModalBottomSheet<void>(
+                    context: context,
+                    builder: (sheetContext) => SafeArea(
+                          child: ListView(
+                            shrinkWrap: true,
+                            children: [
+                              for (final tab in overflowTabs)
+                                ListTile(
+                                    leading: Icon(_workspaceTabIcon(tab)),
+                                    title: Text(tab),
+                                    selected: tabs[selectedTab] == tab,
+                                    onTap: () {
+                                      Navigator.pop(sheetContext);
+                                      selectTab(tab);
+                                    }),
+                            ],
+                          ),
+                        ));
+              },
+            )
+          : null,
       floatingActionButton: event != null &&
               tabs[selectedTab] == 'Issues' &&
               caps.contains('issue:report')
@@ -523,6 +580,138 @@ class _LiveOperationsHome extends ConsumerWidget {
               : null,
     );
   }
+}
+
+IconData _workspaceTabIcon(String tab) => switch (tab) {
+      'Today' => Icons.today_outlined,
+      'Issues' => Icons.report_problem_outlined,
+      'Operations' => Icons.checklist_outlined,
+      'Hospitality' => Icons.room_service_outlined,
+      'Stock' => Icons.inventory_2_outlined,
+      'Staffing' => Icons.badge_outlined,
+      'Vendors' => Icons.groups_outlined,
+      'Closeout' => Icons.fact_check_outlined,
+      'Setup' => Icons.settings_outlined,
+      _ => Icons.dashboard_outlined,
+    };
+
+class ResponsiveMobileNavigation extends StatelessWidget {
+  const ResponsiveMobileNavigation({
+    super.key,
+    required this.primaryTabs,
+    required this.selectedTab,
+    required this.hasMore,
+    required this.onSelect,
+    required this.onMore,
+  });
+
+  final List<String> primaryTabs;
+  final String selectedTab;
+  final bool hasMore;
+  final ValueChanged<String> onSelect;
+  final VoidCallback onMore;
+
+  @override
+  Widget build(BuildContext context) => NavigationBar(
+        selectedIndex: primaryTabs.contains(selectedTab)
+            ? primaryTabs.indexOf(selectedTab)
+            : primaryTabs.length,
+        destinations: [
+          for (final tab in primaryTabs)
+            NavigationDestination(
+                icon: Icon(_workspaceTabIcon(tab)), label: tab),
+          if (hasMore)
+            const NavigationDestination(
+                icon: Icon(Icons.more_horiz), label: 'More'),
+        ],
+        onDestinationSelected: (index) {
+          if (index < primaryTabs.length) {
+            onSelect(primaryTabs[index]);
+          } else {
+            onMore();
+          }
+        },
+      );
+}
+
+class ResponsiveWorkspaceNavigation extends StatelessWidget {
+  const ResponsiveWorkspaceNavigation({
+    super.key,
+    required this.tabs,
+    required this.selectedTab,
+    required this.desktop,
+    required this.onSelect,
+  });
+
+  final List<String> tabs;
+  final int selectedTab;
+  final bool desktop;
+  final ValueChanged<String> onSelect;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        width: desktop ? 232 : 88,
+        child: ListView.builder(
+          padding: EdgeInsets.symmetric(vertical: 12, horizontal: desktop ? 12 : 6),
+          itemCount: tabs.length,
+          itemBuilder: (context, index) {
+            final tab = tabs[index];
+            final selected = index == selectedTab;
+            final colors = Theme.of(context).colorScheme;
+            if (desktop) {
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 3),
+                child: ListTile(
+                  selected: selected,
+                  selectedTileColor: colors.secondaryContainer,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14)),
+                  leading: Icon(_workspaceTabIcon(tab)),
+                  title: Text(tab),
+                  onTap: () => onSelect(tab),
+                ),
+              );
+            }
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Tooltip(
+                message: tab,
+                child: Semantics(
+                  button: true,
+                  selected: selected,
+                  label: tab,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(16),
+                    onTap: () => onSelect(tab),
+                    child: Container(
+                      constraints: const BoxConstraints(minHeight: 68),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 3, vertical: 9),
+                      decoration: BoxDecoration(
+                        color: selected ? colors.secondaryContainer : null,
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(_workspaceTabIcon(tab),
+                              color: selected ? colors.onSecondaryContainer : null),
+                          const SizedBox(height: 4),
+                          Text(tab,
+                              textAlign: TextAlign.center,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.labelSmall),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+      );
 }
 
 class _NoEventsPage extends StatelessWidget {
