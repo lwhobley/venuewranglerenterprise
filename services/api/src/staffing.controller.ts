@@ -3,7 +3,7 @@ import { ApiBearerAuth, ApiQuery, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { JwtIdentityGuard } from './auth';
 import { StaffingService } from './staffing.service';
-import { CreateStaffShiftDto, OfflineAttendanceClaimDto, RespondToShiftDto, ReviewAttendanceClaimDto, StaffAttendanceCorrectionDto, StartStaffBreakDto, UpdateStaffShiftDto } from './staffing.dto';
+import { CreateStaffingDemandDto, CreateStaffShiftDto, OfflineAttendanceClaimDto, RespondToShiftDto, ReviewAttendanceClaimDto, StaffAttendanceCorrectionDto, StartStaffBreakDto, UpdateStaffingDemandDto, UpdateStaffShiftDto } from './staffing.dto';
 
 @Controller('v1')
 @UseGuards(JwtIdentityGuard)
@@ -14,6 +14,18 @@ export class StaffingController {
 
   @Get('events/:eventId/shifts') list(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string) {
     return this.staffing.list(req.identity, eventId);
+  }
+  @Get('events/:eventId/coverage/requirements') coverage(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string) {
+    return this.staffing.coverageRequirements(req.identity, eventId);
+  }
+  @Post('events/:eventId/coverage/requirements') createCoverageRequirement(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Body() dto: CreateStaffingDemandDto, @Headers('idempotency-key') key: string) {
+    return this.staffing.createCoverageRequirement(req.identity, eventId, dto, this.key(key));
+  }
+  @Put('events/:eventId/coverage/requirements/:demandId') updateCoverageRequirement(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Param('demandId', new ParseUUIDPipe()) demandId: string, @Body() dto: UpdateStaffingDemandDto, @Headers('idempotency-key') key: string) {
+    return this.staffing.updateCoverageRequirement(req.identity, eventId, demandId, dto, this.key(key));
+  }
+  @Post('events/:eventId/coverage/requirements/:demandId/generate') generateCoverageShifts(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Param('demandId', new ParseUUIDPipe()) demandId: string, @Headers('idempotency-key') key: string) {
+    return this.staffing.generateCoverageShifts(req.identity, eventId, demandId, this.key(key));
   }
   @Get('events/:eventId/availability')
   @ApiQuery({ name: 'from', required: true, type: String, description: 'Inclusive ISO-8601 range start; calendar windows cannot exceed 31 days.' })

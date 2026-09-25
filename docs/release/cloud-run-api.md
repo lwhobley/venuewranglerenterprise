@@ -1,6 +1,6 @@
 # Cloud Run API deployment
 
-`.github/workflows/deploy-api.yml` is a manual production deployment. It builds the API image, deploys a tagged Cloud Run candidate with no customer traffic, requires `/api/health` to report an active database connection and all 24 RLS-protected tables enforced, then promotes the candidate. It never applies database migrations; run the approved migrator process first.
+`.github/workflows/deploy-api.yml` is a manual production deployment. It builds the API image, deploys a tagged Cloud Run candidate with no customer traffic, requires `/api/health` to report an active database connection and all 26 RLS-protected tables enforced, then promotes the candidate. It never applies database migrations; run the approved migrator process first.
 
 ## GitHub configuration
 

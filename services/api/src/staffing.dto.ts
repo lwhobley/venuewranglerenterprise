@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { ArrayMaxSize, ArrayUnique, IsArray, IsDateString, IsIn, IsOptional, IsString, IsUUID, Length, Matches, ValidateIf } from 'class-validator';
+import { ArrayMaxSize, ArrayUnique, IsArray, IsDateString, IsIn, IsInt, IsOptional, IsString, IsUUID, Length, Matches, Max, Min, ValidateIf } from 'class-validator';
 
 export class CreateStaffShiftDto {
   @ApiProperty() @IsUUID() venueId!: string;
@@ -44,5 +44,25 @@ export class ReviewAttendanceClaimDto {
 export class StaffAttendanceCorrectionDto {
   @ApiPropertyOptional({ description: 'Corrected check-in timestamp; original value remains in the immutable audit event.' }) @IsOptional() @IsDateString() checkedInAt?: string;
   @ApiPropertyOptional({ description: 'Corrected check-out timestamp; original value remains in the immutable audit event.' }) @IsOptional() @IsDateString() checkedOutAt?: string;
+  @ApiProperty({ minLength: 3, maxLength: 500 }) @IsString() @Length(3, 500) reason!: string;
+}
+
+export class CreateStaffingDemandDto {
+  @ApiProperty() @IsUUID() venueId!: string;
+  @ApiPropertyOptional() @IsOptional() @IsUUID() locationId?: string;
+  @ApiProperty() @IsString() @Length(2, 120) role!: string;
+  @ApiProperty() @IsDateString() startsAt!: string;
+  @ApiProperty() @IsDateString() endsAt!: string;
+  @ApiProperty({ minimum: 1, maximum: 500 }) @IsInt() @Min(1) @Max(500) requiredHeadcount!: number;
+  @ApiPropertyOptional({ type: [String] }) @IsOptional() @IsArray() @ArrayMaxSize(20) @ArrayUnique() @IsString({ each: true }) @Matches(/^[A-Za-z0-9][A-Za-z0-9._-]{1,39}$/, { each: true }) requiredQualificationCodes?: string[];
+}
+
+export class UpdateStaffingDemandDto {
+  @ApiPropertyOptional() @IsOptional() @IsUUID() locationId?: string | null;
+  @ApiPropertyOptional() @IsOptional() @IsString() @Length(2, 120) role?: string;
+  @ApiPropertyOptional() @IsOptional() @IsDateString() startsAt?: string;
+  @ApiPropertyOptional() @IsOptional() @IsDateString() endsAt?: string;
+  @ApiPropertyOptional({ minimum: 1, maximum: 500 }) @IsOptional() @IsInt() @Min(1) @Max(500) requiredHeadcount?: number;
+  @ApiPropertyOptional({ type: [String] }) @IsOptional() @IsArray() @ArrayMaxSize(20) @ArrayUnique() @IsString({ each: true }) @Matches(/^[A-Za-z0-9][A-Za-z0-9._-]{1,39}$/, { each: true }) requiredQualificationCodes?: string[];
   @ApiProperty({ minLength: 3, maxLength: 500 }) @IsString() @Length(3, 500) reason!: string;
 }

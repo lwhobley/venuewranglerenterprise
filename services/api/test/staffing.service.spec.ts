@@ -19,6 +19,13 @@ function harness(current?: Record<string, unknown>, restMinutes: number | null =
       : Promise.resolve([])),
     commandReceipt: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
     event: { findFirst: vi.fn().mockResolvedValue({ id: 'event-1' }) },
+    staffingDemand: {
+      create: vi.fn().mockImplementation(({ data }) => ({ id: 'demand-1', ...data })),
+      findFirst: vi.fn().mockResolvedValue(null),
+      findMany: vi.fn().mockResolvedValue([]),
+      update: vi.fn().mockImplementation(({ data }) => ({ id: 'demand-1', ...data })),
+    },
+    staffingDemandAudit: { create: vi.fn().mockResolvedValue({}) },
     location: { findFirst: vi.fn().mockResolvedValue({ id: 'location-1' }) },
     person: {
       findFirst: vi.fn().mockResolvedValue({ id: 'person-1' }),
@@ -30,6 +37,7 @@ function harness(current?: Record<string, unknown>, restMinutes: number | null =
       create: vi.fn().mockImplementation(({ data }) => ({ id: 'shift-1', state: 'DRAFT', response: 'PENDING', attendance: 'NOT_STARTED', revision: 1, ...data })),
       findFirst: vi.fn().mockImplementation(({ where }) => Promise.resolve(typeof where?.id === 'object' ? null : current ?? null)),
       findMany: vi.fn().mockResolvedValue([]),
+      count: vi.fn().mockResolvedValue(0),
       update: vi.fn().mockImplementation(({ data }) => ({ ...current, ...data })),
     },
     staffShiftAuditEvent: { create: vi.fn().mockResolvedValue({}) },
@@ -50,6 +58,74 @@ function harness(current?: Record<string, unknown>, restMinutes: number | null =
 }
 
 describe('event staffing workflow', () => {
+  it('reports unfilled slots separately from assigned, published, and acknowledged coverage', async () => {
+    const { service, tx } = harness();
+    tx.event.findFirst.mockResolvedValue({ id: 'event-1', venueId: 'venue-1' });
+    tx.staffingDemand.findMany.mockResolvedValue([{
+      id: 'demand-1', eventId: 'event-1', venueId: 'venue-1', locationId: 'location-1', role: 'Usher',
+      startsAt: new Date('2025-10-01T17:00:00Z'), endsAt: new Date('2025-10-01T22:00:00Z'), requiredHeadcount: 3,
+    }]);
+    tx.staffShift.findMany.mockResolvedValue([
+      { id: 'draft-open', state: 'DRAFT', response: 'PENDING', responseRevision: null, revision: 1, assignedSubject: null },
+      { id: 'published-accepted', state: 'PUBLISHED', response: 'ACKNOWLEDGED', responseRevision: 2, revision: 2, assignedSubject: workerSubject },
+      { id: 'published-pending', state: 'PUBLISHED', response: 'PENDING', responseRevision: null, revision: 1, assignedSubject: 'https://idp.example|worker-2' },
+    ]);
+
+    const [row] = await service.coverageRequirements(manager, 'event-1');
+
+    expect(row).toMatchObject({ scheduledHeadcount: 3, publishedHeadcount: 2, assignedHeadcount: 2, confirmedHeadcount: 1, unfilledHeadcount: 0, unconfirmedHeadcount: 2 });
+  });
+
+  it('creates auditable scoped coverage requirements and generates only the open draft deficit', async () => {
+    const { service, tx } = harness();
+    tx.event.findFirst.mockResolvedValue({ id: 'event-1', venueId: 'venue-1' });
+    const requirement = await service.createCoverageRequirement(manager, 'event-1', {
+      venueId: 'venue-1', locationId: 'location-1', role: 'Concourse usher', startsAt: '2025-10-01T17:00:00Z',
+      endsAt: '2025-10-01T22:00:00Z', requiredHeadcount: 2, requiredQualificationCodes: ['FOOD_HANDLER'],
+    }, 'staff-coverage-demand-key-1');
+    expect(requirement).toMatchObject({ id: 'demand-1', role: 'Concourse usher', requiredHeadcount: 2 });
+    expect(tx.staffingDemandAudit.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ action: 'created', demandId: 'demand-1' }) }));
+
+    tx.staffingDemand.findFirst.mockResolvedValue({ id: 'demand-1', eventId: 'event-1', organizationId: 'tenant-1', venueId: 'venue-1', locationId: 'location-1', role: 'Concourse usher', startsAt: new Date('2025-10-01T17:00:00Z'), endsAt: new Date('2025-10-01T22:00:00Z'), requiredHeadcount: 2, requiredQualificationCodes: ['FOOD_HANDLER'] });
+    tx.staffShift.count.mockResolvedValue(1);
+    const generated = await service.generateCoverageShifts(manager, 'event-1', 'demand-1', 'staff-coverage-generate-key-2');
+    expect(generated).toMatchObject({ demandId: 'demand-1', requiredHeadcount: 2, scheduledHeadcount: 2, unfilledHeadcount: 0 });
+    expect(generated.createdShifts).toHaveLength(1);
+    expect(tx.staffShift.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ staffingDemandId: 'demand-1', role: 'Concourse usher' }) }));
+    expect(tx.staffShiftAuditEvent.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ action: 'created_from_coverage_demand' }) }));
+  });
+
+  it('prevents changing a generated demand into another area or window until its open shifts are edited', async () => {
+    const { service, tx } = harness();
+    tx.staffingDemand.findFirst.mockResolvedValue({ id: 'demand-1', eventId: 'event-1', organizationId: 'tenant-1', venueId: 'venue-1', locationId: 'location-1', role: 'Usher', startsAt: new Date('2025-10-01T17:00:00Z'), endsAt: new Date('2025-10-01T22:00:00Z'), requiredHeadcount: 2, requiredQualificationCodes: [] });
+    tx.staffShift.count.mockResolvedValue(1);
+    await expect(service.updateCoverageRequirement(manager, 'event-1', 'demand-1', {
+      role: 'Gate usher', reason: 'Demand moved to gate staffing.',
+    }, 'staff-coverage-update-key-1')).rejects.toThrow('Edit or cancel generated shifts');
+    expect(tx.staffingDemand.update).not.toHaveBeenCalled();
+
+    tx.staffShift.count.mockResolvedValue(0);
+    await expect(service.updateCoverageRequirement(manager, 'event-1', 'demand-1', {
+      locationId: 'other-location', reason: 'Move to restricted location.',
+    }, 'staff-coverage-update-key-2')).rejects.toThrow('outside your assigned scope');
+    expect(tx.location.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('updates the role demand target with a reason and append-only before/after audit', async () => {
+    const { service, tx } = harness();
+    const current = { id: 'demand-1', eventId: 'event-1', organizationId: 'tenant-1', venueId: 'venue-1', locationId: 'location-1', role: 'Usher', startsAt: new Date('2025-10-01T17:00:00Z'), endsAt: new Date('2025-10-01T22:00:00Z'), requiredHeadcount: 2, requiredQualificationCodes: [] };
+    tx.staffingDemand.findFirst.mockResolvedValue(current);
+    tx.staffingDemand.update.mockImplementation(({ data }) => ({ ...current, ...data }));
+
+    await service.updateCoverageRequirement(manager, 'event-1', 'demand-1', { requiredHeadcount: 4, reason: 'Higher gate attendance forecast.' }, 'staff-coverage-update-key-3');
+
+    expect(tx.staffingDemand.update).toHaveBeenCalledWith({ where: { id: 'demand-1' }, data: { requiredHeadcount: 4, updatedBy: manager.subject } });
+    expect(tx.staffingDemandAudit.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      action: 'updated', reason: 'Higher gate attendance forecast.', before: JSON.parse(JSON.stringify(current)),
+      after: expect.objectContaining({ requiredHeadcount: 4 }),
+    }) }));
+  });
+
   it('returns only assigned active roster availability for a scoped manager and omits private notes', async () => {
     const { service, tx } = harness();
     tx.event.findFirst.mockResolvedValue({ id: 'event-1', venueId: 'venue-1' });

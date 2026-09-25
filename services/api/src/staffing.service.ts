@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, Injectable,
 import { Prisma, StaffShiftResponse } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { assertScope, type Identity } from './auth';
-import { CreateStaffShiftDto, OfflineAttendanceClaimDto, RespondToShiftDto, ReviewAttendanceClaimDto, StaffAttendanceCorrectionDto, UpdateStaffShiftDto } from './staffing.dto';
+import { CreateStaffingDemandDto, CreateStaffShiftDto, OfflineAttendanceClaimDto, RespondToShiftDto, ReviewAttendanceClaimDto, StaffAttendanceCorrectionDto, UpdateStaffingDemandDto, UpdateStaffShiftDto } from './staffing.dto';
 import { PrismaService } from './prisma.service';
 import { PushNotificationsService } from './push-notifications.service';
 
@@ -32,6 +32,124 @@ export class StaffingService {
         attendanceClaims: { where: { status: 'PENDING_REVIEW' }, orderBy: { receivedAt: 'asc' } },
       },
     }));
+  }
+
+  async coverageRequirements(identity: Identity, eventId: string) {
+    assertScope(identity, 'operations:write', eventId);
+    return this.prisma.withTenant(identity, async (tx) => {
+      const event = await tx.event.findFirst({ where: { id: eventId, organizationId: identity.tenantId }, select: { id: true, venueId: true } });
+      if (!event) throw new NotFoundException('Event not found.');
+      assertScope(identity, 'operations:write', eventId, event.venueId);
+      const demands = await tx.staffingDemand.findMany({
+        where: { organizationId: identity.tenantId, eventId, ...(!identity.capabilities.includes('tenant:admin') ? { venueId: { in: identity.venueIds }, OR: [{ locationId: null }, { locationId: { in: identity.locationIds } }] } : {}) },
+        orderBy: [{ startsAt: 'asc' }, { role: 'asc' }],
+      });
+      const coverage = [];
+      for (const demand of demands) {
+        const shifts = await tx.staffShift.findMany({ where: {
+          organizationId: identity.tenantId, eventId, venueId: demand.venueId, ...(demand.locationId !== null ? { locationId: demand.locationId } : {}),
+          role: demand.role, state: { in: ['DRAFT', 'PUBLISHED'] }, startsAt: { lte: demand.startsAt }, endsAt: { gte: demand.endsAt },
+        }, select: { id: true, state: true, response: true, responseRevision: true, revision: true, assignedSubject: true } });
+        const scheduled = shifts.length;
+        const published = shifts.filter((shift) => shift.state === 'PUBLISHED').length;
+        const assigned = shifts.filter((shift) => shift.assignedSubject !== null).length;
+        const confirmed = shifts.filter((shift) => shift.state === 'PUBLISHED' && shift.assignedSubject !== null && shift.response === 'ACKNOWLEDGED' && shift.responseRevision === shift.revision).length;
+        coverage.push({ ...demand, scheduledHeadcount: scheduled, publishedHeadcount: published, assignedHeadcount: assigned, confirmedHeadcount: confirmed, unfilledHeadcount: Math.max(0, demand.requiredHeadcount - scheduled), unconfirmedHeadcount: Math.max(0, demand.requiredHeadcount - confirmed) });
+      }
+      return coverage;
+    });
+  }
+
+  async createCoverageRequirement(identity: Identity, eventId: string, dto: CreateStaffingDemandDto, key: string) {
+    assertScope(identity, 'operations:write', eventId, dto.venueId, dto.locationId);
+    const role = dto.role.trim();
+    if (role.length < 2) throw new BadRequestException('Coverage role must contain at least two characters.');
+    const startsAt = new Date(dto.startsAt);
+    const endsAt = new Date(dto.endsAt);
+    if (!Number.isFinite(startsAt.getTime()) || !Number.isFinite(endsAt.getTime()) || endsAt <= startsAt) throw new BadRequestException('Coverage window must have a valid start and a later end.');
+    const requiredQualificationCodes = this.normalizeQualificationCodes(dto.requiredQualificationCodes);
+    const input = { eventId, venueId: dto.venueId, locationId: dto.locationId ?? null, role, startsAt: startsAt.toISOString(), endsAt: endsAt.toISOString(), requiredHeadcount: dto.requiredHeadcount, requiredQualificationCodes };
+    return this.command(identity, key, 'staffing-coverage.create', input, async (tx) => {
+      const event = await tx.event.findFirst({ where: { id: eventId, venueId: dto.venueId, organizationId: identity.tenantId } });
+      if (!event) throw new NotFoundException('Event not found in the selected venue.');
+      if (dto.locationId && !await tx.location.findFirst({ where: { id: dto.locationId, venueId: dto.venueId, organizationId: identity.tenantId } })) throw new NotFoundException('Location not found in this venue.');
+      const demand = await tx.staffingDemand.create({ data: {
+        organizationId: identity.tenantId, eventId, venueId: dto.venueId, locationId: dto.locationId,
+        role, startsAt, endsAt, requiredHeadcount: dto.requiredHeadcount, requiredQualificationCodes,
+        createdBy: identity.subject, updatedBy: identity.subject,
+      } });
+      await this.auditDemand(tx, identity, demand.id, 'created', undefined, demand);
+      return demand;
+    });
+  }
+
+  async updateCoverageRequirement(identity: Identity, eventId: string, demandId: string, dto: UpdateStaffingDemandDto, key: string) {
+    assertScope(identity, 'operations:write', eventId);
+    const reason = dto.reason.trim();
+    if (reason.length < 3) throw new BadRequestException('A reason of at least three characters is required for a coverage change.');
+    if (dto.role !== undefined && dto.role.trim().length < 2) throw new BadRequestException('Coverage role must contain at least two characters.');
+    const patch = {
+      ...(dto.locationId !== undefined ? { locationId: dto.locationId } : {}),
+      ...(dto.role !== undefined ? { role: dto.role.trim() } : {}),
+      ...(dto.startsAt !== undefined ? { startsAt: new Date(dto.startsAt) } : {}),
+      ...(dto.endsAt !== undefined ? { endsAt: new Date(dto.endsAt) } : {}),
+      ...(dto.requiredHeadcount !== undefined ? { requiredHeadcount: dto.requiredHeadcount } : {}),
+      ...(dto.requiredQualificationCodes !== undefined ? { requiredQualificationCodes: this.normalizeQualificationCodes(dto.requiredQualificationCodes) } : {}),
+    };
+    if ((patch.startsAt && !Number.isFinite(patch.startsAt.getTime())) || (patch.endsAt && !Number.isFinite(patch.endsAt.getTime()))) throw new BadRequestException('Coverage window timestamps must be valid.');
+    if (Object.keys(patch).length === 0) throw new BadRequestException('Provide at least one coverage change.');
+    return this.command(identity, key, 'staffing-coverage.update', { eventId, demandId, patch: { ...patch, startsAt: patch.startsAt?.toISOString(), endsAt: patch.endsAt?.toISOString() }, reason }, async (tx) => {
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`staff-demand:${identity.tenantId}:${demandId}`}, 0))`;
+      const current = await tx.staffingDemand.findFirst({ where: { id: demandId, eventId, organizationId: identity.tenantId } });
+      if (!current) throw new NotFoundException('Coverage requirement not found.');
+      assertScope(identity, 'operations:write', eventId, current.venueId, current.locationId ?? undefined);
+      if (patch.locationId) {
+        assertScope(identity, 'operations:write', eventId, current.venueId, patch.locationId);
+        if (!await tx.location.findFirst({ where: { id: patch.locationId, venueId: current.venueId, organizationId: identity.tenantId } })) throw new NotFoundException('Location not found in this venue.');
+      }
+      const startsAt = patch.startsAt ?? current.startsAt;
+      const endsAt = patch.endsAt ?? current.endsAt;
+      if (endsAt <= startsAt) throw new BadRequestException('Coverage window must have a later end than start.');
+      const shapeChanged = (patch.locationId !== undefined && patch.locationId !== current.locationId)
+        || (patch.role !== undefined && patch.role !== current.role)
+        || (patch.startsAt !== undefined && patch.startsAt.getTime() !== current.startsAt.getTime())
+        || (patch.endsAt !== undefined && patch.endsAt.getTime() !== current.endsAt.getTime())
+        || (patch.requiredQualificationCodes !== undefined && JSON.stringify(patch.requiredQualificationCodes) !== JSON.stringify(current.requiredQualificationCodes));
+      if (shapeChanged && await tx.staffShift.count({ where: { organizationId: identity.tenantId, staffingDemandId: demandId, state: { in: ['DRAFT', 'PUBLISHED'] } } })) {
+        throw new ConflictException('Edit or cancel generated shifts before changing the role, area, qualification, or coverage window.');
+      }
+      const updated = await tx.staffingDemand.update({ where: { id: demandId }, data: { ...patch, updatedBy: identity.subject } });
+      const changed = ['role', 'locationId', 'startsAt', 'endsAt', 'requiredHeadcount', 'requiredQualificationCodes'].some((field) => JSON.stringify(current[field as keyof typeof current]) !== JSON.stringify(updated[field as keyof typeof updated]));
+      if (!changed) throw new ConflictException('The coverage requirement has no changes to save.');
+      await this.auditDemand(tx, identity, demandId, 'updated', current, updated, reason);
+      return updated;
+    });
+  }
+
+  async generateCoverageShifts(identity: Identity, eventId: string, demandId: string, key: string) {
+    assertScope(identity, 'operations:write', eventId);
+    return this.command(identity, key, 'staffing-coverage.generate', { eventId, demandId }, async (tx) => {
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`staff-demand:${identity.tenantId}:${demandId}`}, 0))`;
+      const demand = await tx.staffingDemand.findFirst({ where: { id: demandId, eventId, organizationId: identity.tenantId } });
+      if (!demand) throw new NotFoundException('Coverage requirement not found.');
+      assertScope(identity, 'operations:write', eventId, demand.venueId, demand.locationId ?? undefined);
+      const existing = await tx.staffShift.count({ where: {
+        organizationId: identity.tenantId, eventId, venueId: demand.venueId, ...(demand.locationId !== null ? { locationId: demand.locationId } : {}),
+        role: demand.role, state: { in: ['DRAFT', 'PUBLISHED'] }, startsAt: { lte: demand.startsAt }, endsAt: { gte: demand.endsAt },
+      } });
+      const deficit = Math.max(0, demand.requiredHeadcount - existing);
+      const created = [];
+      for (let index = 0; index < deficit; index += 1) {
+        const shift = await tx.staffShift.create({ data: {
+          organizationId: identity.tenantId, eventId, venueId: demand.venueId, locationId: demand.locationId,
+          staffingDemandId: demand.id, role: demand.role, requiredQualificationCodes: demand.requiredQualificationCodes,
+          startsAt: demand.startsAt, endsAt: demand.endsAt, createdBy: identity.subject, updatedBy: identity.subject,
+        } });
+        await this.audit(tx, identity, shift.id, 'created_from_coverage_demand', undefined, shift);
+        created.push(shift);
+      }
+      return { demandId: demand.id, requiredHeadcount: demand.requiredHeadcount, createdShifts: created, scheduledHeadcount: existing + created.length, unfilledHeadcount: Math.max(0, demand.requiredHeadcount - existing - created.length) };
+    });
   }
 
   async teamAvailability(identity: Identity, eventId: string, fromInput: string, toInput: string) {
@@ -489,6 +607,14 @@ export class StaffingService {
     return tx.staffShiftAuditEvent.create({ data: {
       organizationId: identity.tenantId, shiftId, actorId: identity.subject, action, reason,
       before: before as Prisma.InputJsonValue | undefined, after: after as Prisma.InputJsonValue | undefined,
+    } });
+  }
+
+  private auditDemand(tx: Prisma.TransactionClient, identity: Identity, demandId: string, action: string, before?: unknown, after?: unknown, reason?: string) {
+    return tx.staffingDemandAudit.create({ data: {
+      organizationId: identity.tenantId, demandId, actorId: identity.subject, action, reason,
+      before: before === undefined ? undefined : JSON.parse(JSON.stringify(before)) as Prisma.InputJsonValue,
+      after: after === undefined ? undefined : JSON.parse(JSON.stringify(after)) as Prisma.InputJsonValue,
     } });
   }
 

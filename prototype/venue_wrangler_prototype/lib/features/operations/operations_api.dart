@@ -218,6 +218,22 @@ class OperationsApi {
                       Options(headers: {'Authorization': 'Bearer $token'}))))
               .data ??
           const []);
+  Future<List<dynamic>> coverageRequirements(String eventId) async =>
+      (await _request((token) => _dio.get<List<dynamic>>(
+        '/api/v1/events/$eventId/coverage/requirements',
+        options: Options(headers: {'Authorization': 'Bearer $token'})))).data ?? const [];
+  Future<void> createCoverageRequirement(String eventId, Map<String, Object?> demand) async =>
+      _command<void>({'eventId': eventId, ...demand}, (token, key) => _dio.post<void>(
+        '/api/v1/events/$eventId/coverage/requirements', data: demand,
+        options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
+  Future<void> updateCoverageRequirement(String eventId, String demandId, Map<String, Object?> patch) async =>
+      _command<void>({'eventId': eventId, 'demandId': demandId, ...patch}, (token, key) => _dio.put<void>(
+        '/api/v1/events/$eventId/coverage/requirements/$demandId', data: patch,
+        options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
+  Future<Map<String, dynamic>> generateCoverageShifts(String eventId, String demandId) async =>
+      _command<Map<String, dynamic>>({'eventId': eventId, 'demandId': demandId}, (token, key) => _dio.post<Map<String, dynamic>>(
+        '/api/v1/events/$eventId/coverage/requirements/$demandId/generate',
+        options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key}))).then((response) => response.data ?? const {});
   Future<List<dynamic>> teamAvailability(String eventId, DateTime from, DateTime to) async =>
       (await _request((token) => _dio.get<List<dynamic>>(
               '/api/v1/events/$eventId/availability',
@@ -556,6 +572,9 @@ final eventTasksProvider = FutureProvider.autoDispose
 final eventShiftsProvider = FutureProvider.autoDispose
     .family<List<dynamic>, String>(
         (ref, id) => ref.watch(operationsApiProvider).shifts(id));
+final staffingCoverageProvider = FutureProvider.autoDispose
+    .family<List<dynamic>, String>((ref, id) =>
+        ref.watch(operationsApiProvider).coverageRequirements(id));
 typedef TeamAvailabilityRequest = ({String eventId, DateTime from, DateTime to});
 final teamAvailabilityProvider = FutureProvider.autoDispose
     .family<List<dynamic>, TeamAvailabilityRequest>((ref, request) =>

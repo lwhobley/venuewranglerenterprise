@@ -1202,6 +1202,12 @@ class _LiveStaffingPage extends ConsumerWidget {
               eventId: eventId,
               initialDate: DateTime.tryParse(event['startsAt'] as String? ?? '')?.toLocal() ?? DateTime.now(),
             ),
+            if (canWrite) _CoveragePlanningPanel(
+              eventId: eventId,
+              venueId: event['venueId'] as String? ?? '',
+              initialDate: DateTime.tryParse(event['startsAt'] as String? ?? '')?.toLocal() ?? DateTime.now(),
+              locations: locations,
+            ),
             Expanded(child: rows.isEmpty
           ? const Center(child: Text('No shifts are scheduled for this event.'))
           : ListView.separated(
@@ -1480,6 +1486,162 @@ String _attendanceTimeLabel(Map<String, dynamic> shift) {
   final checkedIn = DateTime.tryParse(shift['checkedInAt'] as String? ?? '')?.toLocal();
   final checkedOut = DateTime.tryParse(shift['checkedOutAt'] as String? ?? '')?.toLocal();
   return 'In ${_clockLabel(checkedIn)}${checkedOut == null ? '' : ' · Out ${_clockLabel(checkedOut)}'}';
+}
+
+class _CoveragePlanningPanel extends ConsumerWidget {
+  const _CoveragePlanningPanel({required this.eventId, required this.venueId, required this.initialDate, required this.locations});
+  final String eventId;
+  final String venueId;
+  final DateTime initialDate;
+  final List<Map<String, dynamic>> locations;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) => Card(
+    child: Column(children: [
+      ListTile(
+        leading: const Icon(Icons.groups_2_outlined),
+        title: const Text('Coverage plan'),
+        subtitle: const Text('Set role demand, see scheduled capacity, and create draft open shifts for gaps.'),
+        trailing: IconButton(tooltip: 'Add coverage requirement', onPressed: () => _add(context, ref), icon: const Icon(Icons.add_circle_outline)),
+      ),
+      ref.watch(staffingCoverageProvider(eventId)).when(
+        loading: () => const LinearProgressIndicator(),
+        error: (error, _) => ListTile(title: Text('Coverage unavailable: $error')),
+        data: (rows) => rows.isEmpty
+          ? const Padding(padding: EdgeInsets.fromLTRB(16, 0, 16, 12), child: Align(alignment: Alignment.centerLeft, child: Text('No coverage requirements yet. Add a role and target to see gaps.')))
+          : ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 210),
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: rows.length,
+                itemBuilder: (context, index) {
+                  final row = Map<String, dynamic>.from(rows[index] as Map);
+                  final remaining = row['unfilledHeadcount'] as int? ?? 0;
+                  final published = row['publishedHeadcount'] as int? ?? 0;
+                  final scheduled = row['scheduledHeadcount'] as int? ?? 0;
+                  final confirmed = row['confirmedHeadcount'] as int? ?? 0;
+                  final unconfirmed = row['unconfirmedHeadcount'] as int? ?? 0;
+                  final locationId = row['locationId'] as String?;
+                  final matches = locations.where((location) => location['id'] == locationId);
+                  final area = matches.isEmpty ? 'All areas' : matches.first['name'] as String? ?? 'Area';
+                  final start = DateTime.tryParse(row['startsAt'] as String? ?? '')?.toLocal();
+                  final end = DateTime.tryParse(row['endsAt'] as String? ?? '')?.toLocal();
+                  return ListTile(
+                    dense: true,
+                    title: Text('${row['role']} · $area'),
+                    subtitle: Text('${_shiftTimeLabel(start, end)} · $confirmed/${row['requiredHeadcount']} acknowledged · $scheduled/${row['requiredHeadcount']} scheduled ($published published)${remaining > 0 ? ' · $remaining slots missing' : ''}${unconfirmed > 0 ? ' · $unconfirmed need assignment or worker confirmation' : ''}'),
+                    trailing: Column(mainAxisSize: MainAxisSize.min, children: [
+                      IconButton(tooltip: 'Adjust demand target', onPressed: () => _adjustTarget(context, ref, row), icon: const Icon(Icons.edit_outlined)),
+                      if (remaining > 0)
+                        TextButton(onPressed: () => _generate(context, ref, row['id'] as String), child: Text('Fill $remaining'))
+                      else
+                        Icon(unconfirmed > 0 ? Icons.pending_actions_outlined : Icons.check_circle_outline, color: unconfirmed > 0 ? _brass : _pine),
+                    ]),
+                  );
+                },
+              ),
+            ),
+      ),
+    ]),
+  );
+
+  Future<void> _add(BuildContext context, WidgetRef ref) async {
+    final role = TextEditingController();
+    final headcount = TextEditingController(text: '1');
+    DateTime startsAt = initialDate;
+    DateTime endsAt = initialDate.add(const Duration(hours: 4));
+    String? locationId;
+    final demand = await showDialog<Map<String, Object?>>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(builder: (context, setState) => AlertDialog(
+        title: const Text('Set staffing demand'),
+        content: SizedBox(width: 440, child: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(controller: role, maxLength: 120, decoration: const InputDecoration(labelText: 'Role', hintText: 'e.g. Concourse usher')),
+          TextField(controller: headcount, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'People required')),
+          const SizedBox(height: 8),
+          DropdownButtonFormField<String?>(
+            value: locationId,
+            decoration: const InputDecoration(labelText: 'Area'),
+            items: [const DropdownMenuItem<String?>(value: null, child: Text('All areas')), ...locations.map((row) => DropdownMenuItem<String?>(value: row['id'] as String, child: Text(row['name'] as String? ?? 'Area')))],
+            onChanged: (value) => setState(() => locationId = value),
+          ),
+          ListTile(contentPadding: EdgeInsets.zero, title: const Text('Coverage starts'), subtitle: Text(_shiftTimeLabel(startsAt, startsAt)), trailing: const Icon(Icons.edit_calendar), onTap: () async {
+            final value = await _pickAttendanceDateTime(context, startsAt);
+            if (value != null) setState(() { startsAt = value; if (endsAt <= startsAt) endsAt = startsAt.add(const Duration(hours: 4)); });
+          }),
+          ListTile(contentPadding: EdgeInsets.zero, title: const Text('Coverage ends'), subtitle: Text(_shiftTimeLabel(endsAt, endsAt)), trailing: const Icon(Icons.edit_calendar), onTap: () async {
+            final value = await _pickAttendanceDateTime(context, endsAt);
+            if (value != null) setState(() => endsAt = value);
+          }),
+        ]))),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+          FilledButton(onPressed: () {
+            final count = int.tryParse(headcount.text.trim());
+            if (role.text.trim().length < 2 || count == null || count < 1 || count > 500 || endsAt <= startsAt) return;
+            Navigator.pop(dialogContext, {
+              'venueId': venueId,
+              if (locationId != null) 'locationId': locationId,
+              'role': role.text.trim(), 'startsAt': startsAt.toUtc().toIso8601String(),
+              'endsAt': endsAt.toUtc().toIso8601String(), 'requiredHeadcount': count,
+            });
+          }, child: const Text('Save target')),
+        ],
+      )),
+    );
+    role.dispose();
+    headcount.dispose();
+    if (demand == null) return;
+    try {
+      await ref.read(operationsApiProvider).createCoverageRequirement(eventId, demand);
+      ref.invalidate(staffingCoverageProvider(eventId));
+    } catch (error) {
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not save coverage: $error')));
+    }
+  }
+
+  Future<void> _generate(BuildContext context, WidgetRef ref, String demandId) async {
+    try {
+      final result = await ref.read(operationsApiProvider).generateCoverageShifts(eventId, demandId);
+      ref.invalidate(staffingCoverageProvider(eventId));
+      ref.invalidate(eventShiftsProvider(eventId));
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Created ${(result['createdShifts'] as List? ?? const []).length} draft open shifts. Assign and publish them from the schedule.')));
+    } catch (error) {
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not generate draft shifts: $error')));
+    }
+  }
+
+  Future<void> _adjustTarget(BuildContext context, WidgetRef ref, Map<String, dynamic> row) async {
+    final target = TextEditingController(text: '${row['requiredHeadcount']}');
+    final reason = TextEditingController();
+    final values = await showDialog<Map<String, Object?>>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Adjust coverage target'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(controller: target, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'People required (1–500)')),
+          TextField(controller: reason, maxLength: 500, minLines: 2, maxLines: 3, decoration: const InputDecoration(labelText: 'Reason', border: OutlineInputBorder())),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+          FilledButton(onPressed: () {
+            final count = int.tryParse(target.text.trim());
+            if (count == null || count < 1 || count > 500 || reason.text.trim().length < 3) return;
+            Navigator.pop(dialogContext, {'requiredHeadcount': count, 'reason': reason.text.trim()});
+          }, child: const Text('Save target')),
+        ],
+      ),
+    );
+    target.dispose();
+    reason.dispose();
+    if (values == null) return;
+    try {
+      await ref.read(operationsApiProvider).updateCoverageRequirement(eventId, row['id'] as String, values);
+      ref.invalidate(staffingCoverageProvider(eventId));
+    } catch (error) {
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not update demand target: $error')));
+    }
+  }
 }
 
 Future<DateTime?> _pickAttendanceDateTime(BuildContext context, DateTime initial) async {
