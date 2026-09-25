@@ -64,6 +64,7 @@ describe('IntegrationService operational task mapping', () => {
     const result = await integration.ingest('arena-labor', signed.timestamp, signed.signature, signed.rawBody, signed.body);
 
     expect(result.replayed).toBe(false);
+    if (!('task' in result)) throw new Error('The first delivery should include the created task.');
     expect(result.task).toMatchObject({
       id: 'task-record', organizationId: tenantId, eventId, venueId,
       externalSource: 'arena-labor', externalTaskId: 'shift-42',

@@ -7,6 +7,7 @@ import { PrismaService } from './prisma.service';
 
 export type Capability = 'issue:report' | 'issue:read' | 'issue:evidence' | 'issue:triage' | 'issue:escalate' | 'issue:resolve' | 'issue:verify' | 'issue:close' | 'operations:read' | 'operations:write' | 'hospitality:order' | 'hospitality:fulfill' | 'notification:read' | 'tenant:admin';
 const capabilities = new Set<Capability>(['issue:report', 'issue:read', 'issue:evidence', 'issue:triage', 'issue:escalate', 'issue:resolve', 'issue:verify', 'issue:close', 'operations:read', 'operations:write', 'hospitality:order', 'hospitality:fulfill', 'notification:read', 'tenant:admin']);
+const uuidClaimPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export interface Identity {
   subject: string;
@@ -61,7 +62,9 @@ export class JwtIdentityGuard implements CanActivate {
         payload = verified;
       }
       const tenantId = provider?.tenantId ?? (typeof payload.tenant_id === 'string' ? payload.tenant_id : undefined);
-      if (typeof payload.sub !== 'string' || !tenantId || !Array.isArray(payload.capabilities) || payload.capabilities.some((capability) => typeof capability !== 'string' || !capabilities.has(capability as Capability)) || !Array.isArray(payload.event_ids) || !Array.isArray(payload.venue_ids) || !Array.isArray(payload.location_ids) || !Array.isArray(payload.assignable_user_ids) || [...payload.event_ids, ...payload.venue_ids, ...payload.location_ids, ...payload.assignable_user_ids].some((claim) => typeof claim !== 'string')) throw new UnauthorizedException('The access token is missing required scope.');
+      const hasValidUuidScope = (claim: unknown): claim is string[] => Array.isArray(claim) && claim.every((value) => typeof value === 'string' && uuidClaimPattern.test(value));
+      const hasValidAssignmentScope = Array.isArray(payload.assignable_user_ids) && payload.assignable_user_ids.every((value) => typeof value === 'string' && value.length > 0 && value.length <= 512);
+      if (typeof payload.sub !== 'string' || payload.sub.length === 0 || payload.sub.length > 512 || !tenantId || !Array.isArray(payload.capabilities) || payload.capabilities.some((capability) => typeof capability !== 'string' || !capabilities.has(capability as Capability)) || !hasValidUuidScope(payload.event_ids) || !hasValidUuidScope(payload.venue_ids) || !hasValidUuidScope(payload.location_ids) || !hasValidAssignmentScope) throw new UnauthorizedException('The access token is missing valid capability and UUID scope claims.');
       request.identity = { subject: `${subjectPrefix}${payload.sub}`, tenantId, organizationSlug: provider?.organizationSlug, email: typeof payload.email === 'string' ? payload.email : typeof payload.preferred_username === 'string' ? payload.preferred_username : undefined, displayName: typeof payload.name === 'string' ? payload.name : undefined, capabilities: payload.capabilities as Capability[], eventIds: payload.event_ids as string[], venueIds: payload.venue_ids as string[], locationIds: payload.location_ids as string[], assignableUserIds: payload.assignable_user_ids as string[] };
     } catch { throw new UnauthorizedException('The access token is invalid.'); }
     const provisionedUser = await this.prisma.withTenant(request.identity, (tx) => tx.person.findFirst({

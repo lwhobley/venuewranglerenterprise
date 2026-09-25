@@ -14,7 +14,7 @@ The API access token must include these claims, issued only by the configured Id
 
 - `cid` (Okta) or `azp` (Entra): must equal the configured native client ID.
 - `capabilities`: allowed Venue Wrangler capability strings, such as `issue:report` and `issue:read`.
-- `venue_ids`, `event_ids`, `location_ids`: the user's current UUID scopes.
+- `venue_ids`, `event_ids`, `location_ids`: the user's current UUID scopes. The API rejects malformed UUID claims before any tenant data query.
 - `assignable_user_ids`: user identifiers the actor may assign work to.
 - Standard `sub`, `iss`, `aud`, `iat`, and `exp` claims.
 
@@ -43,3 +43,7 @@ flutter build apk --dart-define=VENUE_API_BASE_URL=https://<api-host>
 ```
 
 The provider chooser is not sufficient to enable sign-in by itself. The organization must configure both its provider app registration and API token claims/audience before a successful login can be completed.
+
+## Verification boundary
+
+CI signs temporary RS256 test tokens and exercises the API guard for both Okta and Entra configurations, including OIDC discovery/JWKS, issuer and audience validation, native-client authorization, expiration, UUID scopes, tenant derivation, and deactivated roster users. These tests verify the local protocol contract; they do not verify a customer's IdP app registration, conditional-access policy, group-to-capability mapping, or successful login. Complete and record a test with each customer's own non-production IdP tenant before pilot access.

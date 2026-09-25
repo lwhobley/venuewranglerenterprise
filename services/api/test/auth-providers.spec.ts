@@ -9,9 +9,9 @@ function provider(id: 'okta' | 'entra', tenantId: string, issuer: string, organi
   return { id, tenantId, organizationSlug, issuer, clientId: `${id}-client`, audience: `${id}-audience`, scopes: ['openid', 'email', 'profile'] };
 }
 
-function service(providers: unknown[]) {
+function service(providers: unknown[], nodeEnv = 'test') {
   const config = {
-    get: (key: string) => key === 'SSO_PROVIDERS_JSON' ? JSON.stringify(providers) : 'test',
+    get: (key: string) => key === 'SSO_PROVIDERS_JSON' ? JSON.stringify(providers) : nodeEnv,
   } as unknown as ConfigService;
   return new AuthProvidersService(config);
 }
@@ -38,5 +38,9 @@ describe('SSO provider tenant mapping', () => {
       provider('okta', tenantA, 'https://acme.okta.com/oauth2/default', 'harbor-city'),
       provider('entra', tenantA, 'https://login.microsoftonline.com/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/v2.0', 'other-city'),
     ])).toThrow(`Tenant ${tenantA} cannot be mapped to multiple organization slugs.`);
+  });
+
+  it('fails closed when production has no enterprise SSO provider configured', () => {
+    expect(() => service([], 'production')).toThrow('At least one enterprise SSO provider must be configured in production.');
   });
 });

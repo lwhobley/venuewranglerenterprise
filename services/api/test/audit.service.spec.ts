@@ -52,7 +52,7 @@ describe('tenant audit history', () => {
       $queryRaw: queryRaw,
     };
     const prisma = {
-      withTenant: vi.fn((_identity: Identity, action: (tx: typeof tx) => unknown) =>
+      withTenant: vi.fn((_identity: Identity, action: (transaction: typeof tx) => unknown) =>
         action(tx),
       ),
     } as unknown as PrismaService;
