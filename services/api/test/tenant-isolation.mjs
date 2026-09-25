@@ -380,6 +380,7 @@ try {
       await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT closed_event_write_probe');
       assert.equal(closedEventWriteError?.meta?.code, '23514', 'ordinary operational writes must be rejected after closeout finalization');
       await tx.$executeRawUnsafe('SAVEPOINT closed_vendor_request_write_probe');
+      await tx.$executeRaw`UPDATE event_closeouts SET state='CLOSED',finalized_by='tenant-isolation-test',finalized_at=now() WHERE id=${closeoutAId}::uuid`;
       let closedVendorRequestWriteError;
       try {
         await tx.$executeRaw`UPDATE staffing_vendor_requests SET instructions='forbidden post-close edit' WHERE id=${vendorRequestAId}::uuid`;
