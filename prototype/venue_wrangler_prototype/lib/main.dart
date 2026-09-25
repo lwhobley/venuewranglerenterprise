@@ -441,6 +441,10 @@ class _LiveOperationsHome extends ConsumerWidget {
                   ref.invalidate(eventIssuesProvider(event['id'] as String));
                   ref.invalidate(eventTasksProvider(event['id'] as String));
                   ref.invalidate(eventShiftsProvider(event['id'] as String));
+                  ref.invalidate(eventInventoryCountsProvider(event['id'] as String));
+                  ref.invalidate(eventHospitalityOrdersProvider(event['id'] as String));
+                  ref.invalidate(vendorStaffingRequestsProvider(event['id'] as String));
+                  ref.invalidate(staffingCoverageProvider(event['id'] as String));
                   ref.invalidate(eventCloseoutProvider(event['id'] as String));
                 }
               },
@@ -738,6 +742,28 @@ class _LiveTodayPage extends ConsumerWidget {
     final shifts = capabilities.contains('operations:read')
         ? ref.watch(eventShiftsProvider(eventId))
         : null;
+    final stockCounts = capabilities.contains('operations:read')
+        ? ref.watch(eventInventoryCountsProvider(eventId))
+        : null;
+    final canViewHospitality = capabilities.contains('hospitality:order') ||
+        capabilities.contains('hospitality:fulfill') ||
+        capabilities.contains('operations:write') ||
+        capabilities.contains('tenant:admin');
+    final hospitalityOrders = canViewHospitality
+        ? ref.watch(eventHospitalityOrdersProvider(eventId))
+        : null;
+    final canViewVendors = capabilities.contains('operations:read') ||
+        capabilities.contains('operations:write') ||
+        capabilities.contains('vendor:staffing') ||
+        capabilities.contains('tenant:admin');
+    final vendorRequests = canViewVendors
+        ? ref.watch(vendorStaffingRequestsProvider(eventId))
+        : null;
+    final canViewCoverage = capabilities.contains('operations:write') ||
+        capabilities.contains('tenant:admin');
+    final coverage = canViewCoverage
+        ? ref.watch(staffingCoverageProvider(eventId))
+        : null;
     String count(AsyncValue<List<dynamic>>? source, bool Function(Map) include) {
       if (source == null) return '—';
       if (source.hasError) return '—';
@@ -751,6 +777,20 @@ class _LiveTodayPage extends ConsumerWidget {
         (row as Map)['state'] != 'DONE').toList();
     final scheduledShifts = (shifts?.valueOrNull ?? const []).where((row) =>
         (row as Map)['state'] != 'CANCELLED').length;
+    final submittedStockCounts = (stockCounts?.valueOrNull ?? const [])
+        .where((row) => row['state'] == 'SUBMITTED').length;
+    final activeHospitalityOrders = (hospitalityOrders?.valueOrNull ?? const [])
+        .where((row) => !['PICKED_UP', 'REJECTED', 'CANCELLED']
+            .contains(row['state']))
+        .length;
+    final activeVendorRequests = (vendorRequests?.valueOrNull ?? const [])
+        .where((row) => !['DECLINED', 'CANCELLED', 'FULFILLED']
+            .contains(row['state']))
+        .length;
+    final unfilledPositions = (coverage?.valueOrNull ?? const []).fold<int>(
+        0,
+        (total, row) =>
+            total + ((row as Map)['unfilledHeadcount'] as num? ?? 0).toInt());
     final attention = <Map<String, dynamic>>[];
     for (final row in openIssues) {
       final item = Map<String, dynamic>.from(row as Map);
@@ -768,6 +808,38 @@ class _LiveTodayPage extends ConsumerWidget {
       if (overdue || blocked) {
         attention.add({...item, '_area': 'Operations', '_rank': blocked ? 1 : 2, '_label': blocked ? 'BLOCKED' : 'OVERDUE · ${_clockLabel(dueAt)}'});
       }
+    }
+    if (submittedStockCounts > 0) {
+      attention.add({
+        'title': '$submittedStockCounts stock count${submittedStockCounts == 1 ? '' : 's'} awaiting approval',
+        '_area': 'Stock',
+        '_rank': 2,
+        '_label': 'REVIEW REQUIRED',
+      });
+    }
+    if (activeHospitalityOrders > 0) {
+      attention.add({
+        'title': '$activeHospitalityOrders active hospitality order${activeHospitalityOrders == 1 ? '' : 's'}',
+        '_area': 'Hospitality',
+        '_rank': 2,
+        '_label': 'SERVICE IN PROGRESS',
+      });
+    }
+    if (activeVendorRequests > 0) {
+      attention.add({
+        'title': '$activeVendorRequests vendor staffing request${activeVendorRequests == 1 ? '' : 's'} in progress',
+        '_area': 'Vendors',
+        '_rank': 2,
+        '_label': 'AWAITING FULFILLMENT',
+      });
+    }
+    if (unfilledPositions > 0) {
+      attention.add({
+        'title': '$unfilledPositions staffing position${unfilledPositions == 1 ? '' : 's'} unfilled',
+        '_area': 'Staffing',
+        '_rank': 1,
+        '_label': 'COVERAGE GAP',
+      });
     }
     attention.sort((a, b) {
       final rank = (a['_rank'] as int).compareTo(b['_rank'] as int);
@@ -813,12 +885,32 @@ class _LiveTodayPage extends ConsumerWidget {
               label: 'Scheduled shifts',
               value: shifts.hasError ? '—' : shifts.valueOrNull == null ? '…' : '$scheduledShifts',
               icon: Icons.badge_outlined),
+        if (hospitalityOrders != null)
+          _LiveMetric(
+              label: 'Active hospitality orders',
+              value: hospitalityOrders.hasError ? '—' : hospitalityOrders.valueOrNull == null ? '…' : '$activeHospitalityOrders',
+              icon: Icons.room_service_outlined),
+        if (stockCounts != null)
+          _LiveMetric(
+              label: 'Stock counts for approval',
+              value: stockCounts.hasError ? '—' : stockCounts.valueOrNull == null ? '…' : '$submittedStockCounts',
+              icon: Icons.inventory_2_outlined),
+        if (vendorRequests != null)
+          _LiveMetric(
+              label: 'Active vendor requests',
+              value: vendorRequests.hasError ? '—' : vendorRequests.valueOrNull == null ? '…' : '$activeVendorRequests',
+              icon: Icons.groups_outlined),
+        if (coverage != null)
+          _LiveMetric(
+              label: 'Unfilled positions',
+              value: coverage.hasError ? '—' : coverage.valueOrNull == null ? '…' : '$unfilledPositions',
+              icon: Icons.person_search_outlined),
       ]),
       const SizedBox(height: 20),
-      if ((issues?.hasError ?? false) || (tasks?.hasError ?? false) || (shifts?.hasError ?? false))
+      if ((issues?.hasError ?? false) || (tasks?.hasError ?? false) || (shifts?.hasError ?? false) || (stockCounts?.hasError ?? false) || (hospitalityOrders?.hasError ?? false) || (vendorRequests?.hasError ?? false) || (coverage?.hasError ?? false))
         const Text(
             'Some live data could not be loaded. Check your connection and refresh.'),
-      if (issues != null || tasks != null) ...[
+      if (issues != null || tasks != null || shifts != null || stockCounts != null || hospitalityOrders != null || vendorRequests != null || coverage != null) ...[
         const Text('Needs attention',
             style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18)),
         const SizedBox(height: 8),
@@ -826,8 +918,18 @@ class _LiveTodayPage extends ConsumerWidget {
       if (attention.isEmpty &&
           (issues == null || issues.hasValue) &&
           (tasks == null || tasks.hasValue) &&
+          (shifts == null || shifts.hasValue) &&
+          (stockCounts == null || stockCounts.hasValue) &&
+          (hospitalityOrders == null || hospitalityOrders.hasValue) &&
+          (vendorRequests == null || vendorRequests.hasValue) &&
+          (coverage == null || coverage.hasValue) &&
           !(issues?.hasError ?? false) &&
-          !(tasks?.hasError ?? false))
+          !(tasks?.hasError ?? false) &&
+          !(shifts?.hasError ?? false) &&
+          !(stockCounts?.hasError ?? false) &&
+          !(hospitalityOrders?.hasError ?? false) &&
+          !(vendorRequests?.hasError ?? false) &&
+          !(coverage?.hasError ?? false))
         const _EmptyLine('Nothing urgent is waiting on this team.'),
       ...attention.take(5).map((item) {
         return ListTile(
