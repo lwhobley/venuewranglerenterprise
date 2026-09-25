@@ -104,6 +104,9 @@ export class CloseoutService {
   async finalize(identity: Identity, eventId: string, key: string) {
     assertScope(identity, 'event:closeout', eventId);
     return this.command(identity, key, 'event.closeout.finalize', { eventId }, async (tx) => {
+      // Serialize finalization against tenant-admin event edits. Both paths lock
+      // the event row before inspecting or changing closeout state.
+      await tx.$queryRaw`SELECT id FROM events WHERE id = ${eventId}::uuid AND organization_id = ${identity.tenantId}::uuid FOR UPDATE`;
       const closeout = await tx.eventCloseout.findFirst({ where: { eventId, organizationId: identity.tenantId } });
       if (!closeout) throw new ConflictException('Start event closeout before finalizing.');
       if (closeout.state === 'CLOSED') return closeout;

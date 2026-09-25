@@ -1,4 +1,4 @@
-import { ConflictException } from '@nestjs/common';
+import { ConflictException, ForbiddenException } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
 import type { Identity } from '../src/auth';
 import { OperationsService } from '../src/operations.service';
@@ -116,4 +116,92 @@ describe('tenant setup command idempotency', () => {
     expect(JSON.stringify(tx.personAuditEvent.create.mock.calls[0][0])).not.toContain(person.email);
     expect(JSON.stringify(tx.personAuditEvent.create.mock.calls[0][0])).not.toContain(person.displayName);
   });
+
+  it('updates a venue only within the tenant and audits changed field names', async () => {
+    const updatedVenue = { id: 'venue-1', organizationId: admin.tenantId, name: 'North Pavilion' };
+    const tx = setupUpdateTx({ venue: {
+      findFirst: vi.fn().mockResolvedValue({ id: 'venue-1', organizationId: admin.tenantId, name: 'North Arena' }),
+      update: vi.fn().mockResolvedValue(updatedVenue),
+    } });
+    const service = new OperationsService(setupUpdatePrisma(tx));
+
+    const result = await service.updateVenue(admin, 'venue-1', { name: 'North Pavilion' }, 'venue-update-key-001');
+    const replay = await service.updateVenue(admin, 'venue-1', { name: 'North Pavilion' }, 'venue-update-key-001');
+
+    expect(result).toEqual(updatedVenue);
+    expect(replay).toEqual(result);
+    expect(tx.venue.findFirst).toHaveBeenCalledOnce();
+    expect(tx.venue.findFirst).toHaveBeenCalledWith({ where: { id: 'venue-1', organizationId: admin.tenantId } });
+    expect(tx.tenantSetupAuditEvent.create).toHaveBeenCalledOnce();
+    expect(tx.tenantSetupAuditEvent.create).toHaveBeenCalledWith({ data: {
+      organizationId: admin.tenantId, actorId: admin.subject, action: 'updated',
+      resourceType: 'venue', resourceId: 'venue-1', changedFields: ['name'],
+    } });
+  });
+
+  it('updates a location without allowing its venue scope to be changed', async () => {
+    const updatedLocation = { id: 'location-1', organizationId: admin.tenantId, venueId: 'venue-1', name: 'West Concourse' };
+    const tx = setupUpdateTx({ location: {
+      findFirst: vi.fn().mockResolvedValue({ id: 'location-1', organizationId: admin.tenantId, venueId: 'venue-1', name: 'Concourse' }),
+      update: vi.fn().mockResolvedValue(updatedLocation),
+    } });
+    const service = new OperationsService(setupUpdatePrisma(tx));
+
+    await service.updateLocation(admin, 'location-1', { name: 'West Concourse' }, 'location-update-key-01');
+
+    expect(tx.location.findFirst).toHaveBeenCalledWith({ where: { id: 'location-1', organizationId: admin.tenantId } });
+    expect(tx.location.update).toHaveBeenCalledWith({ where: { id: 'location-1' }, data: { name: 'West Concourse' } });
+    expect(tx.tenantSetupAuditEvent.create).toHaveBeenCalledWith({ data: expect.objectContaining({ resourceType: 'location', changedFields: ['name'] }) });
+  });
+
+  it('updates an open event under a row lock and records only changed fields', async () => {
+    const startsAt = new Date('2027-01-01T20:00:00.000Z');
+    const tx = setupUpdateTx({ event: {
+      findFirst: vi.fn().mockResolvedValue({ id: 'event-1', organizationId: admin.tenantId, name: 'Game', startsAt: new Date('2027-01-01T19:00:00.000Z'), closeout: { state: 'OPEN' } }),
+      update: vi.fn().mockResolvedValue({ id: 'event-1', organizationId: admin.tenantId, name: 'Game Night', startsAt }),
+    } });
+    const service = new OperationsService(setupUpdatePrisma(tx));
+
+    await service.updateEvent(admin, 'event-1', { name: 'Game Night', startsAt: startsAt.toISOString() }, 'event-update-key-001');
+
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(2); // idempotency serialization and event finalization lock
+    expect(tx.event.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'event-1', organizationId: admin.tenantId }, include: { closeout: { select: { state: true } } } }));
+    expect(tx.tenantSetupAuditEvent.create).toHaveBeenCalledWith({ data: expect.objectContaining({ resourceType: 'event', eventId: 'event-1', changedFields: ['name', 'starts_at'] }) });
+  });
+
+  it('rejects edits to finalized events and rejects setup writes from non-admins', async () => {
+    const update = vi.fn();
+    const tx = setupUpdateTx({ event: {
+      findFirst: vi.fn().mockResolvedValue({ id: 'event-1', organizationId: admin.tenantId, name: 'Closed event', startsAt: new Date(), closeout: { state: 'CLOSED' } }),
+      update,
+    } });
+    const service = new OperationsService(setupUpdatePrisma(tx));
+
+    await expect(service.updateEvent(admin, 'event-1', { name: 'Changed' }, 'event-update-key-002')).rejects.toBeInstanceOf(ConflictException);
+    await expect(service.updateVenue({ ...admin, capabilities: ['operations:write'] }, 'venue-1', { name: 'Changed' }, 'venue-update-key-002')).rejects.toBeInstanceOf(ForbiddenException);
+    expect(update).not.toHaveBeenCalled();
+    expect(tx.tenantSetupAuditEvent.create).not.toHaveBeenCalled();
+  });
 });
+
+function setupUpdateTx(resources: Record<string, unknown> = {}) {
+  const receipts = new Map<string, { fingerprint: string; response: unknown }>();
+  return {
+    ...resources,
+    $queryRaw: vi.fn().mockResolvedValue([]),
+    commandReceipt: {
+      findUnique: vi.fn().mockImplementation(({ where }) => Promise.resolve(receipts.get(where.organizationId_key.key) ?? null)),
+      create: vi.fn().mockImplementation(({ data }) => { receipts.set(data.key, data); return Promise.resolve(data); }),
+    },
+    venue: { findFirst: vi.fn(), update: vi.fn(), ...(resources.venue as object ?? {}) },
+    location: { findFirst: vi.fn(), update: vi.fn(), ...(resources.location as object ?? {}) },
+    event: { findFirst: vi.fn(), update: vi.fn(), ...(resources.event as object ?? {}) },
+    tenantSetupAuditEvent: { create: vi.fn().mockResolvedValue({}) },
+  };
+}
+
+function setupUpdatePrisma(tx: ReturnType<typeof setupUpdateTx>) {
+  return {
+    withTenant: vi.fn((_identity: Identity, action: (transaction: never) => Promise<unknown>) => action(tx as never)),
+  } as unknown as PrismaService;
+}

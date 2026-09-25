@@ -5,6 +5,9 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 export class CreateVenueDto { @ApiProperty() @IsString() @Length(2, 120) name!: string; }
 export class CreateLocationDto { @ApiProperty() @IsUUID() venueId!: string; @ApiProperty() @IsString() @Length(2, 120) name!: string; }
 export class CreateEventDto { @ApiProperty() @IsUUID() venueId!: string; @ApiProperty() @IsString() @Length(2, 160) name!: string; @ApiProperty() @IsDateString() startsAt!: string; }
+export class UpdateVenueDto { @ApiPropertyOptional() @IsOptional() @IsString() @Length(2, 120) name?: string; }
+export class UpdateLocationDto { @ApiPropertyOptional() @IsOptional() @IsString() @Length(2, 120) name?: string; }
+export class UpdateEventDto { @ApiPropertyOptional() @IsOptional() @IsString() @Length(2, 160) name?: string; @ApiPropertyOptional() @IsOptional() @IsDateString() startsAt?: string; }
 export class UpsertPersonDto { @ApiProperty() @IsString() @Length(1, 240) externalSubject!: string; @ApiProperty() @IsEmail() email!: string; @ApiProperty() @IsString() @Length(1, 160) displayName!: string; }
 export class CreateOperationalTaskDto {
   @ApiProperty({ enum: OperationalTaskKind }) @IsEnum(OperationalTaskKind) kind!: OperationalTaskKind;

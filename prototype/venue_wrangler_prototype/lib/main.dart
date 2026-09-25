@@ -315,6 +315,8 @@ class _LiveOperationsHome extends ConsumerWidget {
     final page = tabs[selectedTab] == 'Setup' && isAdmin
         ? _TenantSetupPage(
             venues: venues,
+            locations: locations,
+            events: events,
             people: (data['people'] as List? ?? const [])
                 .whereType<Map>()
                 .map((e) => Map<String, dynamic>.from(e))
@@ -372,6 +374,8 @@ class _LiveOperationsHome extends ConsumerWidget {
                     people: (data['people'] as List? ?? const []).whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList()),
                 'Setup' => _TenantSetupPage(
                     venues: venues,
+                    locations: locations,
+                    events: events,
                     people: (data['people'] as List? ?? const [])
                         .whereType<Map>()
                         .map((e) => Map<String, dynamic>.from(e))
@@ -2762,10 +2766,14 @@ Future<void> _newLiveShift(
 class _TenantSetupPage extends StatelessWidget {
   const _TenantSetupPage(
       {required this.venues,
+      required this.locations,
+      required this.events,
       required this.people,
       required this.api,
       required this.onSaved});
   final List<Map<String, dynamic>> venues;
+  final List<Map<String, dynamic>> locations;
+  final List<Map<String, dynamic>> events;
   final List<Map<String, dynamic>> people;
   final OperationsApi api;
   final VoidCallback onSaved;
@@ -2788,9 +2796,38 @@ class _TenantSetupPage extends StatelessWidget {
             icon: const Icon(Icons.history),
             label: const Text('View audit history')),
         const SizedBox(height: 16),
-        ...venues.map((v) => ListTile(
+        ...venues.map((v) => Card(child: ListTile(
             leading: const Icon(Icons.stadium_outlined),
-            title: Text(v['name'] as String? ?? 'Venue'))),
+            title: Text(v['name'] as String? ?? 'Venue'),
+            trailing: IconButton(tooltip: 'Edit venue', icon: const Icon(Icons.edit_outlined), onPressed: () => _editVenue(context, v))))),
+        if (locations.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Text('Locations', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+          ...locations.map((location) {
+            final venue = venues.where((item) => item['id'] == location['venueId']).firstOrNull;
+            return Card(child: ListTile(
+              leading: const Icon(Icons.place_outlined),
+              title: Text(location['name'] as String? ?? 'Location'),
+              subtitle: venue == null ? null : Text(venue['name'] as String? ?? ''),
+              trailing: IconButton(tooltip: 'Edit location', icon: const Icon(Icons.edit_outlined), onPressed: () => _editLocation(context, location)),
+            ));
+          }),
+        ],
+        if (events.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Text('Events', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+          ...events.map((event) {
+            final venue = venues.where((item) => item['id'] == event['venueId']).firstOrNull;
+            final startsAt = DateTime.tryParse(event['startsAt'] as String? ?? '')?.toLocal();
+            final closed = (event['closeout'] as Map?)?['state'] == 'CLOSED';
+            return Card(child: ListTile(
+              leading: const Icon(Icons.event_outlined),
+              title: Text(event['name'] as String? ?? 'Event'),
+              subtitle: Text('${venue?['name'] ?? 'Venue'}${startsAt == null ? '' : ' · ${MaterialLocalizations.of(context).formatMediumDate(startsAt)} ${MaterialLocalizations.of(context).formatTimeOfDay(TimeOfDay.fromDateTime(startsAt))}'}${closed ? ' · Closed' : ''}'),
+              trailing: IconButton(tooltip: closed ? 'Finalized events cannot be edited' : 'Edit event', icon: const Icon(Icons.edit_outlined), onPressed: closed ? null : () => _editEvent(context, event)),
+            ));
+          }),
+        ],
         const SizedBox(height: 12),
         Wrap(spacing: 8, runSpacing: 8, children: [
           FilledButton.icon(
@@ -2862,6 +2899,55 @@ class _TenantSetupPage extends StatelessWidget {
           ]));
         })
       ]);
+  Future<void> _editVenue(BuildContext context, Map<String, dynamic> venue) => _editName(context, title: 'Edit venue', initialName: venue['name'] as String? ?? '', save: (name) => api.updateVenue(venue['id'] as String, name));
+  Future<void> _editLocation(BuildContext context, Map<String, dynamic> location) => _editName(context, title: 'Edit location', initialName: location['name'] as String? ?? '', save: (name) => api.updateLocation(location['id'] as String, name));
+  Future<void> _editName(BuildContext context, {required String title, required String initialName, required Future<void> Function(String) save}) async {
+    final name = TextEditingController(text: initialName);
+    try {
+      final accepted = await showDialog<bool>(context: context, builder: (dialogContext) => AlertDialog(
+        title: Text(title),
+        content: TextField(controller: name, autofocus: true, maxLength: 160, decoration: const InputDecoration(labelText: 'Name')),
+        actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')), FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Save'))],
+      ));
+      if (accepted == true) {
+        await save(name.text.trim());
+        onSaved();
+        if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Changes saved')));
+      }
+    } catch (error) {
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not save changes: $error')));
+    } finally {
+      name.dispose();
+    }
+  }
+  Future<void> _editEvent(BuildContext context, Map<String, dynamic> event) async {
+    final name = TextEditingController(text: event['name'] as String? ?? '');
+    var startsAt = DateTime.tryParse(event['startsAt'] as String? ?? '')?.toLocal() ?? DateTime.now();
+    try {
+      final accepted = await showDialog<bool>(context: context, builder: (dialogContext) => StatefulBuilder(builder: (context, setDialogState) => AlertDialog(
+        title: const Text('Edit event'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(controller: name, autofocus: true, maxLength: 160, decoration: const InputDecoration(labelText: 'Event name')),
+          ListTile(contentPadding: EdgeInsets.zero, leading: const Icon(Icons.schedule_outlined), title: const Text('Event start'), subtitle: Text('${MaterialLocalizations.of(context).formatMediumDate(startsAt)} · ${MaterialLocalizations.of(context).formatTimeOfDay(TimeOfDay.fromDateTime(startsAt))}'), onTap: () async {
+            final date = await showDatePicker(context: context, initialDate: startsAt, firstDate: DateTime(2000), lastDate: DateTime(2100));
+            if (date == null || !context.mounted) return;
+            final time = await showTimePicker(context: context, initialTime: TimeOfDay.fromDateTime(startsAt));
+            if (time != null) setDialogState(() => startsAt = DateTime(date.year, date.month, date.day, time.hour, time.minute));
+          }),
+        ]),
+        actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')), FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Save'))],
+      )));
+      if (accepted == true) {
+        await api.updateEvent(event['id'] as String, name: name.text.trim(), startsAt: startsAt);
+        onSaved();
+        if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Event updated')));
+      }
+    } catch (error) {
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not update event: $error')));
+    } finally {
+      name.dispose();
+    }
+  }
   Future<void> _configureRestPolicy(BuildContext context) async {
     final controller = TextEditingController();
     try {

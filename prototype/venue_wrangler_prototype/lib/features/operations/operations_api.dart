@@ -1102,6 +1102,14 @@ class OperationsApi {
             'Authorization': 'Bearer $token',
             'Idempotency-Key': key,
           })));
+  Future<void> updateVenue(String venueId, String name) async => _command<void>(
+      {'action': 'venue.update', 'venueId': venueId, 'name': name.trim()},
+      (token, key) => _dio.put<void>('/api/v1/admin/venues/$venueId',
+          data: {'name': name.trim()},
+          options: Options(headers: {
+            'Authorization': 'Bearer $token',
+            'Idempotency-Key': key,
+          })));
   Future<void> createLocation(String venueId, String name) async => _command<
           void>(
       {'action': 'location.create', 'venueId': venueId, 'name': name.trim()},
@@ -1111,6 +1119,15 @@ class OperationsApi {
             'Authorization': 'Bearer $token',
             'Idempotency-Key': key,
           })));
+  Future<void> updateLocation(String locationId, String name) async =>
+      _command<void>(
+          {'action': 'location.update', 'locationId': locationId, 'name': name.trim()},
+          (token, key) => _dio.put<void>('/api/v1/admin/locations/$locationId',
+              data: {'name': name.trim()},
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key,
+              })));
   Future<void> createEvent(
           String venueId, String name, DateTime startsAt) async =>
       _command<void>(
@@ -1125,6 +1142,26 @@ class OperationsApi {
                 'venueId': venueId,
                 'name': name,
                 'startsAt': startsAt.toUtc().toIso8601String()
+              },
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key,
+              })));
+  Future<void> updateEvent(String eventId,
+          {String? name, DateTime? startsAt}) async =>
+      _command<void>(
+          {
+            'action': 'event.update',
+            'eventId': eventId,
+            if (name != null) 'name': name.trim(),
+            if (startsAt != null)
+              'startsAt': startsAt.toUtc().toIso8601String(),
+          },
+          (token, key) => _dio.put<void>('/api/v1/admin/events/$eventId',
+              data: {
+                if (name != null) 'name': name.trim(),
+                if (startsAt != null)
+                  'startsAt': startsAt.toUtc().toIso8601String(),
               },
               options: Options(headers: {
                 'Authorization': 'Bearer $token',
