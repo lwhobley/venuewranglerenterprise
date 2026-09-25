@@ -230,10 +230,16 @@ class OperationsApi {
       _command<void>({'eventId': eventId, 'demandId': demandId, ...patch}, (token, key) => _dio.put<void>(
         '/api/v1/events/$eventId/coverage/requirements/$demandId', data: patch,
         options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
-  Future<Map<String, dynamic>> generateCoverageShifts(String eventId, String demandId) async =>
-      _command<Map<String, dynamic>>({'eventId': eventId, 'demandId': demandId}, (token, key) => _dio.post<Map<String, dynamic>>(
+  Future<Map<String, dynamic>> generateCoverageShifts(String eventId, String demandId) async {
+    final response = await _command<Response<Map<String, dynamic>>>(
+      {'eventId': eventId, 'demandId': demandId},
+      (token, key) => _dio.post<Map<String, dynamic>>(
         '/api/v1/events/$eventId/coverage/requirements/$demandId/generate',
-        options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key}))).then((response) => response.data ?? const {});
+        options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key}),
+      ),
+    );
+    return response.data ?? const {};
+  }
   Future<List<dynamic>> teamAvailability(String eventId, DateTime from, DateTime to) async =>
       (await _request((token) => _dio.get<List<dynamic>>(
               '/api/v1/events/$eventId/availability',

@@ -1560,14 +1560,14 @@ class _CoveragePlanningPanel extends ConsumerWidget {
           TextField(controller: headcount, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'People required')),
           const SizedBox(height: 8),
           DropdownButtonFormField<String?>(
-            value: locationId,
+            initialValue: locationId,
             decoration: const InputDecoration(labelText: 'Area'),
             items: [const DropdownMenuItem<String?>(value: null, child: Text('All areas')), ...locations.map((row) => DropdownMenuItem<String?>(value: row['id'] as String, child: Text(row['name'] as String? ?? 'Area')))],
             onChanged: (value) => setState(() => locationId = value),
           ),
           ListTile(contentPadding: EdgeInsets.zero, title: const Text('Coverage starts'), subtitle: Text(_shiftTimeLabel(startsAt, startsAt)), trailing: const Icon(Icons.edit_calendar), onTap: () async {
             final value = await _pickAttendanceDateTime(context, startsAt);
-            if (value != null) setState(() { startsAt = value; if (endsAt <= startsAt) endsAt = startsAt.add(const Duration(hours: 4)); });
+            if (value != null) setState(() { startsAt = value; if (!endsAt.isAfter(startsAt)) endsAt = startsAt.add(const Duration(hours: 4)); });
           }),
           ListTile(contentPadding: EdgeInsets.zero, title: const Text('Coverage ends'), subtitle: Text(_shiftTimeLabel(endsAt, endsAt)), trailing: const Icon(Icons.edit_calendar), onTap: () async {
             final value = await _pickAttendanceDateTime(context, endsAt);
@@ -1578,7 +1578,7 @@ class _CoveragePlanningPanel extends ConsumerWidget {
           TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
           FilledButton(onPressed: () {
             final count = int.tryParse(headcount.text.trim());
-            if (role.text.trim().length < 2 || count == null || count < 1 || count > 500 || endsAt <= startsAt) return;
+            if (role.text.trim().length < 2 || count == null || count < 1 || count > 500 || !endsAt.isAfter(startsAt)) return;
             Navigator.pop(dialogContext, {
               'venueId': venueId,
               if (locationId != null) 'locationId': locationId,
