@@ -673,13 +673,26 @@ class _LiveTodayPage extends ConsumerWidget {
     final eventId = event['id'] as String;
     final issues = capabilities.contains('issue:read')
         ? ref.watch(eventIssuesProvider(eventId))
-        : const AsyncValue<List<dynamic>>.data([]);
+        : null;
     final tasks = capabilities.contains('operations:read')
         ? ref.watch(eventTasksProvider(eventId))
-        : const AsyncValue<List<dynamic>>.data([]);
+        : null;
     final shifts = capabilities.contains('operations:read')
         ? ref.watch(eventShiftsProvider(eventId))
-        : const AsyncValue<List<dynamic>>.data([]);
+        : null;
+    String count(AsyncValue<List<dynamic>>? source, bool Function(Map) include) {
+      if (source == null) return '—';
+      if (source.hasError) return '—';
+      final rows = source.valueOrNull;
+      if (rows == null) return '…';
+      return rows.where((row) => include(row as Map)).length.toString();
+    }
+    final openIssues = (issues?.valueOrNull ?? const []).where((row) =>
+        (row as Map)['state'] != 'CLOSED').toList();
+    final openTasks = (tasks?.valueOrNull ?? const []).where((row) =>
+        (row as Map)['state'] != 'DONE').toList();
+    final scheduledShifts = (shifts?.valueOrNull ?? const []).where((row) =>
+        (row as Map)['state'] != 'CANCELLED').length;
     return ListView(children: [
       Text('Event day',
           style: Theme.of(context)
@@ -698,29 +711,34 @@ class _LiveTodayPage extends ConsumerWidget {
             label: 'Locations',
             value: '$locationCount',
             icon: Icons.place_outlined),
-        _LiveMetric(
-            label: 'Open issues',
-            value: issues.valueOrNull?.length.toString() ?? '—',
-            icon: Icons.report_problem_outlined),
-        _LiveMetric(
-            label: 'Operations tasks',
-            value: tasks.valueOrNull?.length.toString() ?? '—',
-            icon: Icons.checklist_outlined),
-        _LiveMetric(
-            label: 'Staff shifts',
-            value: shifts.valueOrNull?.length.toString() ?? '—',
-            icon: Icons.badge_outlined),
+        if (issues != null)
+          _LiveMetric(
+              label: 'Open issues',
+              value: count(issues, (row) => row['state'] != 'CLOSED'),
+              icon: Icons.report_problem_outlined),
+        if (tasks != null)
+          _LiveMetric(
+              label: 'Open operations tasks',
+              value: count(tasks, (row) => row['state'] != 'DONE'),
+              icon: Icons.checklist_outlined),
+        if (shifts != null)
+          _LiveMetric(
+              label: 'Scheduled shifts',
+              value: shifts.hasError ? '—' : shifts.valueOrNull == null ? '…' : '$scheduledShifts',
+              icon: Icons.badge_outlined),
       ]),
       const SizedBox(height: 20),
-      if (issues.hasError || tasks.hasError || shifts.hasError)
+      if ((issues?.hasError ?? false) || (tasks?.hasError ?? false) || (shifts?.hasError ?? false))
         const Text(
             'Some live data could not be loaded. Check your connection and refresh.'),
-      const Text('Live event data',
-          style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18)),
-      const SizedBox(height: 8),
-      if (issues.valueOrNull?.isEmpty ?? true)
-        const _EmptyLine('No reported issues for this event.'),
-      ...(issues.valueOrNull ?? const []).take(3).map((row) {
+      if (issues != null || tasks != null) ...[
+        const Text('Live event data',
+            style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18)),
+        const SizedBox(height: 8),
+      ],
+      if (issues != null && issues.hasValue && !issues.hasError && openIssues.isEmpty)
+        const _EmptyLine('No open issues for this event.'),
+      ...openIssues.take(3).map((row) {
         final item = Map<String, dynamic>.from(row as Map);
         return ListTile(
             leading: Icon(Icons.circle,
@@ -733,9 +751,9 @@ class _LiveTodayPage extends ConsumerWidget {
             subtitle: Text(
                 '${item['state'] ?? 'REPORTED'} · ${item['category'] ?? ''}'));
       }),
-      if (tasks.valueOrNull?.isEmpty ?? true)
-        const _EmptyLine('No operational tasks have been added yet.'),
-      ...(tasks.valueOrNull ?? const []).take(3).map((row) {
+      if (tasks != null && tasks.hasValue && !tasks.hasError && openTasks.isEmpty)
+        const _EmptyLine('No open operational tasks for this event.'),
+      ...openTasks.take(3).map((row) {
         final item = Map<String, dynamic>.from(row as Map);
         return ListTile(
             leading: const Icon(Icons.task_alt_outlined),
