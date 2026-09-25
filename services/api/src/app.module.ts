@@ -21,6 +21,8 @@ import { PushDevicesService } from './push-devices.service';
 import { PushNotificationsService } from './push-notifications.service';
 import { AuditController } from './audit.controller';
 import { AuditService } from './audit.service';
+import { StaffingController } from './staffing.controller';
+import { StaffingService } from './staffing.service';
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true, validate: (env) => {
@@ -33,7 +35,7 @@ import { AuditService } from './audit.service';
     }
     return env;
   } })],
-  controllers: [AuthController, HealthController, IssuesController, OperationsController, NotificationsController, ScimController, IntegrationController, PushDevicesController, AuditController],
-  providers: [AuthProvidersService, PrismaService, JwtIdentityGuard, IssuesService, OperationsService, NotificationsService, EvidenceService, ScimService, IntegrationService, PushDevicesService, PushNotificationsService, AuditService],
+  controllers: [AuthController, HealthController, IssuesController, OperationsController, StaffingController, NotificationsController, ScimController, IntegrationController, PushDevicesController, AuditController],
+  providers: [AuthProvidersService, PrismaService, JwtIdentityGuard, IssuesService, OperationsService, StaffingService, NotificationsService, EvidenceService, ScimService, IntegrationService, PushDevicesService, PushNotificationsService, AuditService],
 })
 export class AppModule {}

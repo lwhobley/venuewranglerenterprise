@@ -67,6 +67,9 @@ try {
       await tx.externalIntegrationEvent.create({ data: { organizationId: tenantA, eventId: eventA, source: 'test-labor', externalId: `tenant-a-${randomUUID()}`, eventType: 'test.snapshot', occurredAt: new Date(), payload: { tenant: 'a' }, bodySha256: 'a'.repeat(64) } });
       const taskA = await tx.operationalTask.create({ data: { organizationId: tenantA, venueId: venueA, eventId: eventA, locationId: locationA, kind: 'SERVICE', title: `Tenant A ${randomUUID()}`, createdBy: 'tenant-isolation-test', updatedBy: 'tenant-isolation-test' } });
       await tx.operationalTaskAudit.create({ data: { organizationId: tenantA, taskId: taskA.id, actorId: 'tenant-isolation-test', action: 'created' } });
+      const shiftA = await tx.staffShift.create({ data: { organizationId: tenantA, venueId: venueA, eventId: eventA, locationId: locationA, role: 'Usher', startsAt: new Date('2026-10-01T17:00:00Z'), endsAt: new Date('2026-10-01T22:00:00Z'), createdBy: 'tenant-isolation-test', updatedBy: 'tenant-isolation-test' } });
+      await tx.staffShiftAuditEvent.create({ data: { organizationId: tenantA, shiftId: shiftA.id, actorId: 'tenant-isolation-test', action: 'created' } });
+      await tx.userNotification.create({ data: { organizationId: tenantA, eventId: eventA, shiftId: shiftA.id, recipientSubject: 'tenant-isolation-test', kind: 'staffing.shift.published', title: 'Tenant A shift', body: 'Review shift.' } });
       await tx.userNotification.create({ data: { organizationId: tenantA, eventId: eventA, issueId: issueA.id, recipientSubject: 'tenant-isolation-test', kind: 'issue.assigned', title: 'Tenant A', body: 'Tenant A' } });
       await tx.issueAttachment.create({ data: { organizationId: tenantA, eventId: eventA, issueId: issueA.id, clientId: randomUUID(), uploadedBy: 'tenant-isolation-test', fileName: 'fixture.jpg', contentType: 'image/jpeg', sizeBytes: 1, sha256: 'a'.repeat(64), storageObjectKey: `tenant-a/${randomUUID()}` } });
       const pushTokenA = `tenant-a-push-token-${randomUUID()}-${randomUUID()}`;
@@ -88,12 +91,16 @@ try {
       await tx.externalIntegrationEvent.create({ data: { organizationId: tenantB, eventId: eventB, source: 'test-labor', externalId: `tenant-b-${randomUUID()}`, eventType: 'test.snapshot', occurredAt: new Date(), payload: { tenant: 'b' }, bodySha256: 'b'.repeat(64) } });
       const taskB = await tx.operationalTask.create({ data: { organizationId: tenantB, venueId: venueB, eventId: eventB, locationId: locationB, kind: 'SERVICE', title: `Tenant B ${randomUUID()}`, createdBy: 'tenant-isolation-test', updatedBy: 'tenant-isolation-test' } });
       await tx.operationalTaskAudit.create({ data: { organizationId: tenantB, taskId: taskB.id, actorId: 'tenant-isolation-test', action: 'created' } });
+      const shiftB = await tx.staffShift.create({ data: { organizationId: tenantB, venueId: venueB, eventId: eventB, locationId: locationB, role: 'Usher', startsAt: new Date('2026-10-01T17:00:00Z'), endsAt: new Date('2026-10-01T22:00:00Z'), createdBy: 'tenant-isolation-test', updatedBy: 'tenant-isolation-test' } });
+      await tx.staffShiftAuditEvent.create({ data: { organizationId: tenantB, shiftId: shiftB.id, actorId: 'tenant-isolation-test', action: 'created' } });
+      await tx.userNotification.create({ data: { organizationId: tenantB, eventId: eventB, shiftId: shiftB.id, recipientSubject: 'tenant-isolation-test', kind: 'staffing.shift.published', title: 'Tenant B shift', body: 'Review shift.' } });
       await tx.userNotification.create({ data: { organizationId: tenantB, eventId: eventB, issueId: issueB.id, recipientSubject: 'tenant-isolation-test', kind: 'issue.assigned', title: 'Tenant B', body: 'Tenant B' } });
       await tx.issueAttachment.create({ data: { organizationId: tenantB, eventId: eventB, issueId: issueB.id, clientId: randomUUID(), uploadedBy: 'tenant-isolation-test', fileName: 'fixture.jpg', contentType: 'image/jpeg', sizeBytes: 1, sha256: 'b'.repeat(64), storageObjectKey: `tenant-b/${randomUUID()}` } });
       const pushTokenB = `tenant-b-push-token-${randomUUID()}-${randomUUID()}`;
       await tx.pushDevice.create({ data: { organizationId: tenantB, subject: 'tenant-isolation-test', installationId: randomUUID(), registrationToken: pushTokenB, tokenSha256: createHash('sha256').update(pushTokenB).digest('hex'), platform: 'android' } });
 
       await setTenant(tx, tenantA);
+      assert.equal(await tx.userNotification.count({ where: { organizationId: tenantA, shiftId: shiftA.id, recipientSubject: 'tenant-isolation-test' } }), 1, 'the assigned worker can read the shift notification');
       const auditService = new AuditService({
         withTenant: async (identity, action) => {
           await setTenant(tx, identity.tenantId, identity.subject);
@@ -124,16 +131,18 @@ try {
       assert.equal(auditB.items.some((row) => row.resourceId === issueA.id || row.resourceId === taskA.id || row.id === setupAuditA.id), false, 'tenant B audit feed must exclude tenant A records');
 
       await setTenant(tx, tenantA);
-      await assertTenantCannotRead(tx, tenantA, tenantB, issueB.id, taskB.id);
+      await assertTenantCannotRead(tx, tenantA, tenantB, issueB.id, taskB.id, shiftB.id);
       const updated = await tx.issue.updateMany({ where: { id: issueB.id }, data: { title: 'forbidden update' } });
       const deleted = await tx.issue.deleteMany({ where: { id: issueB.id } });
       const updatedTask = await tx.operationalTask.updateMany({ where: { id: taskB.id }, data: { title: 'forbidden update' } });
+      const updatedShift = await tx.staffShift.updateMany({ where: { id: shiftB.id }, data: { role: 'forbidden update' } });
       assert.equal(updated.count, 0, 'tenant A must not update tenant B issues');
       assert.equal(deleted.count, 0, 'tenant A must not delete tenant B issues');
       assert.equal(updatedTask.count, 0, 'tenant A must not update tenant B operational tasks');
+      assert.equal(updatedShift.count, 0, 'tenant A must not update tenant B staff shifts');
 
       await setTenant(tx, tenantB);
-      await assertTenantCannotRead(tx, tenantB, tenantA, issueA.id, taskA.id);
+      await assertTenantCannotRead(tx, tenantB, tenantA, issueA.id, taskA.id, shiftA.id);
       await setTenant(tx, tenantB, 'unrelated-recipient');
       assert.equal(await tx.userNotification.count({ where: { organizationId: tenantB } }), 0, 'notifications must only be visible to their recipient subject');
       assert.equal(await tx.pushDevice.count({ where: { organizationId: tenantB } }), 0, 'push tokens must only be visible to their registered subject');
@@ -167,7 +176,7 @@ try {
   await prisma.$disconnect();
 }
 
-async function assertTenantCannotRead(tx, visibleTenant, hiddenTenant, hiddenIssueId, hiddenTaskId) {
+async function assertTenantCannotRead(tx, visibleTenant, hiddenTenant, hiddenIssueId, hiddenTaskId, hiddenShiftId) {
   assert.equal(await tx.organization.count({ where: { id: hiddenTenant } }), 0, `${visibleTenant} organization isolation`);
   assert.equal(await tx.venue.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} venue isolation`);
   assert.equal(await tx.event.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} event isolation`);
@@ -185,4 +194,6 @@ async function assertTenantCannotRead(tx, visibleTenant, hiddenTenant, hiddenIss
   assert.equal(await tx.issueAttachment.count({ where: { issueId: hiddenIssueId } }), 0, `${visibleTenant} issue evidence isolation`);
   assert.equal(await tx.externalIntegrationEvent.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} integration event isolation`);
   assert.equal(await tx.pushDevice.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} push device isolation`);
+  assert.equal(await tx.staffShift.count({ where: { id: hiddenShiftId } }), 0, `${visibleTenant} staff shift isolation`);
+  assert.equal(await tx.staffShiftAuditEvent.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} staff shift audit isolation`);
 }

@@ -287,6 +287,7 @@ class _LiveOperationsHome extends ConsumerWidget {
       if (caps.contains('issue:read') || caps.contains('issue:report'))
         'Issues',
       if (caps.contains('operations:read')) 'Operations',
+      if (caps.contains('operations:read')) 'Staffing',
       if (isAdmin) 'Setup'
     ];
     final selectedTab =
@@ -329,6 +330,15 @@ class _LiveOperationsHome extends ConsumerWidget {
                         .toList()),
                 'Operations' => _LiveTasksPage(
                     event: event, canWrite: caps.contains('operations:write')),
+                'Staffing' => _LiveStaffingPage(
+                    event: event,
+                    canWrite: caps.contains('operations:write'),
+                    subject: identity['subject'] as String? ?? '',
+                    locations: locations,
+                    people: (data['people'] as List? ?? const [])
+                        .whereType<Map>()
+                        .map((e) => Map<String, dynamic>.from(e))
+                        .toList()),
                 'Setup' => _TenantSetupPage(
                     venues: venues,
                     people: (data['people'] as List? ?? const [])
@@ -383,6 +393,7 @@ class _LiveOperationsHome extends ConsumerWidget {
                 if (event != null) {
                   ref.invalidate(eventIssuesProvider(event['id'] as String));
                   ref.invalidate(eventTasksProvider(event['id'] as String));
+                  ref.invalidate(eventShiftsProvider(event['id'] as String));
                 }
               },
               icon: const Icon(Icons.refresh)),
@@ -422,6 +433,24 @@ class _LiveOperationsHome extends ConsumerWidget {
               icon: const Icon(Icons.add_alert_outlined),
               label: const Text('Report issue'))
           : event != null &&
+                  tabs[selectedTab] == 'Staffing' &&
+                  caps.contains('operations:write')
+              ? FloatingActionButton.extended(
+                  onPressed: () => _newLiveShift(
+                      context,
+                      ref,
+                      event,
+                      locations,
+                      (identity['assignableUserIds'] as List? ?? const [])
+                          .whereType<String>()
+                          .toList(),
+                      (data['people'] as List? ?? const [])
+                          .whereType<Map>()
+                          .map((e) => Map<String, dynamic>.from(e))
+                          .toList()),
+                  icon: const Icon(Icons.person_add_alt_1),
+                  label: const Text('Add shift'))
+              : event != null &&
                   tabs[selectedTab] == 'Operations' &&
                   caps.contains('operations:write')
               ? FloatingActionButton.extended(
@@ -601,6 +630,20 @@ class _NotificationInboxState extends ConsumerState<_NotificationInbox> {
                                                         as String);
                                             ref.invalidate(
                                                 userNotificationsProvider);
+                                            if (notification['shiftId'] is String && notification['eventId'] is String) {
+                                              final identity = ref.read(operationsBootstrapProvider).valueOrNull?['identity'] as Map<String, dynamic>? ?? const {};
+                                              final capabilities = (identity['capabilities'] as List? ?? const []).whereType<String>().toSet();
+                                              final tabs = <String>[
+                                                'Today',
+                                                if (capabilities.contains('issue:read') || capabilities.contains('issue:report')) 'Issues',
+                                                if (capabilities.contains('operations:read')) 'Operations',
+                                                if (capabilities.contains('operations:read')) 'Staffing',
+                                                if (capabilities.contains('tenant:admin')) 'Setup',
+                                              ];
+                                              ref.read(_selectedLiveEventProvider.notifier).state = notification['eventId'] as String;
+                                              ref.read(_liveTabProvider.notifier).state = tabs.indexOf('Staffing');
+                                              if (context.mounted) Navigator.pop(context);
+                                            }
                                           } catch (error) {
                                             if (context.mounted) {
                                               ScaffoldMessenger.of(context)
@@ -634,6 +677,9 @@ class _LiveTodayPage extends ConsumerWidget {
     final tasks = capabilities.contains('operations:read')
         ? ref.watch(eventTasksProvider(eventId))
         : const AsyncValue<List<dynamic>>.data([]);
+    final shifts = capabilities.contains('operations:read')
+        ? ref.watch(eventShiftsProvider(eventId))
+        : const AsyncValue<List<dynamic>>.data([]);
     return ListView(children: [
       Text('Event day',
           style: Theme.of(context)
@@ -660,9 +706,13 @@ class _LiveTodayPage extends ConsumerWidget {
             label: 'Operations tasks',
             value: tasks.valueOrNull?.length.toString() ?? '—',
             icon: Icons.checklist_outlined),
+        _LiveMetric(
+            label: 'Staff shifts',
+            value: shifts.valueOrNull?.length.toString() ?? '—',
+            icon: Icons.badge_outlined),
       ]),
       const SizedBox(height: 20),
-      if (issues.hasError || tasks.hasError)
+      if (issues.hasError || tasks.hasError || shifts.hasError)
         const Text(
             'Some live data could not be loaded. Check your connection and refresh.'),
       const Text('Live event data',
@@ -1093,6 +1143,190 @@ class _LiveTasksPage extends ConsumerWidget {
                                       ])
                               : Text(state)));
                 }).toList()));
+}
+
+class _LiveStaffingPage extends ConsumerWidget {
+  const _LiveStaffingPage({
+    required this.event,
+    required this.canWrite,
+    required this.subject,
+    required this.locations,
+    required this.people,
+  });
+  final Map<String, dynamic> event;
+  final bool canWrite;
+  final String subject;
+  final List<Map<String, dynamic>> locations;
+  final List<Map<String, dynamic>> people;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final eventId = event['id'] as String;
+    return ref.watch(eventShiftsProvider(eventId)).when(
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (error, _) => Center(
+          child: Text('Staffing schedule unavailable: $error',
+              textAlign: TextAlign.center)),
+      data: (rows) => rows.isEmpty
+          ? const Center(child: Text('No shifts are scheduled for this event.'))
+          : ListView.separated(
+              itemCount: rows.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 4),
+              itemBuilder: (context, index) {
+                final shift = Map<String, dynamic>.from(rows[index] as Map);
+                final assignedToMe = shift['assignedSubject'] == subject;
+                final state = shift['state'] as String? ?? 'DRAFT';
+                final response = shift['response'] as String? ?? 'PENDING';
+                final attendance = shift['attendance'] as String? ?? 'NOT_STARTED';
+                final startsAt = DateTime.tryParse(shift['startsAt'] as String? ?? '')?.toLocal();
+                final endsAt = DateTime.tryParse(shift['endsAt'] as String? ?? '')?.toLocal();
+                final locationId = shift['locationId'] as String?;
+                final location = locations.where((row) => row['id'] == locationId);
+                final locationName = location.isEmpty ? 'All areas' : location.first['name'] as String? ?? 'Area';
+                final assigned = people.where((row) => row['externalSubject'] == shift['assignedSubject']);
+                final assignedName = assignedToMe ? 'You' : assigned.isEmpty ? 'Open shift' : assigned.first['displayName'] as String? ?? 'Assigned worker';
+                final currentResponse = shift['responseRevision'] == shift['revision'];
+                return Card(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      ListTile(
+                        leading: const CircleAvatar(child: Icon(Icons.badge_outlined)),
+                        title: Text(shift['role'] as String? ?? 'Shift', style: const TextStyle(fontWeight: FontWeight.w800)),
+                        subtitle: Text('$assignedName · $locationName\n${_shiftTimeLabel(startsAt, endsAt)}\n$state · $response · $attendance'),
+                        isThreeLine: true,
+                      ),
+                      if (shift['instructions'] is String && (shift['instructions'] as String).isNotEmpty)
+                        Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 8), child: Text(shift['instructions'] as String)),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                        child: Wrap(spacing: 8, runSpacing: 4, children: [
+                          if (canWrite && state == 'DRAFT')
+                            OutlinedButton(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'publish'), child: const Text('Publish')),
+                          if (canWrite && state == 'PUBLISHED' && attendance == 'NOT_STARTED')
+                            TextButton(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'cancel'), child: const Text('Cancel shift')),
+                          if (shift['assignedSubject'] == null && state == 'PUBLISHED')
+                            FilledButton(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'claim'), child: const Text('Claim shift')),
+                          if (assignedToMe && state == 'PUBLISHED' && response == 'PENDING') ...[
+                            FilledButton(onPressed: () => _respondToShift(context, ref, eventId, shift['id'] as String, 'ACKNOWLEDGED'), child: const Text('Acknowledge')),
+                            TextButton(onPressed: () => _respondToShift(context, ref, eventId, shift['id'] as String, 'DECLINED'), child: const Text('Decline')),
+                          ],
+                          if (assignedToMe && state == 'PUBLISHED' && response == 'ACKNOWLEDGED' && !currentResponse)
+                            FilledButton(onPressed: () => _respondToShift(context, ref, eventId, shift['id'] as String, 'ACKNOWLEDGED'), child: const Text('Review changes')),
+                          if (assignedToMe && state == 'PUBLISHED' && response == 'ACKNOWLEDGED' && currentResponse && attendance == 'NOT_STARTED')
+                            FilledButton(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'check-in'), child: const Text('Check in')),
+                          if (assignedToMe && attendance == 'CHECKED_IN')
+                            FilledButton(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'check-out'), child: const Text('Check out')),
+                        ]),
+                      ),
+                    ]),
+                  ),
+                );
+              },
+            ),
+    );
+  }
+}
+
+String _shiftTimeLabel(DateTime? start, DateTime? end) {
+  if (start == null || end == null) return 'Time unavailable';
+  String time(DateTime value) {
+    final hour = value.hour % 12 == 0 ? 12 : value.hour % 12;
+    return '$hour:${value.minute.toString().padLeft(2, '0')} ${value.hour < 12 ? 'AM' : 'PM'}';
+  }
+  return '${start.month}/${start.day} · ${time(start)}–${time(end)}';
+}
+
+Future<void> _runShiftCommand(BuildContext context, WidgetRef ref, String eventId, String shiftId, String action) async {
+  try {
+    await ref.read(operationsApiProvider).shiftCommand(eventId, shiftId, action);
+    ref.invalidate(eventShiftsProvider(eventId));
+  } catch (error) {
+    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not $action shift: $error')));
+  }
+}
+
+Future<void> _respondToShift(BuildContext context, WidgetRef ref, String eventId, String shiftId, String response) async {
+  try {
+    await ref.read(operationsApiProvider).respondToShift(eventId, shiftId, response);
+    ref.invalidate(eventShiftsProvider(eventId));
+  } catch (error) {
+    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not update shift response: $error')));
+  }
+}
+
+Future<void> _newLiveShift(
+  BuildContext context,
+  WidgetRef ref,
+  Map<String, dynamic> event,
+  List<Map<String, dynamic>> allLocations,
+  List<String> assignableUserIds,
+  List<Map<String, dynamic>> allPeople,
+) async {
+  final role = TextEditingController();
+  final instructions = TextEditingController();
+  final eventStart = DateTime.tryParse(event['startsAt'] as String? ?? '')?.toLocal() ?? DateTime.now();
+  var startsAt = eventStart;
+  var endsAt = eventStart.add(const Duration(hours: 4));
+  var locationId = <Map<String, dynamic>>[];
+  var assignedSubject = <Map<String, dynamic>>[];
+  final venueId = event['venueId'] as String;
+  final locations = allLocations.where((item) => item['venueId'] == venueId).toList();
+  final assignablePeople = allPeople.where((item) => assignableUserIds.contains(item['externalSubject'])).toList();
+  Future<DateTime?> pickDateTime(DateTime current) async {
+    final date = await showDatePicker(context: context, initialDate: current, firstDate: DateTime(2000), lastDate: DateTime(2100));
+    if (date == null || !context.mounted) return null;
+    final time = await showTimePicker(context: context, initialTime: TimeOfDay.fromDateTime(current));
+    if (time == null) return null;
+    return DateTime(date.year, date.month, date.day, time.hour, time.minute);
+  }
+  final input = await showDialog<Map<String, Object?>>(
+    context: context,
+    builder: (context) => StatefulBuilder(builder: (context, setState) => AlertDialog(
+      title: const Text('Schedule a shift'),
+      content: SizedBox(width: 480, child: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
+        TextField(controller: role, autofocus: true, decoration: const InputDecoration(labelText: 'Role', hintText: 'Guest services')),
+        const SizedBox(height: 8),
+        DropdownButtonFormField<String?>(initialValue: locationId.isEmpty ? null : locationId.first['id'] as String, decoration: const InputDecoration(labelText: 'Area'), items: [
+          const DropdownMenuItem<String?>(value: null, child: Text('All areas')),
+          ...locations.map((item) => DropdownMenuItem<String?>(value: item['id'] as String, child: Text(item['name'] as String? ?? 'Area'))),
+        ], onChanged: (value) => setState(() => locationId = value == null ? [] : [locations.firstWhere((item) => item['id'] == value)])),
+        const SizedBox(height: 8),
+        DropdownButtonFormField<String?>(initialValue: assignedSubject.isEmpty ? null : assignedSubject.first['externalSubject'] as String, decoration: const InputDecoration(labelText: 'Assigned worker'), items: [
+          const DropdownMenuItem<String?>(value: null, child: Text('Leave as open shift')),
+          ...assignablePeople.map((item) => DropdownMenuItem<String?>(value: item['externalSubject'] as String, child: Text(item['displayName'] as String? ?? 'Worker'))),
+        ], onChanged: (value) => setState(() => assignedSubject = value == null ? [] : [assignablePeople.firstWhere((item) => item['externalSubject'] == value)])),
+        const SizedBox(height: 8),
+        ListTile(contentPadding: EdgeInsets.zero, title: const Text('Starts'), subtitle: Text(_shiftTimeLabel(startsAt, startsAt)), trailing: const Icon(Icons.edit_calendar), onTap: () async { final value = await pickDateTime(startsAt); if (value != null) setState(() => startsAt = value); }),
+        ListTile(contentPadding: EdgeInsets.zero, title: const Text('Ends'), subtitle: Text(_shiftTimeLabel(endsAt, endsAt)), trailing: const Icon(Icons.edit_calendar), onTap: () async { final value = await pickDateTime(endsAt); if (value != null) setState(() => endsAt = value); }),
+        TextField(controller: instructions, decoration: const InputDecoration(labelText: 'Instructions (optional)'), minLines: 1, maxLines: 3),
+      ]))),
+      actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')), FilledButton(onPressed: () {
+        if (role.text.trim().length < 2 || endsAt.isBefore(startsAt) || endsAt.isAtSameMomentAs(startsAt)) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Add a role and make sure the end is after the start.')));
+          return;
+        }
+        Navigator.pop(context, {
+          'venueId': venueId,
+          if (locationId.isNotEmpty) 'locationId': locationId.first['id'] as String,
+          if (assignedSubject.isNotEmpty) 'assignedSubject': assignedSubject.first['externalSubject'] as String,
+          'role': role.text.trim(),
+          'instructions': instructions.text.trim(),
+          'startsAt': startsAt.toUtc().toIso8601String(),
+          'endsAt': endsAt.toUtc().toIso8601String(),
+        });
+      }, child: const Text('Save draft'))],
+    )),
+  );
+  role.dispose();
+  instructions.dispose();
+  if (input == null) return;
+  try {
+    await ref.read(operationsApiProvider).createShift(event['id'] as String, input);
+    ref.invalidate(eventShiftsProvider(event['id'] as String));
+  } catch (error) {
+    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not save shift: $error')));
+  }
 }
 
 class _TenantSetupPage extends StatelessWidget {

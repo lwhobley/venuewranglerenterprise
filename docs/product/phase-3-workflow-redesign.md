@@ -107,6 +107,10 @@ When a write cannot complete, the product retains user input, shows whether the 
 
 ## 3. Build and publish the workforce schedule
 
+### Implemented first pilot slice
+
+The API-backed event staffing view supports scoped draft shifts with role, location, worker, instructions, and start/end times; publish/cancel; worker acknowledgement/decline; self-claim for an open published slot; and assigned-worker check-in/check-out. Schedule edits increment a revision, reset acknowledgement, append an audit record, and notify the assigned worker in the durable in-app inbox. The API checks worker assignment and scope and records attendance times on the server. Availability, qualification, labor/rest rules, break management, location evidence, offline attendance, bulk schedule generation, and vendor fulfillment are not part of this implemented slice.
+
 | Item | Definition |
 |---|---|
 | Primary users | Workforce scheduler; supervisor; vendor manager |

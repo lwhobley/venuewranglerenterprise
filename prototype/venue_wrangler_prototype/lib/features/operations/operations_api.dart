@@ -208,6 +208,15 @@ class OperationsApi {
                       Options(headers: {'Authorization': 'Bearer $token'}))))
               .data ??
           const []);
+  Future<List<dynamic>> shifts(String eventId) => _cachedGet(
+      'shifts.$eventId',
+      () async =>
+          (await _request((token) => _dio.get<List<dynamic>>(
+                  '/api/v1/events/$eventId/shifts',
+                  options:
+                      Options(headers: {'Authorization': 'Bearer $token'}))))
+              .data ??
+          const []);
   Future<List<dynamic>> evidence(String eventId, String issueId) async =>
       (await _request((token) => _dio.get<List<dynamic>>(
               '/api/v1/events/$eventId/issues/$issueId/evidence',
@@ -298,6 +307,61 @@ class OperationsApi {
                 'Authorization': 'Bearer $token',
                 'Idempotency-Key': key,
               })));
+  Future<void> createShift(String eventId, Map<String, Object?> shift) async =>
+      _command<void>(
+          {'action': 'staff-shift.create', 'eventId': eventId, 'shift': shift},
+          (token, key) => _dio.post<void>(
+              '/api/v1/events/$eventId/shifts',
+              data: shift,
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key,
+              })));
+  Future<void> updateShift(String eventId, String shiftId,
+          Map<String, Object?> patch) async =>
+      _command<void>(
+          {
+            'action': 'staff-shift.update',
+            'eventId': eventId,
+            'shiftId': shiftId,
+            'patch': patch
+          },
+          (token, key) => _dio.put<void>(
+              '/api/v1/events/$eventId/shifts/$shiftId',
+              data: patch,
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key,
+              })));
+  Future<void> shiftCommand(
+      String eventId, String shiftId, String action) async {
+    await _command<void>(
+        {'action': 'staff-shift.$action', 'eventId': eventId, 'shiftId': shiftId},
+        (token, key) => _dio.post<void>(
+            '/api/v1/events/$eventId/shifts/$shiftId/$action',
+            options: Options(headers: {
+              'Authorization': 'Bearer $token',
+              'Idempotency-Key': key,
+            })));
+  }
+  Future<void> respondToShift(
+      String eventId, String shiftId, String response, {String? reason}) async {
+    await _command<void>(
+        {
+          'action': 'staff-shift.response',
+          'eventId': eventId,
+          'shiftId': shiftId,
+          'response': response,
+          'reason': reason,
+        },
+        (token, key) => _dio.post<void>(
+            '/api/v1/events/$eventId/shifts/$shiftId/response',
+            data: {'response': response, if (reason != null) 'reason': reason},
+            options: Options(headers: {
+              'Authorization': 'Bearer $token',
+              'Idempotency-Key': key,
+            })));
+  }
   Future<void> createVenue(String name) async => _command<void>(
       {'action': 'venue.create', 'name': name.trim()},
       (token, key) => _dio.post<void>('/api/v1/admin/venues',
@@ -378,5 +442,8 @@ final issueEventStreamProvider = StreamProvider.autoDispose
 final eventTasksProvider = FutureProvider.autoDispose
     .family<List<dynamic>, String>(
         (ref, id) => ref.watch(operationsApiProvider).tasks(id));
+final eventShiftsProvider = FutureProvider.autoDispose
+    .family<List<dynamic>, String>(
+        (ref, id) => ref.watch(operationsApiProvider).shifts(id));
 final userNotificationsProvider = FutureProvider.autoDispose<List<dynamic>>(
     (ref) => ref.watch(operationsApiProvider).notifications());
