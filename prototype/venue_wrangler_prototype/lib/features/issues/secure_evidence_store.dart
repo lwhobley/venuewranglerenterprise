@@ -51,8 +51,10 @@ abstract interface class IssueEvidenceStore {
 }
 
 class SecureEvidenceStore implements IssueEvidenceStore {
-  SecureEvidenceStore(this._secureStorage, [ImagePicker? picker])
-      : _picker = picker ?? ImagePicker();
+  SecureEvidenceStore(this._secureStorage,
+      [ImagePicker? picker, Future<Directory> Function()? supportDirectory])
+      : _picker = picker ?? ImagePicker(),
+        _supportDirectory = supportDirectory ?? getApplicationSupportDirectory;
 
   static const _keyName = 'venue.issue.evidence.aes256.key';
   static const _directoryName = 'venue-wrangler-evidence';
@@ -61,6 +63,7 @@ class SecureEvidenceStore implements IssueEvidenceStore {
 
   final FlutterSecureStorage _secureStorage;
   final ImagePicker _picker;
+  final Future<Directory> Function() _supportDirectory;
 
   Future<LocalIssueEvidence?> capturePhoto() async {
     final photo = await _picker.pickImage(
@@ -70,7 +73,17 @@ class SecureEvidenceStore implements IssueEvidenceStore {
       maxHeight: 1800,
     );
     if (photo == null) return null;
-    final cleartext = await photo.readAsBytes();
+    final List<int> cleartext;
+    try {
+      cleartext = await photo.readAsBytes();
+    } finally {
+      try {
+        await File(photo.path).delete();
+      } on FileSystemException {
+        throw StateError(
+            'The temporary camera image could not be removed. Photo evidence was not saved.');
+      }
+    }
     if (cleartext.isEmpty || cleartext.length > _maxBytes) {
       throw StateError('Photo evidence must be between 1 byte and 8 MiB.');
     }
@@ -86,7 +99,7 @@ class SecureEvidenceStore implements IssueEvidenceStore {
     final encrypted = await _cipher.encrypt(cleartext,
         secretKey: key, nonce: _cipher.newNonce());
     final evidenceId = const Uuid().v4();
-    final support = await getApplicationSupportDirectory();
+    final support = await _supportDirectory();
     final directory = Directory('${support.path}/$_directoryName');
     await directory.create(recursive: true);
     final path = '${directory.path}/$evidenceId.vwe';
@@ -112,7 +125,8 @@ class SecureEvidenceStore implements IssueEvidenceStore {
 
   @override
   Future<List<int>> decrypt(LocalIssueEvidence evidence) async {
-    final bytes = await File(evidence.encryptedPath).readAsBytes();
+    final file = await _fileFor(evidence);
+    final bytes = await file.readAsBytes();
     if (bytes.length < 30) {
       throw StateError('Encrypted photo evidence is incomplete.');
     }
@@ -144,8 +158,29 @@ class SecureEvidenceStore implements IssueEvidenceStore {
 
   @override
   Future<void> delete(LocalIssueEvidence evidence) async {
-    final file = File(evidence.encryptedPath);
+    final file = await _fileFor(evidence);
     if (await file.exists()) await file.delete();
+  }
+
+  Future<File> _fileFor(LocalIssueEvidence evidence) async {
+    final uuidV4 = RegExp(
+        r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+        caseSensitive: false);
+    if (!uuidV4.hasMatch(evidence.clientId)) {
+      throw StateError('Photo evidence has an invalid identifier.');
+    }
+    final support = await _supportDirectory();
+    final expected =
+        File('${support.path}/$_directoryName/${evidence.clientId}.vwe');
+    if (File(evidence.encryptedPath).absolute.path != expected.absolute.path) {
+      throw StateError(
+          'Photo evidence path is outside the managed evidence store.');
+    }
+    if (await FileSystemEntity.type(expected.path, followLinks: false) ==
+        FileSystemEntityType.link) {
+      throw StateError('Photo evidence cannot be a symbolic link.');
+    }
+    return expected;
   }
 
   Future<SecretKey> _encryptionKey() async {
