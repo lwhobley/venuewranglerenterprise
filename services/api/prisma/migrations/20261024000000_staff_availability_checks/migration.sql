@@ -22,7 +22,8 @@ CREATE TABLE staff_availability_checks (
   CONSTRAINT staff_availability_checks_response_time CHECK (
     (response = 'PENDING' AND responded_at IS NULL)
     OR (response <> 'PENDING' AND responded_at IS NOT NULL)
-  )
+  ),
+  CONSTRAINT staff_availability_checks_id_organization_key UNIQUE (id, organization_id)
 );
 CREATE INDEX staff_availability_checks_worker_idx
   ON staff_availability_checks (organization_id, worker_subject, response, requested_at DESC);
