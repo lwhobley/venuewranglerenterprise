@@ -27,6 +27,7 @@ describe('operational task update serialization', () => {
     const findFirst = vi.fn().mockResolvedValue(task);
     const tx = {
       $queryRaw: queryRaw,
+      commandReceipt: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
       operationalTask: {
         findFirst,
         update: vi.fn().mockImplementation(({ data }) => ({ ...task, ...data })),
@@ -38,10 +39,11 @@ describe('operational task update serialization', () => {
     } as unknown as PrismaService;
     const service = new OperationsService(prisma);
 
-    await service.updateTask(identity, 'event-1', 'task-1', { state: 'IN_PROGRESS' });
+    await service.updateTask(identity, 'event-1', 'task-1', { state: 'IN_PROGRESS' }, 'task-update-key-0001');
 
-    expect(queryRaw).toHaveBeenCalledOnce();
-    expect(queryRaw.mock.calls[0]?.[1]).toBe('task:tenant-1:task-1');
+    expect(queryRaw).toHaveBeenCalledTimes(2);
+    expect(String(queryRaw.mock.calls[0]?.[1])).toContain('command:tenant-1:task-update-key-0001');
+    expect(queryRaw.mock.calls[1]?.[1]).toBe('task:tenant-1:task-1');
     expect(findFirst).toHaveBeenCalledOnce();
     expect(queryRaw.mock.invocationCallOrder[0]).toBeLessThan(findFirst.mock.invocationCallOrder[0]!);
   });

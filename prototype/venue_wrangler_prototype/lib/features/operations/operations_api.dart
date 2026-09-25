@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
+import 'package:cryptography/cryptography.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:uuid/uuid.dart';
@@ -55,6 +56,44 @@ class OperationsApi {
     final token = await _auth.validAccessToken();
     if (token == null) throw StateError('Sign in again to continue.');
     return call(token);
+  }
+
+  Future<T> _command<T>(Map<String, Object?> command,
+      Future<T> Function(String token, String idempotencyKey) send) async {
+    final token = await _auth.validAccessToken();
+    if (token == null) throw StateError('Sign in again to continue.');
+    final scope = await _auth.offlineCacheScope();
+    final digest = await Sha256().hash(utf8.encode(jsonEncode(command)));
+    final commandHash = digest.bytes
+        .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
+        .join();
+    final storageKey =
+        scope == null ? null : 'venue.operations.command.$scope.$commandHash';
+    String? idempotencyKey;
+    if (storageKey != null) {
+      try {
+        idempotencyKey = await _storage.read(key: storageKey);
+      } catch (_) {
+        // Continue with an in-memory key if secure storage is unavailable.
+      }
+    }
+    idempotencyKey ??= const Uuid().v4();
+    if (storageKey != null) {
+      try {
+        await _storage.write(key: storageKey, value: idempotencyKey);
+      } catch (_) {
+        // The request remains usable; persistence improves retry safety.
+      }
+    }
+    final result = await send(token, idempotencyKey);
+    if (storageKey != null) {
+      try {
+        await _storage.delete(key: storageKey);
+      } catch (_) {
+        // Cleanup must not turn an accepted command into a reported failure.
+      }
+    }
+    return result;
   }
 
   Future<Map<String, dynamic>> bootstrap() => _cachedGet(
@@ -125,56 +164,107 @@ class OperationsApi {
 
   Future<void> issueAction(String eventId, String issueId, String action,
       {String? reason, String? ownerId}) async {
-    final token = await _auth.validAccessToken();
-    if (token == null) throw StateError('Sign in again to continue.');
-    await _dio.post<void>(
-      '/api/v1/events/$eventId/issues/$issueId/$action',
-      data: action == 'assign'
-          ? {'ownerId': ownerId, 'reason': reason}
-          : {'reason': reason},
-      options: Options(headers: {
-        'Authorization': 'Bearer $token',
-        'Idempotency-Key': const Uuid().v4(),
-      }),
+    await _command<void>(
+      {
+        'action': 'issue.$action',
+        'eventId': eventId,
+        'issueId': issueId,
+        'reason': reason,
+        'ownerId': ownerId,
+      },
+      (token, key) => _dio.post<void>(
+        '/api/v1/events/$eventId/issues/$issueId/$action',
+        data: action == 'assign'
+            ? {'ownerId': ownerId, 'reason': reason}
+            : {'reason': reason},
+        options: Options(headers: {
+          'Authorization': 'Bearer $token',
+          'Idempotency-Key': key,
+        }),
+      ),
     );
   }
 
   Future<void> updateTask(
           String eventId, String taskId, Map<String, Object?> patch) async =>
-      _request((token) => _dio.put<void>(
-          '/api/v1/events/$eventId/tasks/$taskId',
-          data: patch,
-          options: Options(headers: {'Authorization': 'Bearer $token'})));
+      _command<void>(
+          {
+            'action': 'task.update',
+            'eventId': eventId,
+            'taskId': taskId,
+            'patch': patch
+          },
+          (token, key) =>
+              _dio.put<void>('/api/v1/events/$eventId/tasks/$taskId',
+                  data: patch,
+                  options: Options(headers: {
+                    'Authorization': 'Bearer $token',
+                    'Idempotency-Key': key,
+                  })));
   Future<void> createTask(String eventId, Map<String, Object?> task) async =>
-      _request((token) => _dio.post<void>('/api/v1/events/$eventId/tasks',
-          data: task,
-          options: Options(headers: {'Authorization': 'Bearer $token'})));
-  Future<void> createVenue(String name) async =>
-      _request((token) => _dio.post<void>('/api/v1/admin/venues',
+      _command<void>(
+          {'action': 'task.create', 'eventId': eventId, 'task': task},
+          (token, key) => _dio.post<void>('/api/v1/events/$eventId/tasks',
+              data: task,
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key,
+              })));
+  Future<void> createVenue(String name) async => _command<void>(
+      {'action': 'venue.create', 'name': name.trim()},
+      (token, key) => _dio.post<void>('/api/v1/admin/venues',
           data: {'name': name},
-          options: Options(headers: {'Authorization': 'Bearer $token'})));
-  Future<void> createLocation(String venueId, String name) async =>
-      _request((token) => _dio.post<void>('/api/v1/admin/locations',
+          options: Options(headers: {
+            'Authorization': 'Bearer $token',
+            'Idempotency-Key': key,
+          })));
+  Future<void> createLocation(String venueId, String name) async => _command<
+          void>(
+      {'action': 'location.create', 'venueId': venueId, 'name': name.trim()},
+      (token, key) => _dio.post<void>('/api/v1/admin/locations',
           data: {'venueId': venueId, 'name': name},
-          options: Options(headers: {'Authorization': 'Bearer $token'})));
+          options: Options(headers: {
+            'Authorization': 'Bearer $token',
+            'Idempotency-Key': key,
+          })));
   Future<void> createEvent(
           String venueId, String name, DateTime startsAt) async =>
-      _request((token) => _dio.post<void>('/api/v1/admin/events',
-          data: {
+      _command<void>(
+          {
+            'action': 'event.create',
             'venueId': venueId,
-            'name': name,
+            'name': name.trim(),
             'startsAt': startsAt.toUtc().toIso8601String()
           },
-          options: Options(headers: {'Authorization': 'Bearer $token'})));
+          (token, key) => _dio.post<void>('/api/v1/admin/events',
+              data: {
+                'venueId': venueId,
+                'name': name,
+                'startsAt': startsAt.toUtc().toIso8601String()
+              },
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key,
+              })));
   Future<void> savePerson(
           String subject, String email, String displayName) async =>
-      _request((token) => _dio.post<void>('/api/v1/admin/people',
-          data: {
-            'externalSubject': subject,
-            'email': email,
-            'displayName': displayName
+      _command<void>(
+          {
+            'action': 'person.upsert',
+            'subject': subject,
+            'email': email.trim().toLowerCase(),
+            'displayName': displayName.trim()
           },
-          options: Options(headers: {'Authorization': 'Bearer $token'})));
+          (token, key) => _dio.post<void>('/api/v1/admin/people',
+              data: {
+                'externalSubject': subject,
+                'email': email,
+                'displayName': displayName
+              },
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key,
+              })));
   Future<Map<String, dynamic>> audit({int limit = 50, String? cursor}) async =>
       (await _request((token) => _dio.get<Map<String, dynamic>>(
                 '/api/v1/admin/audit',

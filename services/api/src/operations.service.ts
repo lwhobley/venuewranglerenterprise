@@ -1,5 +1,6 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { createHash } from 'node:crypto';
 import { assertScope, assertTenantAdmin, Identity } from './auth';
 import { CreateEventDto, CreateLocationDto, CreateOperationalTaskDto, CreateVenueDto, UpdateOperationalTaskDto, UpsertPersonDto } from './operations.dto';
 import { PrismaService } from './prisma.service';
@@ -33,36 +34,39 @@ export class OperationsService {
     });
   }
 
-  async createVenue(identity: Identity, dto: CreateVenueDto) {
+  async createVenue(identity: Identity, dto: CreateVenueDto, key: string) {
     assertTenantAdmin(identity);
-    return this.prisma.withTenant(identity, (tx) => tx.venue.create({ data: { organizationId: identity.tenantId, name: dto.name.trim() } }));
+    const input = { name: dto.name.trim() };
+    return this.command(identity, key, 'venue.create', input, (tx) => tx.venue.create({ data: { organizationId: identity.tenantId, ...input } }));
   }
 
-  async createLocation(identity: Identity, dto: CreateLocationDto) {
+  async createLocation(identity: Identity, dto: CreateLocationDto, key: string) {
     assertTenantAdmin(identity);
-    return this.prisma.withTenant(identity, async (tx) => {
+    const input = { venueId: dto.venueId, name: dto.name.trim() };
+    return this.command(identity, key, 'location.create', input, async (tx) => {
       const venue = await tx.venue.findFirst({ where: { id: dto.venueId, organizationId: identity.tenantId } });
       if (!venue) throw new NotFoundException('Venue not found in this organization.');
       return tx.location.create({ data: { organizationId: identity.tenantId, venueId: venue.id, name: dto.name.trim() } });
     });
   }
 
-  async createEvent(identity: Identity, dto: CreateEventDto) {
+  async createEvent(identity: Identity, dto: CreateEventDto, key: string) {
     assertTenantAdmin(identity);
-    return this.prisma.withTenant(identity, async (tx) => {
+    const input = { venueId: dto.venueId, name: dto.name.trim(), startsAt: new Date(dto.startsAt).toISOString() };
+    return this.command(identity, key, 'event.create', input, async (tx) => {
       const venue = await tx.venue.findFirst({ where: { id: dto.venueId, organizationId: identity.tenantId } });
       if (!venue) throw new NotFoundException('Venue not found in this organization.');
-      return tx.event.create({ data: { organizationId: identity.tenantId, venueId: venue.id, name: dto.name.trim(), startsAt: new Date(dto.startsAt) } });
+      return tx.event.create({ data: { organizationId: identity.tenantId, venueId: venue.id, name: dto.name.trim(), startsAt: new Date(input.startsAt) } });
     });
   }
 
-  async upsertPerson(identity: Identity, dto: UpsertPersonDto) {
+  async upsertPerson(identity: Identity, dto: UpsertPersonDto, key: string) {
     assertTenantAdmin(identity);
-    const email = dto.email.trim().toLowerCase();
-    return this.prisma.withTenant(identity, (tx) => tx.person.upsert({
+    const input = { externalSubject: dto.externalSubject, email: dto.email.trim().toLowerCase(), displayName: dto.displayName.trim() };
+    return this.command(identity, key, 'person.upsert', input, (tx) => tx.person.upsert({
       where: { organizationId_externalSubject: { organizationId: identity.tenantId, externalSubject: dto.externalSubject } },
-      create: { organizationId: identity.tenantId, externalSubject: dto.externalSubject, email, displayName: dto.displayName.trim() },
-      update: { email, displayName: dto.displayName.trim(), active: true },
+      create: { organizationId: identity.tenantId, ...input },
+      update: { email: input.email, displayName: input.displayName, active: true },
     }));
   }
 
@@ -81,9 +85,10 @@ export class OperationsService {
     }));
   }
 
-  async createTask(identity: Identity, eventId: string, dto: CreateOperationalTaskDto) {
+  async createTask(identity: Identity, eventId: string, dto: CreateOperationalTaskDto, key: string) {
     assertScope(identity, 'operations:write', eventId, dto.venueId, dto.locationId);
-    return this.prisma.withTenant(identity, async (tx) => {
+    const input = { eventId, ...dto, title: dto.title.trim(), description: dto.description?.trim() ?? '' };
+    return this.command(identity, key, 'task.create', input, async (tx) => {
       const event = await tx.event.findFirst({ where: { id: eventId, venueId: dto.venueId, organizationId: identity.tenantId } });
       if (!event) throw new NotFoundException('Event not found in the selected venue.');
       if (dto.locationId && !await tx.location.findFirst({ where: { id: dto.locationId, venueId: dto.venueId, organizationId: identity.tenantId } })) throw new NotFoundException('Location not found in the selected venue.');
@@ -94,9 +99,10 @@ export class OperationsService {
     });
   }
 
-  async updateTask(identity: Identity, eventId: string, taskId: string, dto: UpdateOperationalTaskDto) {
+  async updateTask(identity: Identity, eventId: string, taskId: string, dto: UpdateOperationalTaskDto, key: string) {
     assertScope(identity, 'operations:write', eventId);
-    return this.prisma.withTenant(identity, async (tx) => {
+    const input = { eventId, taskId, patch: dto };
+    return this.command(identity, key, 'task.update', input, async (tx) => {
       await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`task:${identity.tenantId}:${taskId}`}, 0))`;
       const current = await tx.operationalTask.findFirst({ where: { id: taskId, eventId, organizationId: identity.tenantId } });
       if (!current) throw new NotFoundException('Task not found.');
@@ -107,6 +113,27 @@ export class OperationsService {
       const updated = await tx.operationalTask.update({ where: { id: taskId }, data: patch });
       await tx.operationalTaskAudit.create({ data: { organizationId: identity.tenantId, taskId, actorId: identity.subject, action: 'updated', before: current as unknown as Prisma.InputJsonValue, after: updated as unknown as Prisma.InputJsonValue } });
       return updated;
+    });
+  }
+
+  private async command<T>(identity: Identity, key: string, action: string, input: unknown, work: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    const fingerprint = createHash('sha256').update(JSON.stringify({ action, actor: identity.subject, input })).digest('hex');
+    return this.prisma.withTenant(identity, async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`command:${identity.tenantId}:${key}`}, 0))`;
+      const receipt = await tx.commandReceipt.findUnique({ where: { organizationId_key: { organizationId: identity.tenantId, key } } });
+      if (receipt) {
+        if (receipt.fingerprint !== fingerprint) throw new ConflictException('This Idempotency-Key was already used for a different command.');
+        return receipt.response as T;
+      }
+      const response = await work(tx);
+      await tx.commandReceipt.create({ data: {
+        organizationId: identity.tenantId,
+        key,
+        fingerprint,
+        action,
+        response: JSON.parse(JSON.stringify(response)) as Prisma.InputJsonValue,
+      } });
+      return response;
     });
   }
 
