@@ -75,6 +75,11 @@ export class StaffingService {
         || (dto.startsAt !== undefined && start.getTime() !== current.startsAt.getTime())
         || (dto.endsAt !== undefined && end.getTime() !== current.endsAt.getTime());
       if (!materialChange) throw new ConflictException('No shift changes were supplied.');
+      if (current.state === 'PUBLISHED') {
+        const assignedSubject = dto.assignedSubject === undefined ? current.assignedSubject : dto.assignedSubject;
+        await this.lockScheduleSubjects(tx, identity.tenantId, [current.assignedSubject, assignedSubject]);
+        await this.assertNoOverlap(tx, identity.tenantId, assignedSubject, start, end, shiftId);
+      }
       const patchData = {
         ...dto,
         role: normalized.role,
@@ -105,6 +110,8 @@ export class StaffingService {
       assertScope(identity, 'operations:write', eventId, current.venueId, current.locationId ?? undefined);
       if (current.state !== 'DRAFT') throw new ConflictException('Only a draft shift can be published.');
       await this.assertAssignable(tx, identity, current.assignedSubject ?? undefined);
+      await this.lockScheduleSubjects(tx, identity.tenantId, [current.assignedSubject]);
+      await this.assertNoOverlap(tx, identity.tenantId, current.assignedSubject, current.startsAt, current.endsAt, shiftId);
       const updated = await tx.staffShift.update({ where: { id: shiftId }, data: { state: 'PUBLISHED', response: 'PENDING', responseRevision: null, updatedBy: identity.subject } });
       await this.audit(tx, identity, shiftId, 'published', current, updated);
       const notification = await this.notification(tx, identity, updated, updated.assignedSubject, 'staffing.shift.published');
@@ -124,6 +131,8 @@ export class StaffingService {
       if (current.assignedSubject || current.state !== 'PUBLISHED' || current.attendance !== 'NOT_STARTED') throw new ConflictException('This open shift is no longer available.');
       const activePerson = await tx.person.findFirst({ where: { organizationId: identity.tenantId, externalSubject: identity.subject, active: true }, select: { id: true } });
       if (!activePerson) throw new ForbiddenException('An active organization roster record is required to claim a shift.');
+      await this.lockScheduleSubjects(tx, identity.tenantId, [identity.subject]);
+      await this.assertNoOverlap(tx, identity.tenantId, identity.subject, current.startsAt, current.endsAt, shiftId);
       const updated = await tx.staffShift.update({ where: { id: shiftId }, data: {
         assignedSubject: identity.subject,
         revision: { increment: 1 },
@@ -214,6 +223,25 @@ export class StaffingService {
     if (!identity.assignableUserIds.includes(subject)) throw new ForbiddenException('The selected person is outside your assignment scope.');
     const person = await tx.person.findFirst({ where: { organizationId: identity.tenantId, externalSubject: subject, active: true }, select: { id: true } });
     if (!person) throw new NotFoundException('The selected person is not an active user in this organization.');
+  }
+
+  private async lockScheduleSubjects(tx: Prisma.TransactionClient, tenantId: string, subjects: Array<string | null | undefined>) {
+    for (const subject of [...new Set(subjects.filter((value): value is string => Boolean(value)))].sort()) {
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`staff-schedule:${tenantId}:${subject}`}, 0))`;
+    }
+  }
+
+  private async assertNoOverlap(tx: Prisma.TransactionClient, tenantId: string, subject: string | null | undefined, startsAt: Date, endsAt: Date, exceptShiftId: string) {
+    if (!subject) return;
+    const conflict = await tx.staffShift.findFirst({ where: {
+      organizationId: tenantId,
+      assignedSubject: subject,
+      state: 'PUBLISHED',
+      id: { not: exceptShiftId },
+      startsAt: { lt: endsAt },
+      endsAt: { gt: startsAt },
+    }, select: { id: true } });
+    if (conflict) throw new ConflictException('This worker already has an overlapping published shift. Adjust the schedule before publishing.');
   }
 
   private audit(tx: Prisma.TransactionClient, identity: Identity, shiftId: string, action: string, before?: unknown, after?: unknown, reason?: string) {

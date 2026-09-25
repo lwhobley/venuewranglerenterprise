@@ -21,7 +21,7 @@ function harness(current?: Record<string, unknown>) {
     person: { findFirst: vi.fn().mockResolvedValue({ id: 'person-1' }) },
     staffShift: {
       create: vi.fn().mockImplementation(({ data }) => ({ id: 'shift-1', state: 'DRAFT', response: 'PENDING', attendance: 'NOT_STARTED', revision: 1, ...data })),
-      findFirst: vi.fn().mockResolvedValue(current ?? null),
+      findFirst: vi.fn().mockImplementation(({ where }) => Promise.resolve(typeof where?.id === 'object' ? null : current ?? null)),
       findMany: vi.fn().mockResolvedValue([]),
       update: vi.fn().mockImplementation(({ data }) => ({ ...current, ...data })),
     },
@@ -100,6 +100,21 @@ describe('event staffing workflow', () => {
       kind: 'staffing.shift.published',
     }) }));
     expect(push.deliver).toHaveBeenCalledWith(expect.objectContaining({ subject: workerSubject }), expect.objectContaining({ kind: 'staffing.shift.published' }));
+  });
+
+  it('blocks publishing an assigned worker into an overlapping published shift', async () => {
+    const current = {
+      id: 'shift-1', eventId: 'event-1', organizationId: 'tenant-1', venueId: 'venue-1', locationId: 'location-1',
+      assignedSubject: workerSubject, state: 'DRAFT', response: 'PENDING', attendance: 'NOT_STARTED', revision: 1,
+      startsAt: new Date('2026-10-01T17:00:00Z'), endsAt: new Date('2026-10-01T22:00:00Z'),
+    };
+    const { service, tx } = harness(current);
+    tx.staffShift.findFirst.mockImplementation(({ where }) => Promise.resolve(
+      typeof where?.id === 'object' ? { id: 'overlapping-shift' } : current,
+    ));
+    await expect(service.publish(manager, 'event-1', 'shift-1', 'staff-shift-publish-key-2'))
+      .rejects.toThrow('overlapping published shift');
+    expect(tx.staffShift.update).not.toHaveBeenCalled();
   });
 
   it('allows only the assigned worker to acknowledge their shift', async () => {
