@@ -444,6 +444,17 @@ class OperationsApi {
           {'action': 'person-qualification.revoke', 'qualificationId': qualificationId},
           (token, key) => _dio.delete<void>('/api/v1/admin/qualifications/$qualificationId',
               options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
+  Future<Map<String, dynamic>> staffingPolicy() async =>
+      (await _request((token) => _dio.get<Map<String, dynamic>>(
+              '/api/v1/admin/staffing-policy',
+              options: Options(headers: {'Authorization': 'Bearer $token'}))))
+          .data!;
+  Future<void> updateMinimumRestMinutes(int minutes) async =>
+      _command<void>(
+          {'action': 'staffing-policy.update', 'minimumRestMinutes': minutes},
+          (token, key) => _dio.put<void>('/api/v1/admin/staffing-policy',
+              data: {'minimumRestMinutes': minutes},
+              options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
   Future<Map<String, dynamic>> audit({int limit = 50, String? cursor}) async =>
       (await _request((token) => _dio.get<Map<String, dynamic>>(
                 '/api/v1/admin/audit',

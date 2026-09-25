@@ -9,7 +9,7 @@ type AuditRow = {
   id: string;
   actorId: string;
   action: string;
-  resourceType: 'issue' | 'task' | 'person' | 'organization' | 'venue' | 'location' | 'event' | 'qualification';
+  resourceType: 'issue' | 'task' | 'person' | 'organization' | 'venue' | 'location' | 'event' | 'qualification' | 'staffing_policy';
   resourceId: string;
   eventId: string | null;
   changedFields: string[] | null;

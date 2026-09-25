@@ -12,9 +12,11 @@ const manager: Identity = {
 };
 const worker: Identity = { ...manager, subject: workerSubject, capabilities: ['operations:read'], assignableUserIds: [] };
 
-function harness(current?: Record<string, unknown>) {
+function harness(current?: Record<string, unknown>, restMinutes: number | null = 0) {
   const tx = {
-    $queryRaw: vi.fn().mockResolvedValue([]),
+    $queryRaw: vi.fn().mockImplementation((query) => String(query?.[0] ?? '').includes('SELECT minimum_rest_minutes')
+      ? Promise.resolve([{ minimum_rest_minutes: restMinutes }])
+      : Promise.resolve([])),
     commandReceipt: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
     event: { findFirst: vi.fn().mockResolvedValue({ id: 'event-1' }) },
     location: { findFirst: vi.fn().mockResolvedValue({ id: 'location-1' }) },
@@ -93,6 +95,7 @@ describe('event staffing workflow', () => {
     const current = {
       id: 'shift-1', eventId: 'event-1', organizationId: 'tenant-1', venueId: 'venue-1', locationId: 'location-1',
       assignedSubject: workerSubject, state: 'DRAFT', response: 'PENDING', attendance: 'NOT_STARTED', revision: 1,
+      startsAt: new Date('2026-10-01T17:00:00Z'), endsAt: new Date('2026-10-01T22:00:00Z'),
     };
     const { service, tx, push } = harness(current);
     await service.publish(manager, 'event-1', 'shift-1', 'staff-shift-publish-key-1');
@@ -133,6 +136,37 @@ describe('event staffing workflow', () => {
     expect(tx.staffShift.update).not.toHaveBeenCalled();
   });
 
+  it('blocks an upcoming shift when the configured minimum rest gap would be violated', async () => {
+    const current = {
+      id: 'shift-1', eventId: 'event-1', organizationId: 'tenant-1', venueId: 'venue-1', locationId: null,
+      assignedSubject: workerSubject, state: 'DRAFT', response: 'PENDING', attendance: 'NOT_STARTED', revision: 1,
+      startsAt: new Date('2026-10-01T17:00:00Z'), endsAt: new Date('2026-10-01T22:00:00Z'),
+      requiredQualificationCodes: [],
+    };
+    const { service, tx } = harness(current, 240);
+    tx.staffShift.findFirst.mockImplementation(({ where }) => Promise.resolve(
+      typeof where?.id === 'string' ? current : { id: 'previous-published-shift' },
+    ));
+    await expect(service.publish(manager, 'event-1', 'shift-1', 'staff-shift-publish-rest-1'))
+      .rejects.toThrow('violates the configured 240-minute minimum rest period');
+    const conflictQuery = tx.staffShift.findFirst.mock.calls.map(([query]) => query).find((query) => typeof query.where?.id === 'object');
+    expect(conflictQuery.where.startsAt.lt).toEqual(new Date('2026-10-02T02:00:00Z'));
+    expect(conflictQuery.where.endsAt.gt).toEqual(new Date('2026-10-01T13:00:00Z'));
+    expect(tx.staffShift.update).not.toHaveBeenCalled();
+  });
+
+  it('requires a tenant rest policy before assigning a worker', async () => {
+    const current = {
+      id: 'shift-1', eventId: 'event-1', organizationId: 'tenant-1', venueId: 'venue-1', locationId: null,
+      assignedSubject: workerSubject, state: 'DRAFT', attendance: 'NOT_STARTED', revision: 1,
+      startsAt: new Date('2026-10-01T17:00:00Z'), endsAt: new Date('2026-10-01T22:00:00Z'), requiredQualificationCodes: [],
+    };
+    const { service, tx } = harness(current, null);
+    await expect(service.publish(manager, 'event-1', 'shift-1', 'staff-shift-publish-rest-2'))
+      .rejects.toThrow('has not configured a minimum rest period');
+    expect(tx.staffShift.update).not.toHaveBeenCalled();
+  });
+
   it('allows only the assigned worker to acknowledge their shift', async () => {
     const current = {
       id: 'shift-1', eventId: 'event-1', organizationId: 'tenant-1', venueId: 'venue-1', locationId: 'location-1',
@@ -150,6 +184,7 @@ describe('event staffing workflow', () => {
     const current = {
       id: 'shift-1', eventId: 'event-1', organizationId: 'tenant-1', venueId: 'venue-1', locationId: 'location-1',
       assignedSubject: null, state: 'PUBLISHED', response: 'PENDING', attendance: 'NOT_STARTED', revision: 2,
+      startsAt: new Date('2026-10-01T17:00:00Z'), endsAt: new Date('2026-10-01T22:00:00Z'),
     };
     const { service, tx } = harness(current);
     await service.claim(worker, 'event-1', 'shift-1', 'staff-shift-claim-key-01');

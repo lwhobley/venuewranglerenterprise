@@ -1434,7 +1434,11 @@ class _TenantSetupPage extends StatelessWidget {
           OutlinedButton.icon(
               onPressed: () => _create(context, 'person'),
               icon: const Icon(Icons.person_add_alt),
-              label: const Text('Add person'))
+              label: const Text('Add person')),
+          OutlinedButton.icon(
+              onPressed: () => _configureRestPolicy(context),
+              icon: const Icon(Icons.schedule_outlined),
+              label: const Text('Staffing rest policy'))
         ]),
         const SizedBox(height: 24),
         Text('People directory (${people.length})',
@@ -1474,6 +1478,39 @@ class _TenantSetupPage extends StatelessWidget {
           ]));
         })
       ]);
+  Future<void> _configureRestPolicy(BuildContext context) async {
+    final controller = TextEditingController();
+    try {
+      final policy = await api.staffingPolicy();
+      final existing = policy['minimumRestMinutes'] as int?;
+      controller.text = existing?.toString() ?? '';
+      if (!context.mounted) return;
+      final saved = await showDialog<bool>(context: context, builder: (dialogContext) => AlertDialog(
+        title: const Text('Minimum rest between shifts'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text(existing == null ? 'Not configured. Scheduling an assigned worker is blocked until a rule is set.' : existing == 0 ? 'Configured with no additional rest gap; overlapping shifts remain blocked.' : 'Current rule: $existing minutes between a worker’s shifts.'),
+          TextField(controller: controller, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Minutes (0–1440)', hintText: 'e.g. 600')),
+        ]),
+        actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')), FilledButton(onPressed: () {
+          final value = int.tryParse(controller.text.trim());
+          if (value == null || value < 0 || value > 1440) {
+            ScaffoldMessenger.of(dialogContext).showSnackBar(const SnackBar(content: Text('Enter a whole number from 0 to 1440.')));
+            return;
+          }
+          Navigator.pop(dialogContext, true);
+        }, child: const Text('Save policy'))],
+      ));
+      if (saved == true) {
+        final minutes = int.parse(controller.text.trim());
+        await api.updateMinimumRestMinutes(minutes);
+        onSaved();
+      }
+    } catch (error) {
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not load or save staffing policy: $error')));
+    } finally {
+      controller.dispose();
+    }
+  }
   Future<void> _grantQualification(BuildContext context, Map<String, dynamic> person) async {
     final code = TextEditingController();
     final name = TextEditingController();

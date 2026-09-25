@@ -46,6 +46,7 @@ export class StaffingService {
       await this.assertQualified(tx, identity.tenantId, dto.assignedSubject, requiredQualificationCodes, end);
       await this.lockScheduleSubjects(tx, identity.tenantId, [dto.assignedSubject]);
       await this.assertAvailable(tx, identity.tenantId, dto.assignedSubject, start, end);
+      await this.assertNoOverlap(tx, identity.tenantId, dto.assignedSubject, start, end);
       const shift = await tx.staffShift.create({ data: {
         organizationId: identity.tenantId, eventId, venueId: dto.venueId, locationId: dto.locationId,
         assignedSubject: dto.assignedSubject, role: input.role, instructions: input.instructions,
@@ -83,13 +84,13 @@ export class StaffingService {
       if (current.state === 'PUBLISHED') {
         const assignedSubject = dto.assignedSubject === undefined ? current.assignedSubject : dto.assignedSubject;
         await this.lockScheduleSubjects(tx, identity.tenantId, [current.assignedSubject, assignedSubject]);
-        await this.assertNoOverlap(tx, identity.tenantId, assignedSubject, start, end, shiftId);
       }
       const nextSubject = dto.assignedSubject === undefined ? current.assignedSubject : dto.assignedSubject;
       const nextQualifications = normalized.requiredQualificationCodes ?? current.requiredQualificationCodes;
       if (current.state !== 'PUBLISHED') await this.lockScheduleSubjects(tx, identity.tenantId, [nextSubject]);
       await this.assertQualified(tx, identity.tenantId, nextSubject, nextQualifications, end);
       await this.assertAvailable(tx, identity.tenantId, nextSubject, start, end);
+      await this.assertNoOverlap(tx, identity.tenantId, nextSubject, start, end, shiftId);
       const patchData = {
         ...dto,
         role: normalized.role,
@@ -248,17 +249,24 @@ export class StaffingService {
     }
   }
 
-  private async assertNoOverlap(tx: Prisma.TransactionClient, tenantId: string, subject: string | null | undefined, startsAt: Date, endsAt: Date, exceptShiftId: string) {
+  private async assertNoOverlap(tx: Prisma.TransactionClient, tenantId: string, subject: string | null | undefined, startsAt: Date, endsAt: Date, exceptShiftId?: string) {
     if (!subject) return;
+    const [policy] = await tx.$queryRaw<Array<{ minimum_rest_minutes: number | null }>>`
+      SELECT minimum_rest_minutes FROM organizations WHERE id = ${tenantId}::uuid FOR SHARE
+    `;
+    if (!policy || policy.minimum_rest_minutes === null) throw new ConflictException('The organization has not configured a minimum rest period. Ask a tenant administrator to set the staffing policy before assigning this worker.');
+    const restMilliseconds = policy.minimum_rest_minutes * 60_000;
     const conflict = await tx.staffShift.findFirst({ where: {
       organizationId: tenantId,
       assignedSubject: subject,
       state: 'PUBLISHED',
-      id: { not: exceptShiftId },
-      startsAt: { lt: endsAt },
-      endsAt: { gt: startsAt },
+      ...(exceptShiftId ? { id: { not: exceptShiftId } } : {}),
+      startsAt: { lt: new Date(endsAt.getTime() + restMilliseconds) },
+      endsAt: { gt: new Date(startsAt.getTime() - restMilliseconds) },
     }, select: { id: true } });
-    if (conflict) throw new ConflictException('This worker already has an overlapping published shift. Adjust the schedule before publishing.');
+    if (conflict) throw new ConflictException(policy.minimum_rest_minutes === 0
+      ? 'This worker already has an overlapping published shift. Adjust the schedule before publishing.'
+      : `This worker's published schedule violates the configured ${policy.minimum_rest_minutes}-minute minimum rest period.`);
   }
 
   private async assertAvailable(tx: Prisma.TransactionClient, tenantId: string, subject: string | null | undefined, startsAt: Date, endsAt: Date) {

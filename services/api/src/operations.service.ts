@@ -5,6 +5,7 @@ import { assertScope, assertTenantAdmin, Identity } from './auth';
 import { CreateEventDto, CreateLocationDto, CreateOperationalTaskDto, CreateVenueDto, UpdateOperationalTaskDto, UpsertPersonDto } from './operations.dto';
 import { PrismaService } from './prisma.service';
 import { GrantPersonQualificationDto } from './qualification.dto';
+import { UpdateStaffingPolicyDto } from './staffing-policy.dto';
 
 @Injectable()
 export class OperationsService {
@@ -151,6 +152,49 @@ export class OperationsService {
       const revoked = await tx.personQualification.update({ where: { id: qualificationId }, data: { revokedAt: new Date() } });
       await tx.tenantSetupAuditEvent.create({ data: { organizationId: identity.tenantId, actorId: identity.subject, action: 'updated', resourceType: 'qualification', resourceId: revoked.id, changedFields: ['revoked_at'] } });
       return revoked;
+    });
+  }
+
+  async staffingPolicy(identity: Identity) {
+    assertTenantAdmin(identity);
+    return this.prisma.withTenant(identity, async (tx) => {
+      const organization = await tx.organization.findUnique({ where: { id: identity.tenantId }, select: { minimumRestMinutes: true } });
+      if (!organization) throw new NotFoundException('Organization setup is required before configuring staffing policy.');
+      return { minimumRestMinutes: organization.minimumRestMinutes };
+    });
+  }
+
+  async updateStaffingPolicy(identity: Identity, dto: UpdateStaffingPolicyDto, key: string) {
+    assertTenantAdmin(identity);
+    const input = { minimumRestMinutes: dto.minimumRestMinutes };
+    return this.command(identity, key, 'staffing-policy.update', input, async (tx) => {
+      const [organization] = await tx.$queryRaw<Array<{ id: string; minimum_rest_minutes: number | null }>>`
+        SELECT id, minimum_rest_minutes FROM organizations WHERE id = ${identity.tenantId}::uuid FOR UPDATE
+      `;
+      if (!organization) throw new NotFoundException('Organization setup is required before configuring staffing policy.');
+      const changed = organization.minimum_rest_minutes !== input.minimumRestMinutes;
+      if (!changed) return { minimumRestMinutes: organization.minimum_rest_minutes };
+      if (input.minimumRestMinutes > 0) {
+        const [conflict] = await tx.$queryRaw<Array<{ shift_id: string }>>`
+          SELECT earlier.id AS shift_id
+          FROM staff_shifts earlier
+          JOIN staff_shifts later
+            ON later.organization_id = earlier.organization_id
+           AND later.assigned_subject = earlier.assigned_subject
+           AND (later.starts_at > earlier.starts_at OR (later.starts_at = earlier.starts_at AND later.id > earlier.id))
+           AND later.state = 'PUBLISHED'
+          WHERE earlier.organization_id = ${identity.tenantId}::uuid
+            AND earlier.assigned_subject IS NOT NULL
+            AND earlier.state = 'PUBLISHED'
+            AND later.starts_at > now()
+            AND earlier.ends_at + (${input.minimumRestMinutes} * interval '1 minute') > later.starts_at
+          LIMIT 1
+        `;
+        if (conflict) throw new ConflictException('The new rest rule conflicts with an already published upcoming schedule. Resolve those shifts before raising the minimum rest period.');
+      }
+      const updated = await tx.organization.update({ where: { id: identity.tenantId }, data: { minimumRestMinutes: input.minimumRestMinutes }, select: { id: true, minimumRestMinutes: true } });
+      await tx.tenantSetupAuditEvent.create({ data: { organizationId: identity.tenantId, actorId: identity.subject, action: 'updated', resourceType: 'staffing_policy', resourceId: updated.id, changedFields: ['minimum_rest_minutes'] } });
+      return { minimumRestMinutes: updated.minimumRestMinutes };
     });
   }
 

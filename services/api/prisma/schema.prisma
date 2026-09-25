@@ -82,6 +82,7 @@ model Organization {
   id                    String                     @id @default(uuid()) @db.Uuid
   slug                  String?                    @unique
   name                  String
+  minimumRestMinutes    Int?                       @map("minimum_rest_minutes") @db.SmallInt
   createdAt             DateTime                   @default(now()) @map("created_at")
   venues                Venue[]
   people                Person[]
