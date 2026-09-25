@@ -744,85 +744,113 @@ class _LiveIssuesPage extends ConsumerWidget {
   final List<String> assignableUserIds;
   final List<Map<String, dynamic>> people;
   @override
-  Widget build(BuildContext context, WidgetRef ref) => Column(children: [
-        Expanded(
-            child: !canRead
-                ? const Center(
-                    child: Text('Report an issue with the button below.'))
-                : ref.watch(eventIssuesProvider(event['id'] as String)).when(
-                      loading: () =>
-                          const Center(child: CircularProgressIndicator()),
-                      error: (error, _) =>
-                          Center(child: Text('Issue list unavailable: $error')),
-                      data: (rows) => rows.isEmpty
-                          ? const Center(
-                              child: Text('No issues reported for this event.'))
-                          : ListView(
-                              children: rows.map((row) {
-                              final item =
-                                  Map<String, dynamic>.from(row as Map);
-                              final state =
-                                  item['state'] as String? ?? 'REPORTED';
-                              final actions = _issueActions(state, capabilities,
-                                  canAssign: assignableUserIds.isNotEmpty);
-                              return Card(
-                                  child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                    ListTile(
-                                        leading: const Icon(
-                                            Icons.report_problem_outlined,
-                                            color: _coral),
-                                        title: Text(item['title'] as String? ??
-                                            'Issue'),
-                                        subtitle: Text(
-                                            '${item['state']} · ${item['severity']} · ${item['category']}\n${item['description'] ?? ''}'),
-                                        isThreeLine: true),
-                                    TextButton.icon(
-                                        onPressed: () => _showIssueEvidence(
-                                            context,
-                                            ref,
-                                            event['id'] as String,
-                                            item),
-                                        icon: const Icon(
-                                            Icons.photo_library_outlined),
-                                        label:
-                                            const Text('View photo evidence')),
-                                    if (actions.isNotEmpty)
-                                      Align(
-                                          alignment: Alignment.centerRight,
-                                          child: PopupMenuButton<String>(
-                                              tooltip: 'Update issue',
-                                              onSelected: (action) =>
-                                                  _performLiveIssueAction(
-                                                      context,
-                                                      ref,
-                                                      event['id'] as String,
-                                                      item,
-                                                      action,
-                                                      assignableUserIds,
-                                                      people),
-                                              itemBuilder: (_) => actions
-                                                  .map((action) => PopupMenuItem(
-                                                      value: action,
-                                                      child: Text(_issueActionLabel(
-                                                          action))))
-                                                  .toList(),
-                                              child: const Padding(
-                                                  padding: EdgeInsets.fromLTRB(
-                                                      12, 0, 16, 12),
-                                                  child: Row(
-                                                      mainAxisSize: MainAxisSize.min,
-                                                      children: [
-                                                        Text('Update'),
-                                                        Icon(Icons.expand_more)
-                                                      ]))))
-                                  ]));
-                            }).toList()),
-                    )),
-        _PendingIssueQueue(eventId: event['id'] as String),
-      ]);
+  Widget build(BuildContext context, WidgetRef ref) {
+    final eventId = event['id'] as String;
+    final liveConnection =
+        canRead ? ref.watch(issueEventStreamProvider(eventId)) : null;
+    if (canRead) {
+      ref.listen(issueEventStreamProvider(eventId), (previous, next) {
+        if (next.valueOrNull?.containsKey('issueId') ?? false) {
+          ref.invalidate(eventIssuesProvider(eventId));
+        }
+      });
+    }
+    return Column(children: [
+      if (canRead)
+        Align(
+          alignment: Alignment.centerLeft,
+          child: Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text(
+              liveConnection?.hasError ?? false
+                  ? 'Live updates disconnected · reconnecting'
+                  : liveConnection?.valueOrNull?['_connected'] == false
+                      ? 'Live updates disconnected · reconnecting'
+                      : liveConnection?.valueOrNull?['_connected'] == true
+                          ? 'Live updates connected'
+                          : 'Connecting to live updates…',
+              style: const TextStyle(fontSize: 12, color: Color(0xFF59645D)),
+            ),
+          ),
+        ),
+      Expanded(
+          child: !canRead
+              ? const Center(
+                  child: Text('Report an issue with the button below.'))
+              : ref.watch(eventIssuesProvider(eventId)).when(
+                    loading: () =>
+                        const Center(child: CircularProgressIndicator()),
+                    error: (error, _) =>
+                        Center(child: Text('Issue list unavailable: $error')),
+                    data: (rows) => rows.isEmpty
+                        ? const Center(
+                            child: Text('No issues reported for this event.'))
+                        : ListView(
+                            children: rows.map((row) {
+                            final item = Map<String, dynamic>.from(row as Map);
+                            final state =
+                                item['state'] as String? ?? 'REPORTED';
+                            final actions = _issueActions(state, capabilities,
+                                canAssign: assignableUserIds.isNotEmpty);
+                            return Card(
+                                child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                  ListTile(
+                                      leading: const Icon(
+                                          Icons.report_problem_outlined,
+                                          color: _coral),
+                                      title: Text(
+                                          item['title'] as String? ?? 'Issue'),
+                                      subtitle: Text(
+                                          '${item['state']} · ${item['severity']} · ${item['category']}\n${item['description'] ?? ''}'),
+                                      isThreeLine: true),
+                                  TextButton.icon(
+                                      onPressed: () => _showIssueEvidence(
+                                          context,
+                                          ref,
+                                          event['id'] as String,
+                                          item),
+                                      icon: const Icon(
+                                          Icons.photo_library_outlined),
+                                      label: const Text('View photo evidence')),
+                                  if (actions.isNotEmpty)
+                                    Align(
+                                        alignment: Alignment.centerRight,
+                                        child: PopupMenuButton<String>(
+                                            tooltip: 'Update issue',
+                                            onSelected: (action) =>
+                                                _performLiveIssueAction(
+                                                    context,
+                                                    ref,
+                                                    event['id'] as String,
+                                                    item,
+                                                    action,
+                                                    assignableUserIds,
+                                                    people),
+                                            itemBuilder: (_) => actions
+                                                .map((action) => PopupMenuItem(
+                                                    value: action,
+                                                    child: Text(
+                                                        _issueActionLabel(
+                                                            action))))
+                                                .toList(),
+                                            child: const Padding(
+                                                padding: EdgeInsets.fromLTRB(
+                                                    12, 0, 16, 12),
+                                                child: Row(
+                                                    mainAxisSize: MainAxisSize.min,
+                                                    children: [
+                                                      Text('Update'),
+                                                      Icon(Icons.expand_more)
+                                                    ]))))
+                                ]));
+                          }).toList()),
+                  )),
+      _PendingIssueQueue(eventId: eventId),
+    ]);
+  }
 }
 
 Future<void> _showIssueEvidence(BuildContext context, WidgetRef ref,

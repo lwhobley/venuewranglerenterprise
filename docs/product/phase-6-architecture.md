@@ -14,6 +14,7 @@ It was selected because it is used by frontline workers and managers during live
 Flutter app
   ├─ feature UI and Riverpod controllers
   ├─ REST issue reporting with connectivity-aware retry
+  ├─ replayable, authorized SSE issue updates with automatic reconnect
   └─ encrypted secure-storage outbox for issue reports
              │
              ▼

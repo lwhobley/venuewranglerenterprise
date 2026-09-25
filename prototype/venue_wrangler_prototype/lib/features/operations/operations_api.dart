@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
@@ -9,8 +10,8 @@ import '../../auth/auth.dart';
 import '../../config/api_configuration.dart';
 
 class OperationsApi {
-  OperationsApi(this._auth, this._storage)
-      : _dio = Dio(BaseOptions(baseUrl: ApiConfiguration.baseUrl));
+  OperationsApi(this._auth, this._storage, {Dio? dio})
+      : _dio = dio ?? Dio(BaseOptions(baseUrl: ApiConfiguration.baseUrl));
   final AuthRepository _auth;
   final FlutterSecureStorage _storage;
   final Dio _dio;
@@ -111,6 +112,92 @@ class OperationsApi {
                       Options(headers: {'Authorization': 'Bearer $token'}))))
               .data ??
           const []);
+  Stream<Map<String, dynamic>> issueEvents(String eventId) async* {
+    var cursor = '0';
+    var retryDelay = const Duration(seconds: 1);
+    while (true) {
+      final token = await _auth.validAccessToken();
+      if (token == null) {
+        yield* Stream<Map<String, dynamic>>.error(
+            StateError('Sign in again to receive live updates.'));
+        return;
+      }
+      try {
+        final response = await _dio.get<ResponseBody>(
+          '/api/v1/events/$eventId/issues/stream',
+          options: Options(
+            responseType: ResponseType.stream,
+            receiveTimeout: Duration.zero,
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Last-Event-ID': cursor,
+              'Accept': 'text/event-stream',
+            },
+          ),
+        );
+        yield const {'_connected': true};
+        String? frameId;
+        String? eventType;
+        final dataLines = <String>[];
+        final lines = response.data!.stream
+            .transform(utf8.decoder)
+            .transform(const LineSplitter());
+        await for (final line in lines) {
+          if (line.isEmpty) {
+            if (dataLines.isNotEmpty) {
+              final rawData = dataLines.join('\n');
+              try {
+                final decoded = jsonDecode(rawData);
+                if (decoded is Map<String, dynamic> &&
+                    (eventType == null || eventType == 'issue')) {
+                  if (frameId != null && RegExp(r'^\d+$').hasMatch(frameId)) {
+                    cursor = frameId;
+                  }
+                  yield decoded;
+                }
+              } on FormatException {
+                // Ignore a malformed frame and keep the connection alive.
+              }
+            }
+            frameId = null;
+            eventType = null;
+            dataLines.clear();
+            continue;
+          }
+          if (line.startsWith(':')) continue;
+          final separator = line.indexOf(':');
+          final field = separator < 0 ? line : line.substring(0, separator);
+          var value = separator < 0 ? '' : line.substring(separator + 1);
+          if (value.startsWith(' ')) value = value.substring(1);
+          switch (field) {
+            case 'id':
+              if (!value.contains('\u0000')) frameId = value;
+              break;
+            case 'event':
+              eventType = value;
+              break;
+            case 'data':
+              dataLines.add(value);
+              break;
+          }
+        }
+        retryDelay = const Duration(seconds: 1);
+        yield const {'_connected': false};
+      } catch (error, stackTrace) {
+        final status =
+            error is DioException ? error.response?.statusCode : null;
+        if (status == 401 || status == 403 || error is StateError) {
+          yield* Stream<Map<String, dynamic>>.error(error, stackTrace);
+          return;
+        }
+        yield const {'_connected': false};
+      }
+      await Future<void>.delayed(retryDelay);
+      retryDelay =
+          Duration(seconds: (retryDelay.inSeconds * 2).clamp(1, 30).toInt());
+    }
+  }
+
   Future<List<dynamic>> tasks(String eventId) => _cachedGet(
       'tasks.$eventId',
       () async =>
@@ -284,6 +371,9 @@ final operationsBootstrapProvider = FutureProvider.autoDispose(
 final eventIssuesProvider = FutureProvider.autoDispose
     .family<List<dynamic>, String>(
         (ref, id) => ref.watch(operationsApiProvider).issues(id));
+final issueEventStreamProvider = StreamProvider.autoDispose
+    .family<Map<String, dynamic>, String>(
+        (ref, id) => ref.watch(operationsApiProvider).issueEvents(id));
 final eventTasksProvider = FutureProvider.autoDispose
     .family<List<dynamic>, String>(
         (ref, id) => ref.watch(operationsApiProvider).tasks(id));
