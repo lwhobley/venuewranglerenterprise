@@ -1169,6 +1169,10 @@ class _LiveStaffingPage extends ConsumerWidget {
               textAlign: TextAlign.center)),
       data: (rows) => Column(children: [
             const _MyUnavailabilityPanel(),
+            if (canWrite) _TeamAvailabilityPanel(
+              eventId: eventId,
+              initialDate: DateTime.tryParse(event['startsAt'] as String? ?? '')?.toLocal() ?? DateTime.now(),
+            ),
             Expanded(child: rows.isEmpty
           ? const Center(child: Text('No shifts are scheduled for this event.'))
           : ListView.separated(
@@ -1230,6 +1234,107 @@ class _LiveStaffingPage extends ConsumerWidget {
           ]),
     );
   }
+}
+
+class _TeamAvailabilityPanel extends ConsumerStatefulWidget {
+  const _TeamAvailabilityPanel({required this.eventId, required this.initialDate});
+  final String eventId;
+  final DateTime initialDate;
+
+  @override
+  ConsumerState<_TeamAvailabilityPanel> createState() => _TeamAvailabilityPanelState();
+}
+
+class _TeamAvailabilityPanelState extends ConsumerState<_TeamAvailabilityPanel> {
+  late DateTime _weekStart = _monday(widget.initialDate);
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final weekEnd = _weekStart.add(const Duration(days: 7));
+    final request = (eventId: widget.eventId, from: _weekStart, to: weekEnd);
+    final availability = _expanded ? ref.watch(teamAvailabilityProvider(request)) : null;
+    return Card(
+      child: ExpansionTile(
+        leading: const Icon(Icons.calendar_view_week_outlined),
+        title: const Text('Team availability'),
+        subtitle: Text('${_weekLabel(_weekStart, weekEnd)} · assigned roster only'),
+        onExpansionChanged: (value) => setState(() => _expanded = value),
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              IconButton(tooltip: 'Previous week', onPressed: () => setState(() => _weekStart = _weekStart.subtract(const Duration(days: 7))), icon: const Icon(Icons.chevron_left)),
+              Text(_weekLabel(_weekStart, weekEnd), style: Theme.of(context).textTheme.titleSmall),
+              IconButton(tooltip: 'Next week', onPressed: () => setState(() => _weekStart = _weekStart.add(const Duration(days: 7))), icon: const Icon(Icons.chevron_right)),
+            ]),
+          ),
+          if (availability != null)
+            availability.when(
+              loading: () => const Padding(padding: EdgeInsets.all(20), child: LinearProgressIndicator()),
+              error: (error, _) => ListTile(title: const Text('Team availability unavailable'), subtitle: Text('$error')),
+              data: (items) => items.isEmpty
+                  ? const Padding(padding: EdgeInsets.fromLTRB(16, 4, 16, 16), child: Text('No one on this roster has recorded unavailable time this week.'))
+                  : SizedBox(
+                      height: 190,
+                      child: ListView(
+                        scrollDirection: Axis.horizontal,
+                        padding: const EdgeInsets.fromLTRB(8, 0, 8, 12),
+                        children: List.generate(7, (index) {
+                          final day = _weekStart.add(Duration(days: index));
+                          final nextDay = day.add(const Duration(days: 1));
+                          final matches = items.where((raw) {
+                            final item = Map<String, dynamic>.from(raw as Map);
+                            final start = DateTime.tryParse(item['startsAt'] as String? ?? '')?.toLocal();
+                            final end = DateTime.tryParse(item['endsAt'] as String? ?? '')?.toLocal();
+                            return start != null && end != null && start.isBefore(nextDay) && end.isAfter(day);
+                          }).toList();
+                          return SizedBox(
+                            width: 124,
+                            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Text('${_weekdayName(day.weekday)} ${day.month}/${day.day}', style: Theme.of(context).textTheme.labelLarge),
+                              const Divider(height: 12),
+                              Expanded(child: matches.isEmpty
+                                  ? const Text('No block recorded', style: TextStyle(color: Colors.grey))
+                                  : ListView.builder(
+                                      itemCount: matches.length,
+                                      itemBuilder: (context, rowIndex) {
+                                        final item = Map<String, dynamic>.from(matches[rowIndex] as Map);
+                                        final start = DateTime.parse(item['startsAt'] as String).toLocal();
+                                        final end = DateTime.parse(item['endsAt'] as String).toLocal();
+                                        return Container(
+                                          margin: const EdgeInsets.only(bottom: 6),
+                                          padding: const EdgeInsets.all(7),
+                                          decoration: BoxDecoration(color: Theme.of(context).colorScheme.errorContainer, borderRadius: BorderRadius.circular(10)),
+                                          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                            Text(item['displayName'] as String? ?? 'Roster member', maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700)),
+                                            Text(_shiftTimeLabel(start, end), style: Theme.of(context).textTheme.bodySmall),
+                                          ]),
+                                        );
+                                      },
+                                    )),
+                            ]),
+                          );
+                        }),
+                      ),
+                    ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+DateTime _monday(DateTime value) {
+  final day = DateTime(value.year, value.month, value.day);
+  return day.subtract(Duration(days: day.weekday - DateTime.monday));
+}
+
+String _weekdayName(int weekday) => const ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][weekday - 1];
+
+String _weekLabel(DateTime start, DateTime end) {
+  final last = end.subtract(const Duration(days: 1));
+  return '${start.month}/${start.day}–${last.month}/${last.day}';
 }
 
 class _MyUnavailabilityPanel extends ConsumerWidget {

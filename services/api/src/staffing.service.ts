@@ -1,4 +1,4 @@
-import { ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma, StaffShiftResponse } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { assertScope, type Identity } from './auth';
@@ -28,6 +28,38 @@ export class StaffingService {
       },
       orderBy: [{ startsAt: 'asc' }, { createdAt: 'asc' }],
     }));
+  }
+
+  async teamAvailability(identity: Identity, eventId: string, fromInput: string, toInput: string) {
+    assertScope(identity, 'operations:write', eventId);
+    const from = new Date(fromInput);
+    const to = new Date(toInput);
+    if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) || to <= from || to.getTime() - from.getTime() > 31 * 24 * 60 * 60 * 1000) {
+      throw new BadRequestException('Availability calendar range must be valid, ordered, and no longer than 31 days.');
+    }
+    return this.prisma.withTenant(identity, async (tx) => {
+      const event = await tx.event.findFirst({ where: { id: eventId, organizationId: identity.tenantId }, select: { id: true, venueId: true } });
+      if (!event) throw new NotFoundException('Event not found.');
+      assertScope(identity, 'operations:write', eventId, event.venueId);
+      const people = await tx.person.findMany({
+        where: {
+          organizationId: identity.tenantId,
+          active: true,
+          ...(!identity.capabilities.includes('tenant:admin') ? { externalSubject: { in: identity.assignableUserIds } } : {}),
+        },
+        select: { externalSubject: true, displayName: true },
+        orderBy: { displayName: 'asc' },
+      });
+      const subjects = people.map((person) => person.externalSubject);
+      if (subjects.length === 0) return [];
+      const rows = await tx.staffUnavailability.findMany({
+        where: { organizationId: identity.tenantId, subject: { in: subjects }, deletedAt: null, startsAt: { lt: to }, endsAt: { gt: from } },
+        select: { id: true, subject: true, startsAt: true, endsAt: true },
+        orderBy: [{ startsAt: 'asc' }, { subject: 'asc' }],
+      });
+      const names = new Map(people.map((person) => [person.externalSubject, person.displayName]));
+      return rows.map((row) => ({ id: row.id, subject: row.subject, startsAt: row.startsAt, endsAt: row.endsAt, displayName: names.get(row.subject) ?? 'Roster member' }));
+    });
   }
 
   async create(identity: Identity, eventId: string, dto: CreateStaffShiftDto, key: string) {

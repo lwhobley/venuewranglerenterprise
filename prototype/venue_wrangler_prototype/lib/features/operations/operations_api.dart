@@ -217,6 +217,15 @@ class OperationsApi {
                       Options(headers: {'Authorization': 'Bearer $token'}))))
               .data ??
           const []);
+  Future<List<dynamic>> teamAvailability(String eventId, DateTime from, DateTime to) async =>
+      (await _request((token) => _dio.get<List<dynamic>>(
+              '/api/v1/events/$eventId/availability',
+              queryParameters: {
+                'from': from.toUtc().toIso8601String(),
+                'to': to.toUtc().toIso8601String(),
+              },
+              options: Options(headers: {'Authorization': 'Bearer $token'}))))
+          .data ?? const [];
   Future<List<dynamic>> myUnavailability() async =>
       (await _request((token) => _dio.get<List<dynamic>>(
               '/api/v1/me/unavailability',
@@ -483,6 +492,11 @@ final eventTasksProvider = FutureProvider.autoDispose
 final eventShiftsProvider = FutureProvider.autoDispose
     .family<List<dynamic>, String>(
         (ref, id) => ref.watch(operationsApiProvider).shifts(id));
+typedef TeamAvailabilityRequest = ({String eventId, DateTime from, DateTime to});
+final teamAvailabilityProvider = FutureProvider.autoDispose
+    .family<List<dynamic>, TeamAvailabilityRequest>((ref, request) =>
+        ref.watch(operationsApiProvider).teamAvailability(
+            request.eventId, request.from, request.to));
 final myUnavailabilityProvider = FutureProvider.autoDispose<List<dynamic>>(
     (ref) => ref.watch(operationsApiProvider).myUnavailability());
 final userNotificationsProvider = FutureProvider.autoDispose<List<dynamic>>(

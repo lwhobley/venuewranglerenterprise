@@ -20,9 +20,12 @@ function harness(current?: Record<string, unknown>, restMinutes: number | null =
     commandReceipt: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
     event: { findFirst: vi.fn().mockResolvedValue({ id: 'event-1' }) },
     location: { findFirst: vi.fn().mockResolvedValue({ id: 'location-1' }) },
-    person: { findFirst: vi.fn().mockResolvedValue({ id: 'person-1' }) },
+    person: {
+      findFirst: vi.fn().mockResolvedValue({ id: 'person-1' }),
+      findMany: vi.fn().mockResolvedValue([]),
+    },
     personQualification: { findMany: vi.fn().mockResolvedValue([]) },
-    staffUnavailability: { findFirst: vi.fn().mockResolvedValue(null) },
+    staffUnavailability: { findFirst: vi.fn().mockResolvedValue(null), findMany: vi.fn().mockResolvedValue([]) },
     staffShift: {
       create: vi.fn().mockImplementation(({ data }) => ({ id: 'shift-1', state: 'DRAFT', response: 'PENDING', attendance: 'NOT_STARTED', revision: 1, ...data })),
       findFirst: vi.fn().mockImplementation(({ where }) => Promise.resolve(typeof where?.id === 'object' ? null : current ?? null)),
@@ -40,6 +43,50 @@ function harness(current?: Record<string, unknown>, restMinutes: number | null =
 }
 
 describe('event staffing workflow', () => {
+  it('returns only assigned active roster availability for a scoped manager and omits private notes', async () => {
+    const { service, tx } = harness();
+    tx.event.findFirst.mockResolvedValue({ id: 'event-1', venueId: 'venue-1' });
+    tx.person.findMany.mockResolvedValue([{ externalSubject: workerSubject, displayName: 'Worker A' }]);
+    tx.staffUnavailability.findMany.mockResolvedValue([{
+      id: 'unavailable-1', subject: workerSubject, startsAt: new Date('2026-10-05T00:00:00Z'),
+      endsAt: new Date('2026-10-06T00:00:00Z'), note: 'private reason',
+    }]);
+
+    const rows = await service.teamAvailability(manager, 'event-1', '2026-10-01T00:00:00Z', '2026-10-08T00:00:00Z');
+
+    expect(tx.person.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ externalSubject: { in: manager.assignableUserIds } }) }));
+    expect(tx.staffUnavailability.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ organizationId: 'tenant-1', subject: { in: [workerSubject] }, deletedAt: null }),
+      select: { id: true, subject: true, startsAt: true, endsAt: true },
+    }));
+    expect(rows).toEqual([{
+      id: 'unavailable-1', subject: workerSubject, startsAt: new Date('2026-10-05T00:00:00Z'),
+      endsAt: new Date('2026-10-06T00:00:00Z'), displayName: 'Worker A',
+    }]);
+  });
+
+  it('rejects an availability query wider than 31 days', async () => {
+    const { service, tx } = harness();
+    await expect(service.teamAvailability(manager, 'event-1', '2026-10-01T00:00:00Z', '2026-11-02T00:00:00Z'))
+      .rejects.toThrow('no longer than 31 days');
+    expect(tx.event.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('denies a scheduler outside the event scope before reading availability', async () => {
+    const { service, tx } = harness();
+    await expect(service.teamAvailability({ ...manager, eventIds: [] }, 'event-1', '2026-10-01T00:00:00Z', '2026-10-08T00:00:00Z'))
+      .rejects.toThrow('outside your assigned scope');
+    expect(tx.event.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('denies a scheduler when the event venue is outside their assigned venue scope', async () => {
+    const { service, tx } = harness();
+    tx.event.findFirst.mockResolvedValue({ id: 'event-1', venueId: 'other-venue' });
+    await expect(service.teamAvailability(manager, 'event-1', '2026-10-01T00:00:00Z', '2026-10-08T00:00:00Z'))
+      .rejects.toThrow('outside your assigned scope');
+    expect(tx.person.findMany).not.toHaveBeenCalled();
+  });
+
   it('creates an assigned draft shift with an audit record and command receipt', async () => {
     const { service, tx } = harness();
     const shift = await service.create(manager, 'event-1', {

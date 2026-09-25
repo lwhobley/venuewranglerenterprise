@@ -1,5 +1,5 @@
-import { BadRequestException, Body, Controller, Get, Headers, Param, ParseUUIDPipe, Post, Put, Req, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { BadRequestException, Body, Controller, Get, Headers, Param, ParseUUIDPipe, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiQuery, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { JwtIdentityGuard } from './auth';
 import { StaffingService } from './staffing.service';
@@ -14,6 +14,12 @@ export class StaffingController {
 
   @Get('events/:eventId/shifts') list(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string) {
     return this.staffing.list(req.identity, eventId);
+  }
+  @Get('events/:eventId/availability')
+  @ApiQuery({ name: 'from', required: true, type: String, description: 'Inclusive ISO-8601 range start; calendar windows cannot exceed 31 days.' })
+  @ApiQuery({ name: 'to', required: true, type: String, description: 'Exclusive ISO-8601 range end.' })
+  availability(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Query('from') from: string, @Query('to') to: string) {
+    return this.staffing.teamAvailability(req.identity, eventId, from, to);
   }
   @Post('events/:eventId/shifts') create(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Body() dto: CreateStaffShiftDto, @Headers('idempotency-key') key: string) {
     return this.staffing.create(req.identity, eventId, dto, this.key(key));
