@@ -382,7 +382,7 @@ try {
       await tx.$executeRawUnsafe('SAVEPOINT closed_vendor_request_write_probe');
       let closedVendorRequestWriteError;
       try {
-        await tx.staffingVendorRequest.update({ where: { id: vendorRequestAId }, data: { instructions: 'forbidden post-close edit' } });
+        await tx.$executeRaw`UPDATE staffing_vendor_requests SET instructions='forbidden post-close edit' WHERE id=${vendorRequestAId}::uuid`;
       } catch (error) { closedVendorRequestWriteError = error; }
       await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT closed_vendor_request_write_probe');
       assert.equal(closedVendorRequestWriteError?.meta?.code, '23514', 'vendor requests must also be immutable after event closeout');
