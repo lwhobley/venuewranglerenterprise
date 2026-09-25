@@ -103,7 +103,7 @@ try {
       const [stockItemA] = await tx.$queryRaw`INSERT INTO stock_items(organization_id,venue_id,location_id,sku,name,unit,on_hand)
         VALUES (${tenantA}::uuid,${venueA}::uuid,${locationA}::uuid,${`RLS-${randomUUID()}`},'Tenant A transfer fixture','case',8) RETURNING id`;
       const [stockTransferA] = await tx.$queryRaw`INSERT INTO stock_transfers(organization_id,venue_id,event_id,source_location_id,destination_location_id,requested_by)
-        VALUES (${tenantA}::uuid,${venueA}::uuid,${eventA}::uuid,${locationA}::uuid,${annexLocationA}::uuid,'tenant-isolation-test') RETURNING id`;
+        VALUES (${tenantA}::uuid,${venueA}::uuid,${eventA}::uuid,${locationA}::uuid,NULL,'tenant-isolation-test') RETURNING id`;
       stockTransferAId = stockTransferA.id;
       await tx.$executeRaw`INSERT INTO stock_transfer_lines(organization_id,transfer_id,source_item_id,requested_quantity)
         VALUES (${tenantA}::uuid,${stockTransferA.id}::uuid,${stockItemA.id}::uuid,2)`;
