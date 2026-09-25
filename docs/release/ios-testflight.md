@@ -18,6 +18,11 @@ In the repository's **Settings → Secrets and variables → Actions**, add thes
 | `APPSTORE_ISSUER_ID` | App Store Connect Issuer ID |
 | `APPSTORE_API_KEY_ID` | App Store Connect API Key ID |
 | `APPLE_TEAM_ID` | Apple Developer Team ID |
+| `VENUE_API_BASE_URL` | Verified HTTPS origin of the deployed Venue Wrangler API; required by the workflow |
+| `FIREBASE_API_KEY` | Firebase iOS app API key; optional until Firebase push is configured |
+| `FIREBASE_APP_ID` | Firebase iOS app ID; optional until Firebase push is configured |
+| `FIREBASE_MESSAGING_SENDER_ID` | Firebase Cloud Messaging sender ID; optional until Firebase push is configured |
+| `FIREBASE_PROJECT_ID` | Firebase project ID; optional until Firebase push is configured |
 
 Add these secrets:
 
@@ -26,6 +31,8 @@ Add these secrets:
 | `APPSTORE_API_PRIVATE_KEY` | Entire contents of the App Store Connect `.p8` key |
 | `APPSTORE_CERTIFICATES_FILE_BASE64` | Base64-encoded `.p12` distribution certificate |
 | `APPSTORE_CERTIFICATES_PASSWORD` | Password used when exporting the `.p12` |
+
+`VENUE_API_BASE_URL` must be the actual deployed API origin, without a guessed Cloud Run hostname. The workflow fails before signing if the value is missing or does not begin with `https://`. Without the optional Firebase variables and APNs key configuration, the app builds but device push alerts remain unavailable; durable in-app notifications still work.
 
 On macOS, encode the certificate with `base64 -i distribution.p12 | pbcopy`. Do not commit certificates, API keys, or provisioning profiles to the repository.
 
