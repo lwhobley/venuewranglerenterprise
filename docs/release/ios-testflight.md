@@ -40,4 +40,6 @@ On macOS, encode the certificate with `base64 -i distribution.p12 | pbcopy`. Do 
 
 Use **Actions → iOS TestFlight → Run workflow** to upload the current `main` revision, or push a tag matching `ios-v*` (for example `ios-v0.1.0`). The workflow builds on a macOS runner, increments the App Store build number from the GitHub Actions run number, signs and exports an IPA, uploads it to App Store Connect, and retains the IPA as a workflow artifact. Apple processes the upload before it appears in TestFlight.
 
+Manual runs are accepted only from `main`. Version-tagged runs are accepted only when the tagged commit is already contained in `main`, so repository-level signing credentials are not used to build arbitrary branch commits.
+
 The first upload may require completing the app's metadata, privacy details, export compliance, and TestFlight tester setup in App Store Connect. Uploading the binary does not automatically distribute it to testers.
