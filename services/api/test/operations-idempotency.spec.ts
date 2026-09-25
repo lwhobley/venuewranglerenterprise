@@ -71,4 +71,49 @@ describe('tenant setup command idempotency', () => {
       .rejects.toBeInstanceOf(ConflictException);
     expect(createVenue).toHaveBeenCalledOnce();
   });
+
+  it('audits tenant-admin roster creation without copying personal values into the audit row', async () => {
+    const person = {
+      id: 'person-1',
+      organizationId: admin.tenantId,
+      externalSubject: 'https://idp.invalid|worker-1',
+      email: 'worker@example.invalid',
+      displayName: 'Worker One',
+      active: true,
+    };
+    const tx = {
+      $queryRaw: vi.fn().mockResolvedValue([]),
+      commandReceipt: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        create: vi.fn().mockResolvedValue({}),
+      },
+      person: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        upsert: vi.fn().mockResolvedValue(person),
+      },
+      personAuditEvent: { create: vi.fn().mockResolvedValue({}) },
+    };
+    const prisma = {
+      withTenant: vi.fn((_identity: Identity, action: (transaction: never) => Promise<unknown>) => action(tx as never)),
+    } as unknown as PrismaService;
+    const service = new OperationsService(prisma);
+
+    await service.upsertPerson(admin, {
+      externalSubject: person.externalSubject,
+      email: person.email,
+      displayName: person.displayName,
+    }, 'roster-create-command-0001');
+
+    expect(tx.personAuditEvent.create).toHaveBeenCalledWith({
+      data: {
+        organizationId: admin.tenantId,
+        personId: person.id,
+        actorId: admin.subject,
+        action: 'created',
+        changedFields: ['external_subject', 'email', 'display_name', 'active'],
+      },
+    });
+    expect(JSON.stringify(tx.personAuditEvent.create.mock.calls[0][0])).not.toContain(person.email);
+    expect(JSON.stringify(tx.personAuditEvent.create.mock.calls[0][0])).not.toContain(person.displayName);
+  });
 });

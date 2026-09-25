@@ -110,6 +110,7 @@ export class ScimService {
     try {
       return await this.prisma.withTenant(identity, async (tx) => {
         const person = await tx.person.create({ data: { organizationId: identity.tenantId, ...data } });
+        await this.auditPersonMutation(tx, identity, person.id, 'created', ['external_subject', 'email', 'display_name', 'active']);
         return this.resource(person);
       });
     } catch (error) {
@@ -125,6 +126,13 @@ export class ScimService {
         const current = await tx.person.findFirst({ where: { id, organizationId: identity.tenantId } });
         if (!current) throw new NotFoundException(this.scimError(404, 'User not found.'));
         const person = await tx.person.update({ where: { id }, data });
+        const changedFields = [
+          ...(current.externalSubject !== person.externalSubject ? ['external_subject'] : []),
+          ...(current.email !== person.email ? ['email'] : []),
+          ...(current.displayName !== person.displayName ? ['display_name'] : []),
+          ...(current.active !== person.active ? ['active'] : []),
+        ];
+        await this.auditPersonMutation(tx, identity, person.id, this.personAction(current.active, person.active), changedFields);
         return this.resource(person);
       });
     } catch (error) {
@@ -160,7 +168,17 @@ export class ScimService {
     }
     if (Object.keys(patch).length === 0) throw new BadRequestException(this.scimError(400, 'The SCIM PATCH contains no supported changes.'));
     try {
-      return await this.prisma.withTenant(identity, async (tx) => this.resource(await tx.person.update({ where: { id }, data: patch })));
+      return await this.prisma.withTenant(identity, async (tx) => {
+        const person = await tx.person.update({ where: { id }, data: patch });
+        const changedFields = [
+          ...(current.externalSubject !== person.externalSubject ? ['external_subject'] : []),
+          ...(current.email !== person.email ? ['email'] : []),
+          ...(current.displayName !== person.displayName ? ['display_name'] : []),
+          ...(current.active !== person.active ? ['active'] : []),
+        ];
+        await this.auditPersonMutation(tx, identity, person.id, this.personAction(current.active, person.active), changedFields);
+        return this.resource(person);
+      });
     } catch (error) {
       if (this.isDuplicate(error)) throw new ConflictException(this.scimError(409, 'A user with this externalId or userName already exists.'));
       throw error;
@@ -171,7 +189,26 @@ export class ScimService {
     return this.prisma.withTenant(identity, async (tx) => {
       const current = await tx.person.findFirst({ where: { id, organizationId: identity.tenantId } });
       if (!current) throw new NotFoundException(this.scimError(404, 'User not found.'));
-      await tx.person.update({ where: { id }, data: { active: false } });
+      const person = await tx.person.update({ where: { id }, data: { active: false } });
+      await this.auditPersonMutation(tx, identity, person.id, 'deactivated', current.active ? ['active'] : []);
+    });
+  }
+
+  private personAction(wasActive: boolean, isActive: boolean) {
+    if (wasActive !== isActive) return isActive ? 'reactivated' : 'deactivated';
+    return 'updated';
+  }
+
+  private async auditPersonMutation(tx: Prisma.TransactionClient, identity: Identity, personId: string, action: string, changedFields: string[]) {
+    if (changedFields.length === 0) return;
+    await tx.personAuditEvent.create({
+      data: {
+        organizationId: identity.tenantId,
+        personId,
+        actorId: identity.subject,
+        action,
+        changedFields,
+      },
     });
   }
 

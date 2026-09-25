@@ -36,11 +36,22 @@ export class OperationsService {
       }
       const email = claims.email?.trim().toLowerCase();
       if (email && email.length <= 320) {
-        await tx.person.upsert({
+        const previousPerson = await tx.person.findUnique({
+          where: { organizationId_externalSubject: { organizationId: identity.tenantId, externalSubject: identity.subject } },
+        });
+        const person = await tx.person.upsert({
           where: { organizationId_externalSubject: { organizationId: identity.tenantId, externalSubject: identity.subject } },
           create: { organizationId: identity.tenantId, externalSubject: identity.subject, email, displayName: claims.name?.trim().slice(0, 160) || email },
           update: { email, displayName: claims.name?.trim().slice(0, 160) || email, active: true },
         });
+        const changedFields = previousPerson
+          ? [
+              ...(previousPerson.email !== person.email ? ['email'] : []),
+              ...(previousPerson.displayName !== person.displayName ? ['display_name'] : []),
+              ...(previousPerson.active !== person.active ? ['active'] : []),
+            ]
+          : ['external_subject', 'email', 'display_name', 'active'];
+        await this.auditPersonMutation(tx, identity, person.id, previousPerson ? 'updated' : 'created', changedFields);
       }
       const admin = identity.capabilities.includes('tenant:admin');
       const venues = await tx.venue.findMany({ where: admin ? { organizationId: identity.tenantId } : { id: { in: identity.venueIds }, organizationId: identity.tenantId }, orderBy: { name: 'asc' } });
@@ -110,11 +121,25 @@ export class OperationsService {
   async upsertPerson(identity: Identity, dto: UpsertPersonDto, key: string) {
     assertTenantAdmin(identity);
     const input = { externalSubject: dto.externalSubject, email: dto.email.trim().toLowerCase(), displayName: dto.displayName.trim() };
-    return this.command(identity, key, 'person.upsert', input, (tx) => tx.person.upsert({
-      where: { organizationId_externalSubject: { organizationId: identity.tenantId, externalSubject: dto.externalSubject } },
-      create: { organizationId: identity.tenantId, ...input },
-      update: { email: input.email, displayName: input.displayName, active: true },
-    }));
+    return this.command(identity, key, 'person.upsert', input, async (tx) => {
+      const previousPerson = await tx.person.findUnique({
+        where: { organizationId_externalSubject: { organizationId: identity.tenantId, externalSubject: dto.externalSubject } },
+      });
+      const person = await tx.person.upsert({
+        where: { organizationId_externalSubject: { organizationId: identity.tenantId, externalSubject: dto.externalSubject } },
+        create: { organizationId: identity.tenantId, ...input },
+        update: { email: input.email, displayName: input.displayName, active: true },
+      });
+      const changedFields = previousPerson
+        ? [
+            ...(previousPerson.email !== person.email ? ['email'] : []),
+            ...(previousPerson.displayName !== person.displayName ? ['display_name'] : []),
+            ...(previousPerson.active !== person.active ? ['active'] : []),
+          ]
+        : ['external_subject', 'email', 'display_name', 'active'];
+      await this.auditPersonMutation(tx, identity, person.id, previousPerson ? 'updated' : 'created', changedFields);
+      return person;
+    });
   }
 
   async personQualifications(identity: Identity, personId: string) {
@@ -262,6 +287,19 @@ export class OperationsService {
         response: JSON.parse(JSON.stringify(response)) as Prisma.InputJsonValue,
       } });
       return response;
+    });
+  }
+
+  private async auditPersonMutation(tx: Prisma.TransactionClient, identity: Identity, personId: string, action: string, changedFields: string[]) {
+    if (changedFields.length === 0) return;
+    await tx.personAuditEvent.create({
+      data: {
+        organizationId: identity.tenantId,
+        personId,
+        actorId: identity.subject,
+        action,
+        changedFields,
+      },
     });
   }
 
