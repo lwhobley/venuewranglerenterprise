@@ -1182,6 +1182,313 @@ class _EmptyLine extends StatelessWidget {
       child: Text(text, style: const TextStyle(color: Color(0xFF59645D))));
 }
 
+class ResponsiveIssueWorkspace extends StatefulWidget {
+  const ResponsiveIssueWorkspace({
+    required this.issues,
+    required this.capabilities,
+    required this.canAssign,
+    required this.onAction,
+    required this.onEvidence,
+    super.key,
+  });
+
+  final List<Map<String, dynamic>> issues;
+  final Set<String> capabilities;
+  final bool canAssign;
+  final void Function(Map<String, dynamic> issue, String action) onAction;
+  final ValueChanged<Map<String, dynamic>> onEvidence;
+
+  @override
+  State<ResponsiveIssueWorkspace> createState() =>
+      _ResponsiveIssueWorkspaceState();
+}
+
+class _ResponsiveIssueWorkspaceState extends State<ResponsiveIssueWorkspace> {
+  String _query = '';
+  String _stateFilter = 'ALL';
+  String? _selectedIssueId;
+
+  @override
+  Widget build(BuildContext context) {
+    final desktop = MediaQuery.sizeOf(context).width >= 1120;
+    final query = _query.trim().toLowerCase();
+    final filtered = widget.issues.where((issue) {
+      final state = issue['state'] as String? ?? 'REPORTED';
+      final matchesState = switch (_stateFilter) {
+        'OPEN' => state != 'CLOSED',
+        'CLOSED' => state == 'CLOSED',
+        _ => true,
+      };
+      final searchable = [
+        issue['title'],
+        issue['description'],
+        issue['category'],
+        issue['severity'],
+        state,
+        issue['ownerId'],
+      ].whereType<Object>().join(' ').toLowerCase();
+      return matchesState && (query.isEmpty || searchable.contains(query));
+    }).toList();
+    Map<String, dynamic>? selected;
+    for (final issue in filtered) {
+      if (issue['id'] == _selectedIssueId) {
+        selected = issue;
+        break;
+      }
+    }
+    selected ??= filtered.isEmpty ? null : filtered.first;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                key: const ValueKey('issue-search'),
+                onChanged: (value) => setState(() => _query = value),
+                decoration: const InputDecoration(
+                  prefixIcon: Icon(Icons.search),
+                  hintText: 'Search issues',
+                  isDense: true,
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            SizedBox(
+              width: desktop ? 154 : 132,
+              child: DropdownButtonFormField<String>(
+                key: const ValueKey('issue-state-filter'),
+                initialValue: _stateFilter,
+                decoration: const InputDecoration(
+                  labelText: 'State',
+                  isDense: true,
+                ),
+                items: const [
+                  DropdownMenuItem(value: 'ALL', child: Text('All issues')),
+                  DropdownMenuItem(value: 'OPEN', child: Text('Open')),
+                  DropdownMenuItem(value: 'CLOSED', child: Text('Closed')),
+                ],
+                onChanged: (value) {
+                  if (value != null) setState(() => _stateFilter = value);
+                },
+              ),
+            ),
+          ],
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: Text(
+            '${filtered.length} ${filtered.length == 1 ? 'issue' : 'issues'} · ${widget.issues.where((issue) => issue['state'] != 'CLOSED').length} open',
+            style: const TextStyle(fontSize: 12, color: Color(0xFF59645D)),
+          ),
+        ),
+        Expanded(
+          child: filtered.isEmpty
+              ? Center(
+                  child: Text(query.isEmpty && widget.issues.isEmpty
+                      ? 'No issues reported for this event.'
+                      : 'No issues match these filters.'),
+                )
+              : desktop
+                  ? Row(
+                      key: const ValueKey('issue-desktop-split-view'),
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        SizedBox(
+                          width: 380,
+                          child: _buildDesktopList(filtered, selected),
+                        ),
+                        const VerticalDivider(width: 24, thickness: 1),
+                        Expanded(
+                          child: _buildIssueDetail(selected),
+                        ),
+                      ],
+                    )
+                  : ListView.separated(
+                      key: const ValueKey('issue-mobile-list'),
+                      itemCount: filtered.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 8),
+                      itemBuilder: (context, index) =>
+                          _buildMobileCard(filtered[index]),
+                    ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDesktopList(
+          List<Map<String, dynamic>> issues, Map<String, dynamic>? selected) =>
+      ListView.separated(
+        key: const ValueKey('issue-list'),
+        itemCount: issues.length,
+        separatorBuilder: (_, __) => const Divider(height: 1),
+        itemBuilder: (context, index) {
+          final issue = issues[index];
+          final isSelected = issue['id'] == selected?['id'];
+          final severity = issue['severity'] as String? ?? 'MODERATE';
+          return Material(
+            color: isSelected ? const Color(0xFFE8EFEA) : Colors.transparent,
+            child: ListTile(
+              key: ValueKey('issue-row-${issue['id']}'),
+              selected: isSelected,
+              onTap: () =>
+                  setState(() => _selectedIssueId = issue['id'] as String?),
+              leading: Icon(Icons.report_problem_outlined,
+                  color: severity == 'CRITICAL' || severity == 'HIGH'
+                      ? _coral
+                      : _brass),
+              title: Text(issue['title'] as String? ?? 'Issue',
+                  maxLines: 1, overflow: TextOverflow.ellipsis),
+              subtitle: Text(
+                '${issue['state'] ?? 'REPORTED'} · $severity · ${issue['category'] ?? 'Other'}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: const Icon(Icons.chevron_right),
+            ),
+          );
+        },
+      );
+
+  Widget _buildMobileCard(Map<String, dynamic> issue) {
+    final state = issue['state'] as String? ?? 'REPORTED';
+    final actions =
+        _issueActions(state, widget.capabilities, canAssign: widget.canAssign);
+    return Card(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ListTile(
+            leading: const Icon(Icons.report_problem_outlined, color: _coral),
+            title: Text(issue['title'] as String? ?? 'Issue'),
+            subtitle: Text(
+                '$state · ${issue['severity'] ?? 'MODERATE'} · ${issue['category'] ?? 'Other'}\n${issue['description'] ?? ''}'),
+            isThreeLine: true,
+          ),
+          if (issue['latitude'] != null && issue['longitude'] != null)
+            _locationEvidence(issue),
+          TextButton.icon(
+            onPressed: () => widget.onEvidence(issue),
+            icon: const Icon(Icons.photo_library_outlined),
+            label: const Text('View photo evidence'),
+          ),
+          if (actions.isNotEmpty)
+            Align(
+              alignment: Alignment.centerRight,
+              child: _issueActionMenu(issue, actions, widget.onAction),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildIssueDetail(Map<String, dynamic>? issue) {
+    if (issue == null) {
+      return const Center(child: Text('Select an issue to review details.'));
+    }
+    final state = issue['state'] as String? ?? 'REPORTED';
+    final actions =
+        _issueActions(state, widget.capabilities, canAssign: widget.canAssign);
+    final createdAt =
+        DateTime.tryParse('${issue['createdAt'] ?? ''}')?.toLocal();
+    return ListView(
+      key: ValueKey('issue-detail-${issue['id']}'),
+      padding: const EdgeInsets.fromLTRB(18, 8, 12, 24),
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                issue['title'] as String? ?? 'Issue',
+                style: Theme.of(context).textTheme.headlineSmall,
+              ),
+            ),
+            if (actions.isNotEmpty)
+              _issueActionMenu(issue, actions, widget.onAction),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            Chip(label: Text(state.replaceAll('_', ' '))),
+            Chip(label: Text(issue['severity'] as String? ?? 'MODERATE')),
+            Chip(label: Text(issue['category'] as String? ?? 'Other')),
+          ],
+        ),
+        const SizedBox(height: 16),
+        Text('Description', style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 4),
+        SelectableText(issue['description'] as String? ?? 'No description'),
+        const SizedBox(height: 18),
+        const Divider(),
+        _issueField('Location', issue['locationId']),
+        _issueField('Assigned to', issue['ownerId']),
+        if (createdAt != null) _issueField('Reported', createdAt.toString()),
+        if (issue['latitude'] != null && issue['longitude'] != null)
+          _locationEvidence(issue),
+        const SizedBox(height: 12),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: OutlinedButton.icon(
+            onPressed: () => widget.onEvidence(issue),
+            icon: const Icon(Icons.photo_library_outlined),
+            label: const Text('View photo evidence'),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _issueField(String label, Object? value) {
+    if (value == null || value.toString().isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 104,
+            child:
+                Text(label, style: const TextStyle(color: Color(0xFF59645D))),
+          ),
+          Expanded(child: SelectableText(value.toString())),
+        ],
+      ),
+    );
+  }
+
+  Widget _locationEvidence(Map<String, dynamic> issue) => Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: Text(
+          'Device location evidence · ${issue['latitude']}, ${issue['longitude']} · ±${issue['locationAccuracyMeters']} m · ${issue['locationCapturedAt']}',
+          style: const TextStyle(fontSize: 12, color: Color(0xFF59645D)),
+        ),
+      );
+}
+
+Widget _issueActionMenu(Map<String, dynamic> issue, List<String> actions,
+        void Function(Map<String, dynamic>, String) onAction) =>
+    PopupMenuButton<String>(
+      tooltip: 'Update issue',
+      onSelected: (action) => onAction(issue, action),
+      itemBuilder: (_) => actions
+          .map((action) => PopupMenuItem(
+              value: action, child: Text(_issueActionLabel(action))))
+          .toList(),
+      child: const Padding(
+        padding: EdgeInsets.fromLTRB(12, 8, 16, 12),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [Text('Update'), Icon(Icons.expand_more)],
+        ),
+      ),
+    );
+
 class _LiveIssuesPage extends ConsumerWidget {
   const _LiveIssuesPage(
       {required this.event,
@@ -1233,79 +1540,25 @@ class _LiveIssuesPage extends ConsumerWidget {
                         const Center(child: CircularProgressIndicator()),
                     error: (error, _) =>
                         Center(child: Text('Issue list unavailable: $error')),
-                    data: (rows) => rows.isEmpty
-                        ? const Center(
-                            child: Text('No issues reported for this event.'))
-                        : ListView(
-                            children: rows.map((row) {
-                            final item = Map<String, dynamic>.from(row as Map);
-                            final state =
-                                item['state'] as String? ?? 'REPORTED';
-                            final actions = _issueActions(state, capabilities,
-                                canAssign: assignableUserIds.isNotEmpty);
-                            return Card(
-                                child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                  ListTile(
-                                      leading: const Icon(
-                                          Icons.report_problem_outlined,
-                                          color: _coral),
-                                      title: Text(
-                                          item['title'] as String? ?? 'Issue'),
-                                      subtitle: Text(
-                                          '${item['state']} · ${item['severity']} · ${item['category']}\n${item['description'] ?? ''}'),
-                                      isThreeLine: true),
-                                  if (item['latitude'] != null && item['longitude'] != null)
-                                    Padding(
-                                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                                      child: Text(
-                                        'Device location evidence · ${item['latitude']}, ${item['longitude']} · ±${item['locationAccuracyMeters']} m · ${item['locationCapturedAt']}',
-                                        style: const TextStyle(fontSize: 12, color: Color(0xFF59645D)),
-                                      ),
-                                    ),
-                                  TextButton.icon(
-                                      onPressed: () => _showIssueEvidence(
-                                          context,
-                                          ref,
-                                          event['id'] as String,
-                                          item),
-                                      icon: const Icon(
-                                          Icons.photo_library_outlined),
-                                      label: const Text('View photo evidence')),
-                                  if (actions.isNotEmpty)
-                                    Align(
-                                        alignment: Alignment.centerRight,
-                                        child: PopupMenuButton<String>(
-                                            tooltip: 'Update issue',
-                                            onSelected: (action) =>
-                                                _performLiveIssueAction(
-                                                    context,
-                                                    ref,
-                                                    event['id'] as String,
-                                                    item,
-                                                    action,
-                                                    assignableUserIds,
-                                                    people),
-                                            itemBuilder: (_) => actions
-                                                .map((action) => PopupMenuItem(
-                                                    value: action,
-                                                    child: Text(
-                                                        _issueActionLabel(
-                                                            action))))
-                                                .toList(),
-                                            child: const Padding(
-                                                padding: EdgeInsets.fromLTRB(
-                                                    12, 0, 16, 12),
-                                                child: Row(
-                                                    mainAxisSize: MainAxisSize.min,
-                                                    children: [
-                                                      Text('Update'),
-                                                      Icon(Icons.expand_more)
-                                                    ]))))
-                                ]));
-                          }).toList()),
+                    data: (rows) => ResponsiveIssueWorkspace(
+                      issues: rows
+                          .whereType<Map>()
+                          .map((row) => Map<String, dynamic>.from(row))
+                          .toList(),
+                      capabilities: capabilities,
+                      canAssign: assignableUserIds.isNotEmpty,
+                      onAction: (issue, action) => _performLiveIssueAction(
+                        context,
+                        ref,
+                        eventId,
+                        issue,
+                        action,
+                        assignableUserIds,
+                        people,
+                      ),
+                      onEvidence: (issue) =>
+                          _showIssueEvidence(context, ref, eventId, issue),
+                    ),
                   )),
       _PendingIssueQueue(eventId: eventId),
     ]);
