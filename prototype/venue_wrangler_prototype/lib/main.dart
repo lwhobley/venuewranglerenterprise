@@ -105,7 +105,8 @@ class _PushNotificationGate extends ConsumerStatefulWidget {
   final Widget child;
 
   @override
-  ConsumerState<_PushNotificationGate> createState() => _PushNotificationGateState();
+  ConsumerState<_PushNotificationGate> createState() =>
+      _PushNotificationGateState();
 }
 
 class _PushNotificationGateState extends ConsumerState<_PushNotificationGate> {
@@ -124,9 +125,13 @@ class _PushNotificationGateState extends ConsumerState<_PushNotificationGate> {
   }
 
   Future<void> _attachPushHandlers() async {
-    if (!PushNotifications.isConfigured || !await PushNotifications.initialize() || !mounted) return;
-    _foregroundSubscription = FirebaseMessaging.onMessage.listen(_handlePushMessage);
-    _openedSubscription = FirebaseMessaging.onMessageOpenedApp.listen(_handlePushMessage);
+    if (!PushNotifications.isConfigured ||
+        !await PushNotifications.initialize() ||
+        !mounted) return;
+    _foregroundSubscription =
+        FirebaseMessaging.onMessage.listen(_handlePushMessage);
+    _openedSubscription =
+        FirebaseMessaging.onMessageOpenedApp.listen(_handlePushMessage);
     final initial = await FirebaseMessaging.instance.getInitialMessage();
     if (initial != null && mounted) _handlePushMessage(initial);
   }
@@ -491,12 +496,14 @@ class _NotificationInboxState extends ConsumerState<_NotificationInbox> {
         await PushNotifications.disable(ref.read(operationsApiProvider));
         if (mounted) setState(() => _pushEnabled = false);
       } else {
-        final enabled = await PushNotifications.enable(ref.read(operationsApiProvider));
+        final enabled =
+            await PushNotifications.enable(ref.read(operationsApiProvider));
         if (mounted) {
           setState(() => _pushEnabled = enabled);
           if (!enabled) {
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                content: Text('Push permission or device registration was not completed.')));
+                content: Text(
+                    'Push permission or device registration was not completed.')));
           }
         }
       }
@@ -531,16 +538,24 @@ class _NotificationInboxState extends ConsumerState<_NotificationInbox> {
                 child: !PushNotifications.isConfigured
                     ? const Align(
                         alignment: Alignment.centerLeft,
-                        child: Text('Push alerts are not configured for this app build.',
+                        child: Text(
+                            'Push alerts are not configured for this app build.',
                             style: TextStyle(color: Color(0xFF59645D))))
                     : Align(
                         alignment: Alignment.centerLeft,
                         child: OutlinedButton.icon(
                           onPressed: _updatingPush ? null : _togglePush,
                           icon: _updatingPush
-                              ? const SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                              : Icon(_pushEnabled == true ? Icons.notifications_off_outlined : Icons.notifications_active_outlined),
-                          label: Text(_pushEnabled == true ? 'Turn off device alerts' : 'Enable device alerts'),
+                              ? const SizedBox.square(
+                                  dimension: 16,
+                                  child:
+                                      CircularProgressIndicator(strokeWidth: 2))
+                              : Icon(_pushEnabled == true
+                                  ? Icons.notifications_off_outlined
+                                  : Icons.notifications_active_outlined),
+                          label: Text(_pushEnabled == true
+                              ? 'Turn off device alerts'
+                              : 'Enable device alerts'),
                         ))),
             Expanded(
                 child: ref.watch(userNotificationsProvider).when(
@@ -1069,6 +1084,15 @@ class _TenantSetupPage extends StatelessWidget {
                 ?.copyWith(fontWeight: FontWeight.w800)),
         const SizedBox(height: 8),
         const Text('Create the real venue structure used by event operations.'),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+            onPressed: () => showModalBottomSheet<void>(
+                context: context,
+                isScrollControlled: true,
+                builder: (_) => FractionallySizedBox(
+                    heightFactor: 0.82, child: _AuditTrail(api: api))),
+            icon: const Icon(Icons.history),
+            label: const Text('View audit history')),
         const SizedBox(height: 16),
         ...venues.map((v) => ListTile(
             leading: const Icon(Icons.stadium_outlined),
@@ -1195,6 +1219,142 @@ class _TenantSetupPage extends StatelessWidget {
                       onPressed: () => Navigator.pop(context, v),
                       child: Text(v['name'] as String? ?? 'Venue')))
                   .toList()));
+}
+
+class _AuditTrail extends StatefulWidget {
+  const _AuditTrail({required this.api});
+  final OperationsApi api;
+
+  @override
+  State<_AuditTrail> createState() => _AuditTrailState();
+}
+
+class _AuditTrailState extends State<_AuditTrail> {
+  final _items = <Map<String, dynamic>>[];
+  String? _cursor;
+  Object? _error;
+  bool _loading = false;
+  bool _loaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    if (_loading || (_loaded && _cursor == null)) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final page = await widget.api.audit(limit: 50, cursor: _cursor);
+      final rows = (page['items'] as List? ?? const [])
+          .whereType<Map>()
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList();
+      if (!mounted) return;
+      setState(() {
+        _items.addAll(rows);
+        _cursor = page['nextCursor'] as String?;
+        _loaded = true;
+      });
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => SafeArea(
+      child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+          child: Column(children: [
+            Row(children: [
+              const Expanded(
+                  child: Text('Audit history',
+                      style: TextStyle(
+                          fontSize: 20, fontWeight: FontWeight.w800))),
+              IconButton(
+                  tooltip: 'Close',
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.close)),
+            ]),
+            const Divider(),
+            Expanded(
+                child: _error != null && _items.isEmpty
+                    ? Center(
+                        child:
+                            Column(mainAxisSize: MainAxisSize.min, children: [
+                        const Text('Audit history could not be loaded.'),
+                        TextButton(onPressed: _load, child: const Text('Retry'))
+                      ]))
+                    : _items.isEmpty && _loading
+                        ? const Center(child: CircularProgressIndicator())
+                        : _items.isEmpty
+                            ? const Center(
+                                child: Text('No recorded changes yet.'))
+                            : ListView.builder(
+                                itemCount: _items.length +
+                                    (_cursor != null || _loading ? 1 : 0),
+                                itemBuilder: (context, index) {
+                                  if (index == _items.length) {
+                                    return Center(
+                                        child: _loading
+                                            ? const Padding(
+                                                padding: EdgeInsets.all(16),
+                                                child:
+                                                    CircularProgressIndicator())
+                                            : TextButton(
+                                                onPressed: _load,
+                                                child: const Text(
+                                                    'Load older changes')));
+                                  }
+                                  final row = _items[index];
+                                  final kind = row['resourceType'] as String? ??
+                                      'record';
+                                  final fields =
+                                      (row['changedFields'] as List? ??
+                                              const [])
+                                          .whereType<String>()
+                                          .join(', ');
+                                  final createdAt = DateTime.tryParse(
+                                      row['createdAt'] as String? ?? '');
+                                  final timestamp = createdAt == null
+                                      ? 'Time unavailable'
+                                      : '${createdAt.toLocal()}'
+                                          .split('.')
+                                          .first;
+                                  return ListTile(
+                                      leading: Icon(_auditIcon(kind)),
+                                      title: Text(
+                                          '${_auditAction(row['action'] as String?)} · ${kind[0].toUpperCase()}${kind.substring(1)}'),
+                                      subtitle: Text([
+                                        'By ${row['actorId'] ?? 'unknown user'} · $timestamp',
+                                        if (fields.isNotEmpty)
+                                          'Changed: $fields',
+                                        'Record: ${row['resourceId'] ?? ''}',
+                                      ].join('\n')),
+                                      isThreeLine: true);
+                                })),
+            if (_error != null && _items.isNotEmpty)
+              TextButton(onPressed: _load, child: const Text('Retry page')),
+          ])));
+
+  IconData _auditIcon(String kind) => switch (kind) {
+        'issue' => Icons.report_problem_outlined,
+        'task' => Icons.checklist_outlined,
+        'person' => Icons.person_outline,
+        _ => Icons.history,
+      };
+
+  String _auditAction(String? action) => (action ?? 'changed')
+      .split(RegExp(r'[_\s]+'))
+      .map((part) =>
+          part.isEmpty ? part : '${part[0].toUpperCase()}${part.substring(1)}')
+      .join(' ');
 }
 
 Future<void> _newLiveIssue(BuildContext context, WidgetRef ref,

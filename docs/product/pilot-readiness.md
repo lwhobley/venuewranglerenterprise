@@ -5,6 +5,7 @@ This checklist separates code in the repository from controls that require a cus
 ## Repository work completed in this slice
 
 - Tenant admin APIs provision organizations from the verified issuer-to-tenant mapping and create venues, locations, events, and people. Requests cannot select an organization ID.
+- Tenant administrators can inspect a paginated tenant-scoped audit feed from Setup for issue lifecycle, operational task, and people provisioning changes. The feed exposes actor, action, resource reference, timestamp, and field names; it never returns before/after record payloads.
 - `tenant:admin` gates tenant setup on the API. `operations:read` and `operations:write` gate event task access alongside signed venue/event/location scopes.
 - Plan, Staffing, Service, and Stock task records have tenant/event/location consistency constraints, row-level security, and append-only audit events.
 - The signed-in Flutter experience now loads its organization and event data from `/api/v1/me`, uses the real issue list and task endpoints, replaces the client-side role picker with IdP capabilities, and exposes the admin setup flow.

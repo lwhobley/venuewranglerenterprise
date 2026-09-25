@@ -175,6 +175,16 @@ class OperationsApi {
             'displayName': displayName
           },
           options: Options(headers: {'Authorization': 'Bearer $token'})));
+  Future<Map<String, dynamic>> audit({int limit = 50, String? cursor}) async =>
+      (await _request((token) => _dio.get<Map<String, dynamic>>(
+                '/api/v1/admin/audit',
+                queryParameters: {
+                  'limit': limit,
+                  if (cursor != null) 'cursor': cursor,
+                },
+                options: Options(headers: {'Authorization': 'Bearer $token'}),
+              )))
+          .data!;
 }
 
 final operationsApiProvider = Provider((ref) => OperationsApi(

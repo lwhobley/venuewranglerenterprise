@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
+import { AuditService } from '../dist/audit.service.js';
 
 const prisma = new PrismaClient();
 const tenantA = '00000000-0000-4000-8000-000000000001';
@@ -89,6 +90,34 @@ try {
       await tx.issueAttachment.create({ data: { organizationId: tenantB, eventId: eventB, issueId: issueB.id, clientId: randomUUID(), uploadedBy: 'tenant-isolation-test', fileName: 'fixture.jpg', contentType: 'image/jpeg', sizeBytes: 1, sha256: 'b'.repeat(64), storageObjectKey: `tenant-b/${randomUUID()}` } });
       const pushTokenB = `tenant-b-push-token-${randomUUID()}-${randomUUID()}`;
       await tx.pushDevice.create({ data: { organizationId: tenantB, subject: 'tenant-isolation-test', installationId: randomUUID(), registrationToken: pushTokenB, tokenSha256: createHash('sha256').update(pushTokenB).digest('hex'), platform: 'android' } });
+
+      await setTenant(tx, tenantA);
+      const auditService = new AuditService({
+        withTenant: async (identity, action) => {
+          await setTenant(tx, identity.tenantId, identity.subject);
+          return action(tx);
+        },
+      });
+      const auditA = await auditService.list({
+        subject: 'tenant-isolation-test',
+        tenantId: tenantA,
+        capabilities: ['tenant:admin'],
+        venueIds: [], eventIds: [], locationIds: [], assignableUserIds: [],
+      }, '100');
+      assert.ok(auditA.items.some((row) => row.resourceId === issueA.id && row.resourceType === 'issue'));
+      assert.ok(auditA.items.some((row) => row.resourceId === taskA.id && row.resourceType === 'task'));
+      assert.ok(auditA.items.some((row) => row.resourceType === 'person'));
+      assert.equal(auditA.items.some((row) => row.resourceId === issueB.id || row.resourceId === taskB.id), false, 'tenant A audit feed must exclude tenant B records');
+
+      const auditB = await auditService.list({
+        subject: 'tenant-isolation-test',
+        tenantId: tenantB,
+        capabilities: ['tenant:admin'],
+        venueIds: [], eventIds: [], locationIds: [], assignableUserIds: [],
+      }, '100');
+      assert.ok(auditB.items.some((row) => row.resourceId === issueB.id && row.resourceType === 'issue'));
+      assert.ok(auditB.items.some((row) => row.resourceId === taskB.id && row.resourceType === 'task'));
+      assert.equal(auditB.items.some((row) => row.resourceId === issueA.id || row.resourceId === taskA.id), false, 'tenant B audit feed must exclude tenant A records');
 
       await setTenant(tx, tenantA);
       await assertTenantCannotRead(tx, tenantA, tenantB, issueB.id, taskB.id);
