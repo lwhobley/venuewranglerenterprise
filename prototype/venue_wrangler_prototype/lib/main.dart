@@ -1180,6 +1180,10 @@ class _LiveStaffingPage extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final eventId = event['id'] as String;
+    final queuedAttendance = ref.watch(staffAttendanceOutboxProvider);
+    ref.listen(staffAttendanceOutboxProvider, (previous, next) {
+      if (previous?.length != next.length) ref.invalidate(eventShiftsProvider(eventId));
+    });
     return ref.watch(eventShiftsProvider(eventId)).when(
       loading: () => const Center(child: CircularProgressIndicator()),
       error: (error, _) => Center(
@@ -1187,6 +1191,13 @@ class _LiveStaffingPage extends ConsumerWidget {
               textAlign: TextAlign.center)),
       data: (rows) => Column(children: [
             const _MyUnavailabilityPanel(),
+            if (queuedAttendance.any((item) => item['eventId'] == eventId))
+              Card(child: ListTile(
+                leading: const Icon(Icons.sync_problem_outlined, color: _brass),
+                title: const Text('Attendance waiting to sync'),
+                subtitle: const Text('Device times stay unverified until a supervisor reviews them.'),
+                trailing: TextButton(onPressed: () => _syncStaffAttendance(context, ref, eventId), child: const Text('Sync now')),
+              )),
             if (canWrite) _TeamAvailabilityPanel(
               eventId: eventId,
               initialDate: DateTime.tryParse(event['startsAt'] as String? ?? '')?.toLocal() ?? DateTime.now(),
@@ -1202,6 +1213,10 @@ class _LiveStaffingPage extends ConsumerWidget {
                 final state = shift['state'] as String? ?? 'DRAFT';
                 final response = shift['response'] as String? ?? 'PENDING';
                 final attendance = shift['attendance'] as String? ?? 'NOT_STARTED';
+                final queuedForShift = queuedAttendance.where((item) => item['eventId'] == eventId && item['shiftId'] == shift['id']).toList();
+                final pendingClaims = (shift['attendanceClaims'] as List? ?? const []).whereType<Map>().map((item) => Map<String, dynamic>.from(item)).toList();
+                final hasPendingCheckIn = queuedForShift.any((item) => item['action'] == 'CHECK_IN') || pendingClaims.any((item) => item['action'] == 'CHECK_IN');
+                final hasPendingCheckOut = queuedForShift.any((item) => item['action'] == 'CHECK_OUT') || pendingClaims.any((item) => item['action'] == 'CHECK_OUT');
                 final breaks = (shift['breaks'] as List? ?? const []).whereType<Map>().map((row) => Map<String, dynamic>.from(row)).toList();
                 Map<String, dynamic>? activeBreak;
                 for (final record in breaks) {
@@ -1234,6 +1249,25 @@ class _LiveStaffingPage extends ConsumerWidget {
                       ),
                       if (shift['instructions'] is String && (shift['instructions'] as String).isNotEmpty)
                         Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 8), child: Text(shift['instructions'] as String)),
+                      for (final queued in queuedForShift)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                          child: Text('Pending sync · ${queued['action'] == 'CHECK_IN' ? 'check-in' : 'check-out'} at ${_clockLabel(DateTime.tryParse(queued['recordedAt'] as String? ?? '')?.toLocal())}. Device time is unverified until supervisor review.', style: const TextStyle(color: _brass, fontWeight: FontWeight.w700)),
+                        ),
+                      for (final claim in pendingClaims) ...[
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                          child: Text('Offline ${claim['action'] == 'CHECK_IN' ? 'check-in' : 'check-out'} · ${_clockLabel(DateTime.tryParse(claim['recordedAt'] as String? ?? '')?.toLocal())} · UNVERIFIED', style: const TextStyle(color: _brass, fontWeight: FontWeight.w800)),
+                        ),
+                        if (canWrite)
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                            child: Wrap(spacing: 8, children: [
+                              FilledButton.tonal(onPressed: () => _reviewAttendanceClaim(context, ref, eventId, claim['id'] as String, 'ACCEPTED'), child: const Text('Accept time')),
+                              TextButton(onPressed: () => _reviewAttendanceClaim(context, ref, eventId, claim['id'] as String, 'REJECTED'), child: const Text('Reject')),
+                            ]),
+                          ),
+                      ],
                       Padding(
                         padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
                         child: Wrap(spacing: 8, runSpacing: 4, children: [
@@ -1250,14 +1284,21 @@ class _LiveStaffingPage extends ConsumerWidget {
                           if (assignedToMe && state == 'PUBLISHED' && response == 'ACKNOWLEDGED' && !currentResponse)
                             FilledButton(onPressed: () => _respondToShift(context, ref, eventId, shift['id'] as String, 'ACKNOWLEDGED'), child: const Text('Review changes')),
                           if (assignedToMe && state == 'PUBLISHED' && response == 'ACKNOWLEDGED' && currentResponse && attendance == 'NOT_STARTED')
-                            FilledButton(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'check-in'), child: const Text('Check in')),
+                            if (hasPendingCheckIn && hasPendingCheckOut)
+                              const Text('Check-out time is waiting for sync and supervisor review.')
+                            else if (hasPendingCheckIn)
+                              OutlinedButton(onPressed: () => _recordShiftAttendance(context, ref, eventId, shift['id'] as String, 'CHECK_OUT', queueForReview: true), child: const Text('Queue check-out time'))
+                            else
+                              FilledButton(onPressed: () => _recordShiftAttendance(context, ref, eventId, shift['id'] as String, 'CHECK_IN'), child: const Text('Check in')),
                           if (assignedToMe && attendance == 'CHECKED_IN')
-                            if (activeBreak != null)
+                            if (hasPendingCheckOut)
+                              const Text('Check-out time is awaiting supervisor review.')
+                            else if (activeBreak != null)
                               FilledButton.tonal(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'break/end'), child: const Text('End break'))
                             else ...[
                               OutlinedButton(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'break/start', data: {'kind': 'REST'}), child: const Text('Start rest break')),
                               OutlinedButton(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'break/start', data: {'kind': 'MEAL'}), child: const Text('Start meal break')),
-                              FilledButton(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'check-out'), child: const Text('Check out')),
+                              FilledButton(onPressed: () => _recordShiftAttendance(context, ref, eventId, shift['id'] as String, 'CHECK_OUT'), child: const Text('Check out')),
                             ],
                         ]),
                       ),
@@ -1439,6 +1480,57 @@ Future<void> _runShiftCommand(BuildContext context, WidgetRef ref, String eventI
     ref.invalidate(eventShiftsProvider(eventId));
   } catch (error) {
     if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not $action shift: $error')));
+  }
+}
+
+Future<void> _recordShiftAttendance(BuildContext context, WidgetRef ref, String eventId, String shiftId, String action, {bool queueForReview = false}) async {
+  try {
+    final queued = await ref.read(staffAttendanceOutboxProvider.notifier).record(eventId, shiftId, action, queueForReview: queueForReview);
+    if (!queued) ref.invalidate(eventShiftsProvider(eventId));
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(queued
+        ? 'Saved on this device. It will sync as unverified attendance for supervisor review.'
+        : '${action == 'CHECK_IN' ? 'Checked in' : 'Checked out'} with server time.')));
+    }
+  } catch (error) {
+    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not record attendance: $error')));
+  }
+}
+
+Future<void> _syncStaffAttendance(BuildContext context, WidgetRef ref, String eventId) async {
+  await ref.read(staffAttendanceOutboxProvider.notifier).synchronize();
+  ref.invalidate(eventShiftsProvider(eventId));
+  if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Attendance sync attempted. Any device-recorded times still need supervisor review.')));
+}
+
+Future<void> _reviewAttendanceClaim(BuildContext context, WidgetRef ref, String eventId, String claimId, String decision) async {
+  final reasonController = TextEditingController();
+  final result = await showDialog<Map<String, String>>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: Text(decision == 'ACCEPTED' ? 'Accept offline time?' : 'Reject offline time?'),
+      content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('This timestamp came from the worker device. Record why you are reviewing it this way.'),
+        const SizedBox(height: 12),
+        TextField(controller: reasonController, autofocus: true, maxLength: 500, minLines: 2, maxLines: 4, decoration: const InputDecoration(labelText: 'Review reason', border: OutlineInputBorder())),
+      ]),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+        FilledButton(onPressed: () {
+          final reason = reasonController.text.trim();
+          if (reason.length < 3) return;
+          Navigator.pop(dialogContext, {'decision': decision, 'reason': reason});
+        }, child: Text(decision == 'ACCEPTED' ? 'Accept time' : 'Reject')),
+      ],
+    ),
+  );
+  reasonController.dispose();
+  if (result == null) return;
+  try {
+    await ref.read(operationsApiProvider).decideOfflineAttendance(eventId, claimId, result['decision']!, result['reason']!);
+    ref.invalidate(eventShiftsProvider(eventId));
+  } catch (error) {
+    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not review attendance: $error')));
   }
 }
 

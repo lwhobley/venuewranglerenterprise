@@ -33,6 +33,13 @@ function harness(current?: Record<string, unknown>, restMinutes: number | null =
       update: vi.fn().mockImplementation(({ data }) => ({ ...current, ...data })),
     },
     staffShiftAuditEvent: { create: vi.fn().mockResolvedValue({}) },
+    staffBreak: { findFirst: vi.fn().mockResolvedValue(null) },
+    staffAttendanceClaim: {
+      create: vi.fn().mockImplementation(({ data }) => ({ id: 'claim-1', status: 'PENDING_REVIEW', ...data })),
+      findFirst: vi.fn().mockResolvedValue(null),
+      findMany: vi.fn().mockResolvedValue([]),
+      update: vi.fn().mockImplementation(({ data }) => ({ id: 'claim-1', ...data })),
+    },
     userNotification: { create: vi.fn().mockImplementation(({ data }) => ({ id: 'notification-1', ...data })) },
   };
   const prisma = {
@@ -263,5 +270,45 @@ describe('event staffing workflow', () => {
     await service.attendance(worker, 'event-1', 'shift-1', 'check-in', 'staff-shift-checkin-key-2');
     expect(tx.staffShift.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ attendance: 'CHECKED_IN', checkedInAt: expect.any(Date) }) }));
     expect(tx.staffShiftAuditEvent.create).toHaveBeenCalledOnce();
+  });
+
+  it('stores offline attendance as an unverified claim without changing the shift', async () => {
+    const current = {
+      id: 'shift-1', eventId: 'event-1', organizationId: 'tenant-1', venueId: 'venue-1', locationId: 'location-1',
+      assignedSubject: workerSubject, state: 'PUBLISHED', response: 'ACKNOWLEDGED', responseRevision: 3, revision: 3,
+      attendance: 'NOT_STARTED', startsAt: new Date(Date.now() - 60_000), endsAt: new Date(Date.now() + 3_600_000),
+    };
+    const { service, tx } = harness(current);
+    const recordedAt = new Date().toISOString();
+    const claim = await service.submitOfflineAttendance(worker, 'event-1', 'shift-1', { action: 'CHECK_IN', recordedAt }, 'staff-offline-checkin-key-01');
+    expect(claim).toMatchObject({ id: 'claim-1', action: 'CHECK_IN', status: 'PENDING_REVIEW', workerSubject });
+    expect(tx.staffShift.update).not.toHaveBeenCalled();
+    expect(tx.staffAttendanceClaim.create).toHaveBeenCalledWith({ data: expect.objectContaining({ status: 'PENDING_REVIEW', action: 'CHECK_IN', workerSubject, recordedAt: new Date(recordedAt) }) });
+    expect(tx.staffShiftAuditEvent.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ action: 'attendance.offline_claimed' }) }));
+  });
+
+  it('accepts an offline check-in only after scoped review and uses the claimed time', async () => {
+    const recordedAt = new Date(Date.now() - 5 * 60_000);
+    const current = {
+      id: 'shift-1', eventId: 'event-1', organizationId: 'tenant-1', venueId: 'venue-1', locationId: 'location-1',
+      assignedSubject: workerSubject, state: 'PUBLISHED', response: 'ACKNOWLEDGED', responseRevision: 3, revision: 3,
+      attendance: 'NOT_STARTED', requiredQualificationCodes: [],
+    };
+    const claim = { id: 'claim-1', eventId: 'event-1', organizationId: 'tenant-1', shiftId: 'shift-1', workerSubject, action: 'CHECK_IN', recordedAt, status: 'PENDING_REVIEW' };
+    const { service, tx } = harness(current);
+    tx.staffAttendanceClaim.findFirst.mockResolvedValue(claim);
+    await service.reviewOfflineAttendance(manager, 'event-1', 'claim-1', { decision: 'ACCEPTED', reason: 'Confirmed at the staff entrance.' }, 'staff-offline-review-key-01');
+    expect(tx.staffShift.update).toHaveBeenCalledWith({ where: { id: 'shift-1' }, data: { attendance: 'CHECKED_IN', checkedInAt: recordedAt, updatedBy: manager.subject } });
+    expect(tx.staffAttendanceClaim.update).toHaveBeenCalledWith({ where: { id: 'claim-1' }, data: expect.objectContaining({ status: 'ACCEPTED', reviewedBy: manager.subject, reviewReason: 'Confirmed at the staff entrance.' }) });
+    expect(tx.staffShiftAuditEvent.create).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects offline claims with no reviewer reason without changing attendance', async () => {
+    const claim = { id: 'claim-1', eventId: 'event-1', organizationId: 'tenant-1', shiftId: 'shift-1', workerSubject, action: 'CHECK_IN', recordedAt: new Date(), status: 'PENDING_REVIEW' };
+    const { service, tx } = harness({ id: 'shift-1', eventId: 'event-1', organizationId: 'tenant-1', venueId: 'venue-1', locationId: 'location-1' });
+    tx.staffAttendanceClaim.findFirst.mockResolvedValue(claim);
+    await expect(service.reviewOfflineAttendance(manager, 'event-1', 'claim-1', { decision: 'REJECTED', reason: '  ' }, 'staff-offline-review-key-02')).rejects.toThrow('at least three characters');
+    expect(tx.staffShift.update).not.toHaveBeenCalled();
+    expect(tx.staffAttendanceClaim.update).not.toHaveBeenCalled();
   });
 });

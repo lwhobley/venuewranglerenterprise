@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, Injectable,
 import { Prisma, StaffShiftResponse } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { assertScope, type Identity } from './auth';
-import { CreateStaffShiftDto, RespondToShiftDto, UpdateStaffShiftDto } from './staffing.dto';
+import { CreateStaffShiftDto, OfflineAttendanceClaimDto, RespondToShiftDto, ReviewAttendanceClaimDto, UpdateStaffShiftDto } from './staffing.dto';
 import { PrismaService } from './prisma.service';
 import { PushNotificationsService } from './push-notifications.service';
 
@@ -27,7 +27,10 @@ export class StaffingService {
         ],
       },
       orderBy: [{ startsAt: 'asc' }, { createdAt: 'asc' }],
-      include: { breaks: { orderBy: { startedAt: 'asc' } } },
+      include: {
+        breaks: { orderBy: { startedAt: 'asc' } },
+        attendanceClaims: { where: { status: 'PENDING_REVIEW' }, orderBy: { receivedAt: 'asc' } },
+      },
     }));
   }
 
@@ -230,6 +233,87 @@ export class StaffingService {
         : { attendance: 'CHECKED_OUT', checkedOutAt: now, updatedBy: identity.subject } });
       await this.audit(tx, identity, shiftId, action, current, updated);
       return updated;
+    });
+  }
+
+  async submitOfflineAttendance(identity: Identity, eventId: string, shiftId: string, dto: OfflineAttendanceClaimDto, key: string) {
+    assertScope(identity, 'operations:read', eventId);
+    const recordedAt = new Date(dto.recordedAt);
+    const now = new Date();
+    if (!Number.isFinite(recordedAt.getTime()) || recordedAt > new Date(now.getTime() + 5 * 60_000) || recordedAt < new Date(now.getTime() - 48 * 60 * 60_000)) {
+      throw new BadRequestException('Offline attendance time must be within the prior 48 hours and cannot be more than five minutes in the future.');
+    }
+    return this.command(identity, key, 'staff-attendance.offline-claim', { eventId, shiftId, action: dto.action, recordedAt: recordedAt.toISOString() }, async (tx) => {
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`staff-shift:${identity.tenantId}:${shiftId}`}, 0))`;
+      const shift = await tx.staffShift.findFirst({ where: { id: shiftId, eventId, organizationId: identity.tenantId } });
+      if (!shift) throw new NotFoundException('Shift not found.');
+      assertScope(identity, 'operations:read', eventId, shift.venueId, shift.locationId ?? undefined);
+      if (shift.assignedSubject !== identity.subject) throw new ForbiddenException('Only the assigned worker may submit an offline attendance claim.');
+      if (shift.state !== 'PUBLISHED' || shift.response !== 'ACKNOWLEDGED' || shift.responseRevision !== shift.revision) throw new ConflictException('Acknowledge the current published shift before submitting an attendance claim.');
+      if (dto.action === 'CHECK_IN' && shift.attendance !== 'NOT_STARTED') throw new ConflictException('This shift already has a recorded check-in.');
+      if (dto.action === 'CHECK_OUT' && shift.attendance !== 'CHECKED_IN') {
+        const pendingCheckIn = shift.attendance === 'NOT_STARTED' && await tx.staffAttendanceClaim.findFirst({ where: { organizationId: identity.tenantId, shiftId, workerSubject: identity.subject, action: 'CHECK_IN', status: 'PENDING_REVIEW' }, select: { id: true } });
+        if (!pendingCheckIn) throw new ConflictException('A supervisor must accept the check-in before submitting a check-out claim.');
+      }
+      if (await tx.staffAttendanceClaim.findFirst({ where: { organizationId: identity.tenantId, shiftId, workerSubject: identity.subject, action: dto.action, status: 'PENDING_REVIEW' }, select: { id: true } })) {
+        throw new ConflictException(`A ${dto.action.toLowerCase().replace('_', '-')} claim is already awaiting supervisor review.`);
+      }
+      const claim = await tx.staffAttendanceClaim.create({ data: {
+        organizationId: identity.tenantId, eventId, shiftId, workerSubject: identity.subject,
+        action: dto.action, recordedAt, receivedAt: now, status: 'PENDING_REVIEW',
+      } });
+      await this.audit(tx, identity, shiftId, 'attendance.offline_claimed', undefined, claim, 'Unverified device time; supervisor review required.');
+      return claim;
+    });
+  }
+
+  async pendingOfflineAttendance(identity: Identity, eventId: string) {
+    assertScope(identity, 'operations:write', eventId);
+    return this.prisma.withTenant(identity, async (tx) => {
+      const event = await tx.event.findFirst({ where: { id: eventId, organizationId: identity.tenantId }, select: { id: true, venueId: true } });
+      if (!event) throw new NotFoundException('Event not found.');
+      assertScope(identity, 'operations:write', eventId, event.venueId);
+      return tx.staffAttendanceClaim.findMany({
+        where: { organizationId: identity.tenantId, eventId, status: 'PENDING_REVIEW', ...(!identity.capabilities.includes('tenant:admin') ? { shift: { venueId: { in: identity.venueIds }, OR: [{ locationId: null }, { locationId: { in: identity.locationIds } }] } } : {}) },
+        include: { shift: { select: { id: true, role: true, locationId: true, startsAt: true, endsAt: true } } },
+        orderBy: [{ receivedAt: 'asc' }, { id: 'asc' }],
+      });
+    });
+  }
+
+  async reviewOfflineAttendance(identity: Identity, eventId: string, claimId: string, dto: ReviewAttendanceClaimDto, key: string) {
+    assertScope(identity, 'operations:write', eventId);
+    const reason = dto.reason.trim();
+    if (reason.length < 3) throw new BadRequestException('A review reason of at least three characters is required.');
+    return this.command(identity, key, 'staff-attendance.offline-review', { eventId, claimId, decision: dto.decision, reason }, async (tx) => {
+      const claim = await tx.staffAttendanceClaim.findFirst({ where: { id: claimId, eventId, organizationId: identity.tenantId } });
+      if (!claim) throw new NotFoundException('Attendance claim not found.');
+      const shift = await tx.staffShift.findFirst({ where: { id: claim.shiftId, eventId, organizationId: identity.tenantId } });
+      if (!shift) throw new NotFoundException('Shift not found.');
+      assertScope(identity, 'operations:write', eventId, shift.venueId, shift.locationId ?? undefined);
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`staff-shift:${identity.tenantId}:${shift.id}`}, 0))`;
+      const current = await tx.staffAttendanceClaim.findFirst({ where: { id: claimId, organizationId: identity.tenantId } });
+      if (!current || current.status !== 'PENDING_REVIEW') throw new ConflictException('This attendance claim has already been reviewed.');
+      const reviewedAt = new Date();
+      if (dto.decision === 'ACCEPTED') {
+        if (current.workerSubject !== shift.assignedSubject || shift.state !== 'PUBLISHED' || shift.response !== 'ACKNOWLEDGED' || shift.responseRevision !== shift.revision) throw new ConflictException('The shift assignment or acknowledgement changed after this claim was submitted.');
+        if (current.action === 'CHECK_IN') {
+          if (shift.attendance !== 'NOT_STARTED') throw new ConflictException('The shift already has a check-in. Reject this duplicate claim.');
+          await this.assertQualified(tx, identity.tenantId, current.workerSubject, shift.requiredQualificationCodes, shift.endsAt);
+        } else {
+          if (shift.attendance !== 'CHECKED_IN' || !shift.checkedInAt || current.recordedAt < shift.checkedInAt) throw new ConflictException('The shift needs an accepted check-in before this check-out claim.');
+          if (await tx.staffBreak.findFirst({ where: { organizationId: identity.tenantId, shiftId: shift.id, endedAt: null }, select: { id: true } })) throw new ConflictException('End the active break before accepting check-out.');
+        }
+        const updatedShift = await tx.staffShift.update({ where: { id: shift.id }, data: current.action === 'CHECK_IN'
+          ? { attendance: 'CHECKED_IN', checkedInAt: current.recordedAt, updatedBy: identity.subject }
+          : { attendance: 'CHECKED_OUT', checkedOutAt: current.recordedAt, updatedBy: identity.subject } });
+        await this.audit(tx, identity, shift.id, `attendance.offline_${current.action.toLowerCase()}_accepted`, shift, updatedShift, reason);
+      }
+      const updatedClaim = await tx.staffAttendanceClaim.update({ where: { id: claimId }, data: {
+        status: dto.decision, reviewedBy: identity.subject, reviewedAt, reviewReason: reason,
+      } });
+      await this.audit(tx, identity, shift.id, `attendance.offline_claim_${dto.decision.toLowerCase()}`, current, updatedClaim, reason);
+      return updatedClaim;
     });
   }
 

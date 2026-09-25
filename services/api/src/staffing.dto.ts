@@ -30,3 +30,13 @@ export class RespondToShiftDto {
 export class StartStaffBreakDto {
   @ApiProperty({ enum: ['REST', 'MEAL'] }) @IsIn(['REST', 'MEAL']) kind!: 'REST' | 'MEAL';
 }
+
+export class OfflineAttendanceClaimDto {
+  @ApiProperty({ enum: ['CHECK_IN', 'CHECK_OUT'] }) @IsIn(['CHECK_IN', 'CHECK_OUT']) action!: 'CHECK_IN' | 'CHECK_OUT';
+  @ApiProperty({ description: 'Device-recorded time. Unverified until a scoped supervisor accepts the claim.' }) @IsDateString() recordedAt!: string;
+}
+
+export class ReviewAttendanceClaimDto {
+  @ApiProperty({ enum: ['ACCEPTED', 'REJECTED'] }) @IsIn(['ACCEPTED', 'REJECTED']) decision!: 'ACCEPTED' | 'REJECTED';
+  @ApiProperty({ minLength: 3, maxLength: 500 }) @IsString() @Length(3, 500) reason!: string;
+}

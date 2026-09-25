@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -370,6 +371,57 @@ class OperationsApi {
               'Idempotency-Key': key,
             })));
   }
+
+  Future<List<Map<String, dynamic>>> queuedOfflineAttendance() async {
+    final scope = await _auth.offlineCacheScope();
+    if (scope == null) return const [];
+    final prefix = 'venue.staff.attendance.$scope.';
+    final rows = await _storage.readAll();
+    return rows.entries.where((row) => row.key.startsWith(prefix)).map((row) => jsonDecode(row.value) as Map<String, dynamic>).toList()
+      ..sort((a, b) => DateTime.parse(a['recordedAt'] as String).compareTo(DateTime.parse(b['recordedAt'] as String)));
+  }
+
+  Future<void> enqueueOfflineAttendance(String eventId, String shiftId, String action) async {
+    final scope = await _auth.offlineCacheScope();
+    if (scope == null) throw StateError('Sign in again before recording attendance offline.');
+    if (action != 'CHECK_IN' && action != 'CHECK_OUT') throw ArgumentError.value(action, 'action');
+    final id = const Uuid().v4();
+    final item = <String, Object?>{
+      'id': id, 'eventId': eventId, 'shiftId': shiftId, 'action': action,
+      'recordedAt': DateTime.now().toUtc().toIso8601String(), 'sessionScope': scope,
+    };
+    await _storage.write(key: 'venue.staff.attendance.$scope.$id', value: jsonEncode(item));
+  }
+
+  Future<void> synchronizeOfflineAttendance() async {
+    final scope = await _auth.offlineCacheScope();
+    final token = await _auth.validAccessToken();
+    if (scope == null || token == null || token.isEmpty) return;
+    final prefix = 'venue.staff.attendance.$scope.';
+    final rows = await _storage.readAll();
+    final pending = rows.entries.where((entry) => entry.key.startsWith(prefix)).map((entry) => MapEntry(entry.key, jsonDecode(entry.value) as Map<String, dynamic>)).toList()
+      ..sort((a, b) => DateTime.parse(a.value['recordedAt'] as String).compareTo(DateTime.parse(b.value['recordedAt'] as String)));
+    for (final row in pending) {
+      final item = row.value;
+      if (item['sessionScope'] != scope) continue;
+      try {
+        await _dio.post<void>('/api/v1/events/${item['eventId']}/shifts/${item['shiftId']}/attendance/offline',
+          data: {'action': item['action'], 'recordedAt': item['recordedAt']},
+          options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': item['id']}));
+        await _storage.delete(key: row.key);
+      } catch (error) {
+        if (error is DioException && error.response != null && error.response!.statusCode != 409) rethrow;
+      }
+    }
+  }
+
+  Future<List<dynamic>> reviewOfflineAttendance(String eventId) async =>
+      (await _request((token) => _dio.get<List<dynamic>>('/api/v1/events/$eventId/attendance/offline', options: Options(headers: {'Authorization': 'Bearer $token'})))).data ?? const [];
+
+  Future<void> decideOfflineAttendance(String eventId, String claimId, String decision, String reason) async =>
+      _command<void>({'eventId': eventId, 'claimId': claimId, 'decision': decision, 'reason': reason.trim()},
+        (token, key) => _dio.post<void>('/api/v1/events/$eventId/attendance/offline/$claimId/review',
+          data: {'decision': decision, 'reason': reason.trim()}, options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
   Future<void> respondToShift(
       String eventId, String shiftId, String response, {String? reason}) async {
     await _command<void>(
@@ -479,6 +531,12 @@ class OperationsApi {
 
 final operationsApiProvider = Provider((ref) => OperationsApi(
     ref.watch(authRepositoryProvider), const FlutterSecureStorage()));
+final staffAttendanceOutboxProvider = StateNotifierProvider<StaffAttendanceOutboxController, List<Map<String, dynamic>>>((ref) {
+  final controller = StaffAttendanceOutboxController(ref.watch(operationsApiProvider));
+  unawaited(controller.restore());
+  controller.watchConnectivity();
+  return controller;
+});
 final operationsBootstrapProvider = FutureProvider.autoDispose(
     (ref) => ref.watch(operationsApiProvider).bootstrap());
 final eventIssuesProvider = FutureProvider.autoDispose
@@ -502,3 +560,57 @@ final myUnavailabilityProvider = FutureProvider.autoDispose<List<dynamic>>(
     (ref) => ref.watch(operationsApiProvider).myUnavailability());
 final userNotificationsProvider = FutureProvider.autoDispose<List<dynamic>>(
     (ref) => ref.watch(operationsApiProvider).notifications());
+
+class StaffAttendanceOutboxController extends StateNotifier<List<Map<String, dynamic>>> {
+  StaffAttendanceOutboxController(this._api) : super(const []);
+  final OperationsApi _api;
+  final Connectivity _connectivity = Connectivity();
+  StreamSubscription<List<ConnectivityResult>>? _subscription;
+  Future<void>? _syncing;
+
+  Future<void> restore() async => state = await _api.queuedOfflineAttendance();
+
+  void watchConnectivity() {
+    _subscription = _connectivity.onConnectivityChanged.listen((results) {
+      if (results.any((result) => result != ConnectivityResult.none)) unawaited(synchronize());
+    });
+    unawaited(_connectivity.checkConnectivity().then((results) {
+      if (results.any((result) => result != ConnectivityResult.none)) unawaited(synchronize());
+    }, onError: (Object _) {}));
+  }
+
+  Future<bool> record(String eventId, String shiftId, String action, {bool queueForReview = false}) async {
+    final online = (await _connectivity.checkConnectivity()).any((result) => result != ConnectivityResult.none);
+    if (online && !queueForReview) {
+      await _api.shiftCommand(eventId, shiftId, action == 'CHECK_IN' ? 'check-in' : 'check-out');
+      return false;
+    }
+    await _api.enqueueOfflineAttendance(eventId, shiftId, action);
+    await restore();
+    if (online) unawaited(synchronize());
+    return true;
+  }
+
+  Future<void> synchronize() async {
+    final current = _syncing;
+    if (current != null) return current;
+    final operation = _synchronize();
+    _syncing = operation;
+    try { await operation; } finally { _syncing = null; }
+  }
+
+  Future<void> _synchronize() async {
+    try {
+      await _api.synchronizeOfflineAttendance();
+    } catch (_) {
+      // Preserve pending device evidence when the API is unreachable or rejects a stale claim.
+    }
+    await restore();
+  }
+
+  @override
+  void dispose() {
+    unawaited(_subscription?.cancel());
+    super.dispose();
+  }
+}

@@ -17,15 +17,15 @@ export class HealthController {
                count(*) AS table_count,
                (SELECT count(DISTINCT p.tablename) FROM pg_policies p WHERE p.schemaname = 'public' AND p.tablename IN (
                  'organizations','venues','events','locations','issues','issue_audit_events','command_receipts','issue_events',
-                 'people','person_audit_events','operational_tasks','operational_task_audit_events','user_notifications','issue_attachments','external_integration_events','push_devices','tenant_setup_audit_events','staff_shifts','staff_shift_audit_events','staff_unavailability','staff_unavailability_audit','person_qualifications','staff_breaks'
+                 'people','person_audit_events','operational_tasks','operational_task_audit_events','user_notifications','issue_attachments','external_integration_events','push_devices','tenant_setup_audit_events','staff_shifts','staff_shift_audit_events','staff_unavailability','staff_unavailability_audit','person_qualifications','staff_breaks','staff_attendance_claims'
                )) AS policy_table_count
         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = 'public' AND c.relname IN (
           'organizations','venues','events','locations','issues','issue_audit_events','command_receipts','issue_events',
-          'people','person_audit_events','operational_tasks','operational_task_audit_events','user_notifications','issue_attachments','external_integration_events','push_devices','tenant_setup_audit_events','staff_shifts','staff_shift_audit_events','staff_unavailability','staff_unavailability_audit','person_qualifications','staff_breaks'
+          'people','person_audit_events','operational_tasks','operational_task_audit_events','user_notifications','issue_attachments','external_integration_events','push_devices','tenant_setup_audit_events','staff_shifts','staff_shift_audit_events','staff_unavailability','staff_unavailability_audit','person_qualifications','staff_breaks','staff_attendance_claims'
         )
       `;
-      const rlsEnforced = role !== undefined && !role.rolsuper && !role.rolbypassrls && tables?.protected === true && tables.table_count === 23n && tables.policy_table_count === 23n;
+      const rlsEnforced = role !== undefined && !role.rolsuper && !role.rolbypassrls && tables?.protected === true && tables.table_count === 24n && tables.policy_table_count === 24n;
       const body = { ok: rlsEnforced, rlsEnforced, databaseConnected: true, runtimeRole: role ? { superuser: role.rolsuper, bypassRls: role.rolbypassrls } : null };
       return response.status(rlsEnforced ? 200 : 503).json(body);
     } catch {

@@ -50,6 +50,10 @@ try {
   assert.equal(role.rolbypassrls, false);
 
   let issueAId;
+  let breakAId;
+  let attendanceClaimAId;
+  let breakBId;
+  let attendanceClaimBId;
   try {
     await prisma.$transaction(async (tx) => {
       await setTenant(tx, tenantA);
@@ -75,8 +79,12 @@ try {
       await tx.externalIntegrationEvent.create({ data: { organizationId: tenantA, eventId: eventA, source: 'test-labor', externalId: `tenant-a-${randomUUID()}`, eventType: 'test.snapshot', occurredAt: new Date(), payload: { tenant: 'a' }, bodySha256: 'a'.repeat(64) } });
       const taskA = await tx.operationalTask.create({ data: { organizationId: tenantA, venueId: venueA, eventId: eventA, locationId: locationA, kind: 'SERVICE', title: `Tenant A ${randomUUID()}`, createdBy: 'tenant-isolation-test', updatedBy: 'tenant-isolation-test' } });
       await tx.operationalTaskAudit.create({ data: { organizationId: tenantA, taskId: taskA.id, actorId: 'tenant-isolation-test', action: 'created' } });
-      const shiftA = await tx.staffShift.create({ data: { organizationId: tenantA, venueId: venueA, eventId: eventA, locationId: locationA, role: 'Usher', startsAt: new Date('2026-10-01T17:00:00Z'), endsAt: new Date('2026-10-01T22:00:00Z'), createdBy: 'tenant-isolation-test', updatedBy: 'tenant-isolation-test' } });
+      const shiftA = await tx.staffShift.create({ data: { organizationId: tenantA, venueId: venueA, eventId: eventA, locationId: locationA, assignedSubject: subjectA, role: 'Usher', startsAt: new Date('2026-10-01T17:00:00Z'), endsAt: new Date('2026-10-01T22:00:00Z'), state: 'PUBLISHED', response: 'ACKNOWLEDGED', responseRevision: 1, attendance: 'CHECKED_IN', checkedInAt: new Date('2026-10-01T17:00:00Z'), createdBy: 'tenant-isolation-test', updatedBy: 'tenant-isolation-test' } });
       await tx.staffShiftAuditEvent.create({ data: { organizationId: tenantA, shiftId: shiftA.id, actorId: 'tenant-isolation-test', action: 'created' } });
+      const breakA = await tx.staffBreak.create({ data: { organizationId: tenantA, shiftId: shiftA.id, workerSubject: subjectA, kind: 'REST', startedAt: new Date('2026-10-01T19:00:00Z') } });
+      breakAId = breakA.id;
+      const claimA = await tx.staffAttendanceClaim.create({ data: { organizationId: tenantA, eventId: eventA, shiftId: shiftA.id, workerSubject: subjectA, action: 'CHECK_OUT', recordedAt: new Date('2026-10-01T22:00:00Z') } });
+      attendanceClaimAId = claimA.id;
       await tx.userNotification.create({ data: { organizationId: tenantA, eventId: eventA, shiftId: shiftA.id, recipientSubject: 'tenant-isolation-test', kind: 'staffing.shift.published', title: 'Tenant A shift', body: 'Review shift.' } });
       await tx.userNotification.create({ data: { organizationId: tenantA, eventId: eventA, issueId: issueA.id, recipientSubject: 'tenant-isolation-test', kind: 'issue.assigned', title: 'Tenant A', body: 'Tenant A' } });
       await tx.issueAttachment.create({ data: { organizationId: tenantA, eventId: eventA, issueId: issueA.id, clientId: randomUUID(), uploadedBy: 'tenant-isolation-test', fileName: 'fixture.jpg', contentType: 'image/jpeg', sizeBytes: 1, sha256: 'a'.repeat(64), storageObjectKey: `tenant-a/${randomUUID()}` } });
@@ -105,8 +113,12 @@ try {
       await tx.externalIntegrationEvent.create({ data: { organizationId: tenantB, eventId: eventB, source: 'test-labor', externalId: `tenant-b-${randomUUID()}`, eventType: 'test.snapshot', occurredAt: new Date(), payload: { tenant: 'b' }, bodySha256: 'b'.repeat(64) } });
       const taskB = await tx.operationalTask.create({ data: { organizationId: tenantB, venueId: venueB, eventId: eventB, locationId: locationB, kind: 'SERVICE', title: `Tenant B ${randomUUID()}`, createdBy: 'tenant-isolation-test', updatedBy: 'tenant-isolation-test' } });
       await tx.operationalTaskAudit.create({ data: { organizationId: tenantB, taskId: taskB.id, actorId: 'tenant-isolation-test', action: 'created' } });
-      const shiftB = await tx.staffShift.create({ data: { organizationId: tenantB, venueId: venueB, eventId: eventB, locationId: locationB, role: 'Usher', startsAt: new Date('2026-10-01T17:00:00Z'), endsAt: new Date('2026-10-01T22:00:00Z'), createdBy: 'tenant-isolation-test', updatedBy: 'tenant-isolation-test' } });
+      const shiftB = await tx.staffShift.create({ data: { organizationId: tenantB, venueId: venueB, eventId: eventB, locationId: locationB, assignedSubject: subjectB, role: 'Usher', startsAt: new Date('2026-10-01T17:00:00Z'), endsAt: new Date('2026-10-01T22:00:00Z'), state: 'PUBLISHED', response: 'ACKNOWLEDGED', responseRevision: 1, attendance: 'CHECKED_IN', checkedInAt: new Date('2026-10-01T17:00:00Z'), createdBy: 'tenant-isolation-test', updatedBy: 'tenant-isolation-test' } });
       await tx.staffShiftAuditEvent.create({ data: { organizationId: tenantB, shiftId: shiftB.id, actorId: 'tenant-isolation-test', action: 'created' } });
+      const breakB = await tx.staffBreak.create({ data: { organizationId: tenantB, shiftId: shiftB.id, workerSubject: subjectB, kind: 'MEAL', startedAt: new Date('2026-10-01T19:00:00Z') } });
+      breakBId = breakB.id;
+      const claimB = await tx.staffAttendanceClaim.create({ data: { organizationId: tenantB, eventId: eventB, shiftId: shiftB.id, workerSubject: subjectB, action: 'CHECK_OUT', recordedAt: new Date('2026-10-01T22:00:00Z') } });
+      attendanceClaimBId = claimB.id;
       await tx.userNotification.create({ data: { organizationId: tenantB, eventId: eventB, shiftId: shiftB.id, recipientSubject: 'tenant-isolation-test', kind: 'staffing.shift.published', title: 'Tenant B shift', body: 'Review shift.' } });
       await tx.userNotification.create({ data: { organizationId: tenantB, eventId: eventB, issueId: issueB.id, recipientSubject: 'tenant-isolation-test', kind: 'issue.assigned', title: 'Tenant B', body: 'Tenant B' } });
       await tx.issueAttachment.create({ data: { organizationId: tenantB, eventId: eventB, issueId: issueB.id, clientId: randomUUID(), uploadedBy: 'tenant-isolation-test', fileName: 'fixture.jpg', contentType: 'image/jpeg', sizeBytes: 1, sha256: 'b'.repeat(64), storageObjectKey: `tenant-b/${randomUUID()}` } });
@@ -117,6 +129,8 @@ try {
       assert.equal(await tx.userNotification.count({ where: { organizationId: tenantA, shiftId: shiftA.id, recipientSubject: 'tenant-isolation-test' } }), 1, 'the assigned worker can read the shift notification');
       assert.equal(await tx.staffUnavailability.count({ where: { organizationId: tenantA } }), 1, 'tenant A sees only its availability records');
       assert.equal(await tx.personQualification.count({ where: { organizationId: tenantA } }), 1, 'tenant A sees its person qualifications');
+      assert.equal(await tx.staffBreak.count({ where: { organizationId: tenantA } }), 1, 'tenant A sees its shift break evidence');
+      assert.equal(await tx.staffAttendanceClaim.count({ where: { organizationId: tenantA } }), 1, 'tenant A sees its pending attendance claims');
       const auditService = new AuditService({
         withTenant: async (identity, action) => {
           await setTenant(tx, identity.tenantId, identity.subject);
@@ -150,21 +164,29 @@ try {
       assert.equal(await tx.staffUnavailability.count({ where: { organizationId: tenantB } }), 0, 'tenant A cannot read tenant B availability');
       assert.equal(await tx.staffUnavailabilityAudit.count({ where: { organizationId: tenantB } }), 0, 'tenant A cannot read tenant B availability audit');
       assert.equal(await tx.personQualification.count({ where: { organizationId: tenantB } }), 0, 'tenant A cannot read tenant B qualifications');
-      await assertTenantCannotRead(tx, tenantA, tenantB, issueB.id, taskB.id, shiftB.id);
+      assert.equal(await tx.staffBreak.count({ where: { organizationId: tenantB } }), 0, 'tenant A cannot read tenant B break evidence');
+      assert.equal(await tx.staffAttendanceClaim.count({ where: { organizationId: tenantB } }), 0, 'tenant A cannot read tenant B attendance claims');
+      await assertTenantCannotRead(tx, tenantA, tenantB, issueB.id, taskB.id, shiftB.id, breakBId, attendanceClaimBId);
       const updated = await tx.issue.updateMany({ where: { id: issueB.id }, data: { title: 'forbidden update' } });
       const deleted = await tx.issue.deleteMany({ where: { id: issueB.id } });
       const updatedTask = await tx.operationalTask.updateMany({ where: { id: taskB.id }, data: { title: 'forbidden update' } });
       const updatedShift = await tx.staffShift.updateMany({ where: { id: shiftB.id }, data: { role: 'forbidden update' } });
+      const updatedBreak = await tx.staffBreak.updateMany({ where: { id: breakBId }, data: { workerSubject: subjectA } });
+      const updatedClaim = await tx.staffAttendanceClaim.updateMany({ where: { id: attendanceClaimBId }, data: { workerSubject: subjectA } });
       assert.equal(updated.count, 0, 'tenant A must not update tenant B issues');
       assert.equal(deleted.count, 0, 'tenant A must not delete tenant B issues');
       assert.equal(updatedTask.count, 0, 'tenant A must not update tenant B operational tasks');
       assert.equal(updatedShift.count, 0, 'tenant A must not update tenant B staff shifts');
+      assert.equal(updatedBreak.count, 0, 'tenant A must not update tenant B break evidence');
+      assert.equal(updatedClaim.count, 0, 'tenant A must not update tenant B attendance claims');
 
       await setTenant(tx, tenantB);
       assert.equal(await tx.staffUnavailability.count({ where: { organizationId: tenantA } }), 0, 'tenant B cannot read tenant A availability');
       assert.equal(await tx.staffUnavailabilityAudit.count({ where: { organizationId: tenantA } }), 0, 'tenant B cannot read tenant A availability audit');
       assert.equal(await tx.personQualification.count({ where: { organizationId: tenantA } }), 0, 'tenant B cannot read tenant A qualifications');
-      await assertTenantCannotRead(tx, tenantB, tenantA, issueA.id, taskA.id, shiftA.id);
+      assert.equal(await tx.staffBreak.count({ where: { organizationId: tenantA } }), 0, 'tenant B cannot read tenant A break evidence');
+      assert.equal(await tx.staffAttendanceClaim.count({ where: { organizationId: tenantA } }), 0, 'tenant B cannot read tenant A attendance claims');
+      await assertTenantCannotRead(tx, tenantB, tenantA, issueA.id, taskA.id, shiftA.id, breakAId, attendanceClaimAId);
       await setTenant(tx, tenantB, 'unrelated-recipient');
       assert.equal(await tx.userNotification.count({ where: { organizationId: tenantB } }), 0, 'notifications must only be visible to their recipient subject');
       assert.equal(await tx.pushDevice.count({ where: { organizationId: tenantB } }), 0, 'push tokens must only be visible to their registered subject');
@@ -198,7 +220,7 @@ try {
   await prisma.$disconnect();
 }
 
-async function assertTenantCannotRead(tx, visibleTenant, hiddenTenant, hiddenIssueId, hiddenTaskId, hiddenShiftId) {
+async function assertTenantCannotRead(tx, visibleTenant, hiddenTenant, hiddenIssueId, hiddenTaskId, hiddenShiftId, hiddenBreakId, hiddenAttendanceClaimId) {
   assert.equal(await tx.organization.count({ where: { id: hiddenTenant } }), 0, `${visibleTenant} organization isolation`);
   assert.equal(await tx.venue.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} venue isolation`);
   assert.equal(await tx.event.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} event isolation`);
@@ -218,4 +240,6 @@ async function assertTenantCannotRead(tx, visibleTenant, hiddenTenant, hiddenIss
   assert.equal(await tx.pushDevice.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} push device isolation`);
   assert.equal(await tx.staffShift.count({ where: { id: hiddenShiftId } }), 0, `${visibleTenant} staff shift isolation`);
   assert.equal(await tx.staffShiftAuditEvent.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} staff shift audit isolation`);
+  assert.equal(await tx.staffBreak.count({ where: { id: hiddenBreakId } }), 0, `${visibleTenant} staff break isolation`);
+  assert.equal(await tx.staffAttendanceClaim.count({ where: { id: hiddenAttendanceClaimId } }), 0, `${visibleTenant} offline attendance claim isolation`);
 }
