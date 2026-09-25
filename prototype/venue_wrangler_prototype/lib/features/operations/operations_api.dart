@@ -359,11 +359,12 @@ class OperationsApi {
                 'Idempotency-Key': key,
               })));
   Future<void> shiftCommand(
-      String eventId, String shiftId, String action) async {
+      String eventId, String shiftId, String action, {Map<String, Object?>? data}) async {
     await _command<void>(
         {'action': 'staff-shift.$action', 'eventId': eventId, 'shiftId': shiftId},
         (token, key) => _dio.post<void>(
             '/api/v1/events/$eventId/shifts/$shiftId/$action',
+            data: data,
             options: Options(headers: {
               'Authorization': 'Bearer $token',
               'Idempotency-Key': key,

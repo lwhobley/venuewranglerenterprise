@@ -26,3 +26,7 @@ export class RespondToShiftDto {
   @ApiProperty({ enum: ['ACKNOWLEDGED', 'DECLINED'] }) @IsIn(['ACKNOWLEDGED', 'DECLINED']) response!: 'ACKNOWLEDGED' | 'DECLINED';
   @ApiPropertyOptional() @IsOptional() @IsString() @Length(0, 500) reason?: string;
 }
+
+export class StartStaffBreakDto {
+  @ApiProperty({ enum: ['REST', 'MEAL'] }) @IsIn(['REST', 'MEAL']) kind!: 'REST' | 'MEAL';
+}

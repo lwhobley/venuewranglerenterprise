@@ -1202,6 +1202,11 @@ class _LiveStaffingPage extends ConsumerWidget {
                 final state = shift['state'] as String? ?? 'DRAFT';
                 final response = shift['response'] as String? ?? 'PENDING';
                 final attendance = shift['attendance'] as String? ?? 'NOT_STARTED';
+                final breaks = (shift['breaks'] as List? ?? const []).whereType<Map>().map((row) => Map<String, dynamic>.from(row)).toList();
+                Map<String, dynamic>? activeBreak;
+                for (final record in breaks) {
+                  if (record['endedAt'] == null) { activeBreak = record; break; }
+                }
                 final startsAt = DateTime.tryParse(shift['startsAt'] as String? ?? '')?.toLocal();
                 final endsAt = DateTime.tryParse(shift['endsAt'] as String? ?? '')?.toLocal();
                 final locationId = shift['locationId'] as String?;
@@ -1211,6 +1216,12 @@ class _LiveStaffingPage extends ConsumerWidget {
                 final assignedName = assignedToMe ? 'You' : assigned.isEmpty ? 'Open shift' : assigned.first['displayName'] as String? ?? 'Assigned worker';
                 final requiredQualifications = (shift['requiredQualificationCodes'] as List? ?? const []).cast<String>();
                 final currentResponse = shift['responseRevision'] == shift['revision'];
+                final breakSummary = breaks.map((record) {
+                  final kind = record['kind'] == 'MEAL' ? 'Meal' : 'Rest';
+                  final started = DateTime.tryParse(record['startedAt'] as String? ?? '')?.toLocal();
+                  final ended = DateTime.tryParse(record['endedAt'] as String? ?? '')?.toLocal();
+                  return '$kind break ${_clockLabel(started)}–${ended == null ? 'active' : _clockLabel(ended)}';
+                }).join(' · ');
                 return Card(
                   child: Padding(
                     padding: const EdgeInsets.symmetric(vertical: 6),
@@ -1218,7 +1229,7 @@ class _LiveStaffingPage extends ConsumerWidget {
                       ListTile(
                         leading: const CircleAvatar(child: Icon(Icons.badge_outlined)),
                         title: Text(shift['role'] as String? ?? 'Shift', style: const TextStyle(fontWeight: FontWeight.w800)),
-                        subtitle: Text('$assignedName · $locationName\n${_shiftTimeLabel(startsAt, endsAt)}\n$state · $response · $attendance${requiredQualifications.isEmpty ? '' : '\nRequires: ${requiredQualifications.join(', ')}'}'),
+                        subtitle: Text('$assignedName · $locationName\n${_shiftTimeLabel(startsAt, endsAt)}\n$state · $response · $attendance${breakSummary.isEmpty ? '' : '\n$breakSummary'}${requiredQualifications.isEmpty ? '' : '\nRequires: ${requiredQualifications.join(', ')}'}'),
                         isThreeLine: true,
                       ),
                       if (shift['instructions'] is String && (shift['instructions'] as String).isNotEmpty)
@@ -1241,7 +1252,13 @@ class _LiveStaffingPage extends ConsumerWidget {
                           if (assignedToMe && state == 'PUBLISHED' && response == 'ACKNOWLEDGED' && currentResponse && attendance == 'NOT_STARTED')
                             FilledButton(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'check-in'), child: const Text('Check in')),
                           if (assignedToMe && attendance == 'CHECKED_IN')
-                            FilledButton(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'check-out'), child: const Text('Check out')),
+                            if (activeBreak != null)
+                              FilledButton.tonal(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'break/end'), child: const Text('End break'))
+                            else ...[
+                              OutlinedButton(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'break/start', data: {'kind': 'REST'}), child: const Text('Start rest break')),
+                              OutlinedButton(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'break/start', data: {'kind': 'MEAL'}), child: const Text('Start meal break')),
+                              FilledButton(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'check-out'), child: const Text('Check out')),
+                            ],
                         ]),
                       ),
                     ]),
@@ -1410,9 +1427,15 @@ String _shiftTimeLabel(DateTime? start, DateTime? end) {
   return '${start.month}/${start.day} · ${time(start)}–${time(end)}';
 }
 
-Future<void> _runShiftCommand(BuildContext context, WidgetRef ref, String eventId, String shiftId, String action) async {
+String _clockLabel(DateTime? value) {
+  if (value == null) return 'time unavailable';
+  final hour = value.hour % 12 == 0 ? 12 : value.hour % 12;
+  return '$hour:${value.minute.toString().padLeft(2, '0')} ${value.hour < 12 ? 'AM' : 'PM'}';
+}
+
+Future<void> _runShiftCommand(BuildContext context, WidgetRef ref, String eventId, String shiftId, String action, {Map<String, Object?>? data}) async {
   try {
-    await ref.read(operationsApiProvider).shiftCommand(eventId, shiftId, action);
+    await ref.read(operationsApiProvider).shiftCommand(eventId, shiftId, action, data: data);
     ref.invalidate(eventShiftsProvider(eventId));
   } catch (error) {
     if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not $action shift: $error')));

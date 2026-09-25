@@ -71,6 +71,13 @@ enum StaffAttendanceState {
   @@map("staff_attendance_state")
 }
 
+enum StaffBreakKind {
+  REST
+  MEAL
+
+  @@map("staff_break_kind")
+}
+
 enum AttachmentStatus {
   PENDING_UPLOAD
   READY
@@ -333,12 +340,28 @@ model StaffShift {
   location         Location?              @relation(fields: [locationId, venueId], references: [id, venueId], map: "staff_shifts_location_venue_fk")
   auditEvents      StaffShiftAuditEvent[]
   notifications    UserNotification[]
+  breaks           StaffBreak[]
 
   @@unique([id, organizationId])
   @@unique([id, eventId, organizationId], map: "staff_shifts_id_event_organization_key")
   @@index([organizationId, eventId, state, startsAt])
   @@index([organizationId, assignedSubject, startsAt])
   @@map("staff_shifts")
+}
+
+model StaffBreak {
+  id             String         @id @default(uuid()) @db.Uuid
+  organizationId String         @map("organization_id") @db.Uuid
+  shiftId        String         @map("shift_id") @db.Uuid
+  workerSubject  String         @map("worker_subject")
+  kind           StaffBreakKind
+  startedAt      DateTime       @default(now()) @map("started_at")
+  endedAt        DateTime?      @map("ended_at")
+  shift          StaffShift     @relation(fields: [shiftId, organizationId], references: [id, organizationId], map: "staff_breaks_shift_tenant_fk")
+
+  @@unique([id, organizationId])
+  @@index([organizationId, shiftId, startedAt])
+  @@map("staff_breaks")
 }
 
 model StaffUnavailability {

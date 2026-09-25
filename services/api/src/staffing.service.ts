@@ -27,6 +27,7 @@ export class StaffingService {
         ],
       },
       orderBy: [{ startsAt: 'asc' }, { createdAt: 'asc' }],
+      include: { breaks: { orderBy: { startedAt: 'asc' } } },
     }));
   }
 
@@ -222,11 +223,47 @@ export class StaffingService {
       if (action === 'check-in') await this.assertQualified(tx, identity.tenantId, identity.subject, current.requiredQualificationCodes, current.endsAt);
       if (action === 'check-in' && current.attendance !== 'NOT_STARTED') throw new ConflictException('Attendance has already started.');
       if (action === 'check-out' && current.attendance !== 'CHECKED_IN') throw new ConflictException('Check in before checking out.');
+      if (action === 'check-out' && await tx.staffBreak.findFirst({ where: { organizationId: identity.tenantId, shiftId, endedAt: null }, select: { id: true } })) throw new ConflictException('End the active break before checking out.');
       const now = new Date();
       const updated = await tx.staffShift.update({ where: { id: shiftId }, data: action === 'check-in'
         ? { attendance: 'CHECKED_IN', checkedInAt: now, updatedBy: identity.subject }
         : { attendance: 'CHECKED_OUT', checkedOutAt: now, updatedBy: identity.subject } });
       await this.audit(tx, identity, shiftId, action, current, updated);
+      return updated;
+    });
+  }
+
+  async startBreak(identity: Identity, eventId: string, shiftId: string, kind: 'REST' | 'MEAL', key: string) {
+    assertScope(identity, 'operations:read', eventId);
+    return this.command(identity, key, 'staff-break.start', { eventId, shiftId, kind }, async (tx) => {
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`staff-shift:${identity.tenantId}:${shiftId}`}, 0))`;
+      const shift = await tx.staffShift.findFirst({ where: { id: shiftId, eventId, organizationId: identity.tenantId } });
+      if (!shift) throw new NotFoundException('Shift not found.');
+      assertScope(identity, 'operations:read', eventId, shift.venueId, shift.locationId ?? undefined);
+      if (shift.assignedSubject !== identity.subject) throw new ForbiddenException('Only the assigned worker may record a break.');
+      if (shift.state !== 'PUBLISHED' || shift.attendance !== 'CHECKED_IN') throw new ConflictException('Check in to the published shift before starting a break.');
+      const now = new Date();
+      if (now < shift.startsAt || now >= shift.endsAt) throw new ConflictException('Breaks can only be recorded within the scheduled shift window.');
+      if (await tx.staffBreak.findFirst({ where: { organizationId: identity.tenantId, shiftId, endedAt: null }, select: { id: true } })) throw new ConflictException('End the current break before starting another.');
+      const record = await tx.staffBreak.create({ data: { organizationId: identity.tenantId, shiftId, workerSubject: identity.subject, kind, startedAt: now } });
+      await this.audit(tx, identity, shiftId, `break.${kind.toLowerCase()}.started`, undefined, record);
+      return record;
+    });
+  }
+
+  async endBreak(identity: Identity, eventId: string, shiftId: string, key: string) {
+    assertScope(identity, 'operations:read', eventId);
+    return this.command(identity, key, 'staff-break.end', { eventId, shiftId }, async (tx) => {
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`staff-shift:${identity.tenantId}:${shiftId}`}, 0))`;
+      const shift = await tx.staffShift.findFirst({ where: { id: shiftId, eventId, organizationId: identity.tenantId } });
+      if (!shift) throw new NotFoundException('Shift not found.');
+      assertScope(identity, 'operations:read', eventId, shift.venueId, shift.locationId ?? undefined);
+      if (shift.assignedSubject !== identity.subject) throw new ForbiddenException('Only the assigned worker may end a break.');
+      if (shift.attendance !== 'CHECKED_IN') throw new ConflictException('The shift is not currently checked in.');
+      const current = await tx.staffBreak.findFirst({ where: { organizationId: identity.tenantId, shiftId, workerSubject: identity.subject, endedAt: null }, orderBy: { startedAt: 'desc' } });
+      if (!current) throw new ConflictException('There is no active break to end.');
+      const updated = await tx.staffBreak.update({ where: { id: current.id }, data: { endedAt: new Date() } });
+      await this.audit(tx, identity, shiftId, `break.${current.kind.toLowerCase()}.ended`, current, updated);
       return updated;
     });
   }
