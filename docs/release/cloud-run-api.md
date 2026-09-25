@@ -15,15 +15,15 @@ Create the `production` GitHub Actions environment and configure these repositor
 | `GCP_RUNTIME_SERVICE_ACCOUNT` | Dedicated least-privilege identity assigned to the Cloud Run service |
 | `ARTIFACT_REGISTRY_REPOSITORY` | Artifact Registry Docker repository ID in `GCP_REGION` |
 | `CLOUD_RUN_SERVICE` | Cloud Run service name |
-| `DATABASE_URL_SECRET` / `DATABASE_URL_SECRET_VERSION` | Secret Manager secret ID and pinned version for the `venue_app` runtime connection string |
-| `SSO_PROVIDERS_JSON_SECRET` / `SSO_PROVIDERS_JSON_SECRET_VERSION` | Secret Manager secret ID and pinned version for the issuer-to-tenant/provider configuration |
-| `SCIM_PROVIDERS_JSON_SECRET` / `SCIM_PROVIDERS_JSON_SECRET_VERSION` | Secret Manager secret ID and pinned version for tenant-specific SCIM bearer tokens; use `[]` to disable provisioning |
-| `INTEGRATION_PROVIDERS_JSON_SECRET` / `INTEGRATION_PROVIDERS_JSON_SECRET_VERSION` | Secret Manager secret ID and pinned version for inbound integration HMAC secrets; use `[]` until a source is configured |
+| `DATABASE_URL_SECRET` / `DATABASE_URL_SECRET_VERSION` | Secret Manager secret ID and positive integer version for the `venue_app` runtime connection string |
+| `SSO_PROVIDERS_JSON_SECRET` / `SSO_PROVIDERS_JSON_SECRET_VERSION` | Secret Manager secret ID and positive integer version for the issuer-to-tenant/provider configuration |
+| `SCIM_PROVIDERS_JSON_SECRET` / `SCIM_PROVIDERS_JSON_SECRET_VERSION` | Secret Manager secret ID and positive integer version for tenant-specific SCIM bearer tokens; use `[]` to disable provisioning |
+| `INTEGRATION_PROVIDERS_JSON_SECRET` / `INTEGRATION_PROVIDERS_JSON_SECRET_VERSION` | Secret Manager secret ID and positive integer version for inbound integration HMAC secrets; use `[]` until a source is configured |
 | `EVIDENCE_BUCKET` | Private Cloud Storage bucket name for issue evidence |
 | `FCM_PROJECT_ID` | Optional Firebase project ID used for mobile push notifications; device registration returns unavailable until configured |
 | `CORS_ORIGINS` | Comma-separated allowlist of approved browser origins; set only origins actually used by approved clients |
 
-The workflow uses GitHub OIDC through Workload Identity Federation; it does not need a service-account JSON key or secret values in GitHub. Restrict the identity provider condition to repository `lwhobley/venuewranglerenterprise`, branch `main`, and this deployment workflow. Grant the deployer only Artifact Registry write, Cloud Run deployment, and service-account act-as permissions. Give the Cloud Run runtime identity access to the named secret versions, only the necessary Cloud Storage object operations and IAM signing permission, and `cloudmessaging.messages.create` on the FCM project. Do not grant project-wide Editor or use a long-lived JSON key.
+The workflow rejects `latest` and requires each secret version to be a pinned positive integer. It uses GitHub OIDC through Workload Identity Federation; it does not need a service-account JSON key or secret values in GitHub. Restrict the identity provider condition to repository `lwhobley/venuewranglerenterprise`, branch `main`, and this deployment workflow. Grant the deployer only Artifact Registry write, Cloud Run deployment, and service-account act-as permissions. Give the Cloud Run runtime identity access to the named secret versions, only the necessary Cloud Storage object operations and IAM signing permission, and `cloudmessaging.messages.create` on the FCM project. Do not grant project-wide Editor or use a long-lived JSON key.
 
 The Cloud Run service must allow unauthenticated network invocation so the native mobile client can reach it; API routes remain protected by verified OIDC bearer tokens and server-side capability/scope checks. Do not expose database credentials through GitHub variables, build arguments, image layers, or workflow output.
 

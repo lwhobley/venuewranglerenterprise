@@ -46,6 +46,9 @@ jobs:
           cache: npm
           cache-dependency-path: services/api/package-lock.json
 
+      - name: Verify production deployment configuration guard
+        run: node --test ../../.github/scripts/validate-deploy-config.test.mjs
+
       - name: Install API dependencies
         run: npm ci
 

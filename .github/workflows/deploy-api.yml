@@ -43,13 +43,7 @@ jobs:
       - name: Check deployment configuration
         shell: bash
         run: |
-          set -euo pipefail
-          for name in GCP_PROJECT_ID GCP_REGION GCP_WORKLOAD_IDENTITY_PROVIDER GCP_DEPLOYER_SERVICE_ACCOUNT GCP_RUNTIME_SERVICE_ACCOUNT ARTIFACT_REGISTRY_REPOSITORY CLOUD_RUN_SERVICE DATABASE_URL_SECRET DATABASE_URL_SECRET_VERSION SSO_PROVIDERS_JSON_SECRET SSO_PROVIDERS_JSON_SECRET_VERSION SCIM_PROVIDERS_JSON_SECRET SCIM_PROVIDERS_JSON_SECRET_VERSION INTEGRATION_PROVIDERS_JSON_SECRET INTEGRATION_PROVIDERS_JSON_SECRET_VERSION EVIDENCE_BUCKET CORS_ORIGINS; do
-            if [[ -z "${!name}" ]]; then
-              echo "Missing required production repository variable: ${name}"
-              exit 1
-            fi
-          done
+          node .github/scripts/validate-deploy-config.mjs
 
       - name: Authenticate to Google Cloud with workload identity federation
         uses: google-github-actions/auth@v3
