@@ -64,6 +64,10 @@ try {
   let stockCountBId;
   let hospitalityOrderAId;
   let hospitalityOrderBId;
+  let closeoutAId;
+  let closeoutBId;
+  let closeoutFollowupAId;
+  let closeoutFollowupBId;
   try {
     await prisma.$transaction(async (tx) => {
       await setTenant(tx, tenantA);
@@ -129,6 +133,14 @@ try {
         VALUES (${tenantA}::uuid,${hospitalityOrderA.id}::uuid,'Water bottles',24,'each')`;
       await tx.$executeRaw`INSERT INTO hospitality_order_audit(organization_id,order_id,actor_id,action)
         VALUES (${tenantA}::uuid,${hospitalityOrderA.id}::uuid,'tenant-isolation-test','submitted')`;
+      const [closeoutA] = await tx.$queryRaw`INSERT INTO event_closeouts(organization_id,venue_id,event_id,opened_by)
+        VALUES (${tenantA}::uuid,${venueA}::uuid,${eventA}::uuid,'tenant-isolation-test') RETURNING id`;
+      closeoutAId = closeoutA.id;
+      const [closeoutFollowupA] = await tx.$queryRaw`INSERT INTO event_closeout_followups(organization_id,closeout_id,source_type,source_id,title)
+        VALUES (${tenantA}::uuid,${closeoutA.id}::uuid,'TASK','fixture-a','Tenant A follow-up') RETURNING id`;
+      closeoutFollowupAId = closeoutFollowupA.id;
+      await tx.$executeRaw`INSERT INTO event_closeout_audit(organization_id,closeout_id,actor_id,action)
+        VALUES (${tenantA}::uuid,${closeoutA.id}::uuid,'tenant-isolation-test','opened')`;
 
       await setTenant(tx, tenantB);
       const issueB = await makeIssue(tx, {
@@ -192,6 +204,14 @@ try {
         VALUES (${tenantB}::uuid,${hospitalityOrderB.id}::uuid,'Water bottles',18,'each')`;
       await tx.$executeRaw`INSERT INTO hospitality_order_audit(organization_id,order_id,actor_id,action)
         VALUES (${tenantB}::uuid,${hospitalityOrderB.id}::uuid,'tenant-isolation-test','submitted')`;
+      const [closeoutB] = await tx.$queryRaw`INSERT INTO event_closeouts(organization_id,venue_id,event_id,opened_by)
+        VALUES (${tenantB}::uuid,${venueB}::uuid,${eventB}::uuid,'tenant-isolation-test') RETURNING id`;
+      closeoutBId = closeoutB.id;
+      const [closeoutFollowupB] = await tx.$queryRaw`INSERT INTO event_closeout_followups(organization_id,closeout_id,source_type,source_id,title)
+        VALUES (${tenantB}::uuid,${closeoutB.id}::uuid,'TASK','fixture-b','Tenant B follow-up') RETURNING id`;
+      closeoutFollowupBId = closeoutFollowupB.id;
+      await tx.$executeRaw`INSERT INTO event_closeout_audit(organization_id,closeout_id,actor_id,action)
+        VALUES (${tenantB}::uuid,${closeoutB.id}::uuid,'tenant-isolation-test','opened')`;
 
       await setTenant(tx, tenantA);
       assert.equal(await tx.userNotification.count({ where: { organizationId: tenantA, shiftId: shiftA.id, recipientSubject: 'tenant-isolation-test' } }), 1, 'the assigned worker can read the shift notification');
@@ -211,6 +231,9 @@ try {
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_orders WHERE id=${hospitalityOrderAId}::uuid`)[0].count, 1, 'tenant A sees its hospitality order');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_order_lines WHERE order_id=${hospitalityOrderAId}::uuid`)[0].count, 1, 'tenant A sees its hospitality order lines');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_order_audit WHERE order_id=${hospitalityOrderAId}::uuid`)[0].count, 1, 'tenant A sees its hospitality order audit');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeouts WHERE id=${closeoutAId}::uuid`)[0].count, 1, 'tenant A sees its event closeout');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeout_followups WHERE closeout_id=${closeoutAId}::uuid`)[0].count, 1, 'tenant A sees its closeout follow-up');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeout_audit WHERE closeout_id=${closeoutAId}::uuid`)[0].count, 1, 'tenant A sees its closeout audit');
       assert.equal((await tx.$executeRaw`UPDATE stock_transfers SET request_note='cross tenant write' WHERE id=${stockTransferBId}::uuid`), 0, 'tenant A cannot update tenant B transfers');
       await tx.$executeRawUnsafe('SAVEPOINT stock_transfer_rls_insert_probe');
       let crossTenantInsertError;
@@ -223,6 +246,17 @@ try {
       await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT stock_transfer_rls_insert_probe');
       assert.ok(crossTenantInsertError, 'tenant A cross-tenant transfer insert must fail RLS WITH CHECK');
       assert.equal(crossTenantInsertError.meta?.code, '42501', 'cross-tenant transfer insert must fail with PostgreSQL insufficient_privilege');
+      await tx.$executeRawUnsafe('SAVEPOINT closeout_rls_insert_probe');
+      let crossTenantCloseoutError;
+      try {
+        await tx.$executeRaw`INSERT INTO event_closeouts(organization_id,venue_id,event_id,opened_by)
+          VALUES (${tenantB}::uuid,${venueB}::uuid,${eventB}::uuid,'forbidden-cross-tenant-closeout')`;
+      } catch (error) {
+        crossTenantCloseoutError = error;
+      }
+      await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT closeout_rls_insert_probe');
+      assert.ok(crossTenantCloseoutError, 'tenant A cross-tenant closeout insert must fail RLS WITH CHECK');
+      assert.equal(crossTenantCloseoutError.meta?.code, '42501', 'cross-tenant closeout insert must fail with PostgreSQL insufficient_privilege');
       const auditService = new AuditService({
         withTenant: async (identity, action) => {
           await setTenant(tx, identity.tenantId, identity.subject);
@@ -239,7 +273,8 @@ try {
       assert.ok(auditA.items.some((row) => row.resourceId === taskA.id && row.resourceType === 'task'));
       assert.ok(auditA.items.some((row) => row.resourceType === 'person'));
       assert.ok(auditA.items.some((row) => row.id === setupAuditA.id && row.resourceType === 'venue'));
-      assert.equal(auditA.items.some((row) => row.resourceId === issueB.id || row.resourceId === taskB.id || row.id === setupAuditB.id), false, 'tenant A audit feed must exclude tenant B records');
+      assert.ok(auditA.items.some((row) => row.resourceId === closeoutAId && row.resourceType === 'event_closeout'));
+      assert.equal(auditA.items.some((row) => row.resourceId === issueB.id || row.resourceId === taskB.id || row.resourceId === closeoutBId || row.id === setupAuditB.id), false, 'tenant A audit feed must exclude tenant B records');
 
       const auditB = await auditService.list({
         subject: 'tenant-isolation-test',
@@ -250,7 +285,8 @@ try {
       assert.ok(auditB.items.some((row) => row.resourceId === issueB.id && row.resourceType === 'issue'));
       assert.ok(auditB.items.some((row) => row.resourceId === taskB.id && row.resourceType === 'task'));
       assert.ok(auditB.items.some((row) => row.id === setupAuditB.id && row.resourceType === 'venue'));
-      assert.equal(auditB.items.some((row) => row.resourceId === issueA.id || row.resourceId === taskA.id || row.id === setupAuditA.id), false, 'tenant B audit feed must exclude tenant A records');
+      assert.ok(auditB.items.some((row) => row.resourceId === closeoutBId && row.resourceType === 'event_closeout'));
+      assert.equal(auditB.items.some((row) => row.resourceId === issueA.id || row.resourceId === taskA.id || row.resourceId === closeoutAId || row.id === setupAuditA.id), false, 'tenant B audit feed must exclude tenant A records');
 
       await setTenant(tx, tenantA);
       assert.equal(await tx.staffUnavailability.count({ where: { organizationId: tenantB } }), 0, 'tenant A cannot read tenant B availability');
@@ -258,7 +294,7 @@ try {
       assert.equal(await tx.personQualification.count({ where: { organizationId: tenantB } }), 0, 'tenant A cannot read tenant B qualifications');
       assert.equal(await tx.staffBreak.count({ where: { organizationId: tenantB } }), 0, 'tenant A cannot read tenant B break evidence');
       assert.equal(await tx.staffAttendanceClaim.count({ where: { organizationId: tenantB } }), 0, 'tenant A cannot read tenant B attendance claims');
-      await assertTenantCannotRead(tx, tenantA, tenantB, issueB.id, taskB.id, shiftB.id, breakBId, attendanceClaimBId, demandBId, demandAuditBId, stockTransferBId, stockCountBId, hospitalityOrderBId);
+      await assertTenantCannotRead(tx, tenantA, tenantB, issueB.id, taskB.id, shiftB.id, breakBId, attendanceClaimBId, demandBId, demandAuditBId, stockTransferBId, stockCountBId, hospitalityOrderBId, closeoutBId);
       const updated = await tx.issue.updateMany({ where: { id: issueB.id }, data: { title: 'forbidden update' } });
       const deleted = await tx.issue.deleteMany({ where: { id: issueB.id } });
       const updatedTask = await tx.operationalTask.updateMany({ where: { id: taskB.id }, data: { title: 'forbidden update' } });
@@ -290,6 +326,9 @@ try {
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_orders WHERE id=${hospitalityOrderBId}::uuid`)[0].count, 1, 'tenant B sees its hospitality order');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_order_lines WHERE order_id=${hospitalityOrderBId}::uuid`)[0].count, 1, 'tenant B sees its hospitality order line');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_order_audit WHERE order_id=${hospitalityOrderBId}::uuid`)[0].count, 1, 'tenant B sees its hospitality order audit');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeouts WHERE id=${closeoutBId}::uuid`)[0].count, 1, 'tenant B sees its event closeout');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeout_followups WHERE closeout_id=${closeoutBId}::uuid`)[0].count, 1, 'tenant B sees its closeout follow-up');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeout_audit WHERE closeout_id=${closeoutBId}::uuid`)[0].count, 1, 'tenant B sees its closeout audit');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_transfers WHERE id=${stockTransferAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A stock transfers');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_transfer_lines WHERE transfer_id=${stockTransferAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A transfer lines');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM stock_transfer_audit WHERE transfer_id=${stockTransferAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A transfer audit');
@@ -300,10 +339,34 @@ try {
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_orders WHERE id=${hospitalityOrderAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A hospitality orders');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_order_lines WHERE order_id=${hospitalityOrderAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A hospitality order lines');
       assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_order_audit WHERE order_id=${hospitalityOrderAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A hospitality order audit');
-      await assertTenantCannotRead(tx, tenantB, tenantA, issueA.id, taskA.id, shiftA.id, breakAId, attendanceClaimAId, demandAId, demandAuditAId, stockTransferAId, stockCountAId, hospitalityOrderAId);
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeouts WHERE id=${closeoutAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A event closeout');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeout_followups WHERE id=${closeoutFollowupAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A closeout follow-up');
+      assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeout_audit WHERE closeout_id=${closeoutAId}::uuid`)[0].count, 0, 'tenant B cannot read tenant A closeout audit');
+      await assertTenantCannotRead(tx, tenantB, tenantA, issueA.id, taskA.id, shiftA.id, breakAId, attendanceClaimAId, demandAId, demandAuditAId, stockTransferAId, stockCountAId, hospitalityOrderAId, closeoutAId);
       await setTenant(tx, tenantB, 'unrelated-recipient');
       assert.equal(await tx.userNotification.count({ where: { organizationId: tenantB } }), 0, 'notifications must only be visible to their recipient subject');
       assert.equal(await tx.pushDevice.count({ where: { organizationId: tenantB } }), 0, 'push tokens must only be visible to their registered subject');
+      await setTenant(tx, tenantA);
+      await tx.$executeRawUnsafe('SAVEPOINT closed_event_write_probe');
+      await tx.$executeRaw`UPDATE event_closeouts SET state='CLOSED',finalized_by='tenant-isolation-test',finalized_at=now() WHERE id=${closeoutAId}::uuid`;
+      let closedEventWriteError;
+      try {
+        await tx.$executeRaw`UPDATE operational_tasks SET title='forbidden closed-event edit' WHERE id=${taskA.id}::uuid`;
+      } catch (error) {
+        closedEventWriteError = error;
+      }
+      await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT closed_event_write_probe');
+      assert.equal(closedEventWriteError?.meta?.code, '23514', 'ordinary operational writes must be rejected after closeout finalization');
+      await tx.$executeRawUnsafe('SAVEPOINT closed_event_child_write_probe');
+      await tx.$executeRaw`UPDATE event_closeouts SET state='CLOSED',finalized_by='tenant-isolation-test',finalized_at=now() WHERE id=${closeoutAId}::uuid`;
+      let closedEventChildWriteError;
+      try {
+        await tx.$executeRaw`UPDATE stock_count_lines SET note='forbidden closed-event stock edit' WHERE count_id=${stockCountAId}::uuid`;
+      } catch (error) {
+        closedEventChildWriteError = error;
+      }
+      await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT closed_event_child_write_probe');
+      assert.equal(closedEventChildWriteError?.meta?.code, '23514', 'inventory detail writes must be rejected after closeout finalization');
       throw rollback;
     });
     assert.fail('The fixture transaction should roll back.');
@@ -329,12 +392,12 @@ try {
     await tx.organization.create({ data: { id: tenantC, name: 'forbidden cross-tenant organization' } });
   }), 'tenant A must not insert out-of-scope organization rows');
 
-  process.stdout.write('Tenant isolation passed: reads, updates, deletes, inserts, audit/event/device visibility, and location-to-venue integrity.\n');
+  process.stdout.write('Tenant isolation passed: reads, updates, deletes, inserts, closeout write lock, audit/event/device visibility, and location-to-venue integrity.\n');
 } finally {
   await prisma.$disconnect();
 }
 
-async function assertTenantCannotRead(tx, visibleTenant, hiddenTenant, hiddenIssueId, hiddenTaskId, hiddenShiftId, hiddenBreakId, hiddenAttendanceClaimId, hiddenDemandId, hiddenDemandAuditId, hiddenStockTransferId, hiddenStockCountId, hiddenHospitalityOrderId) {
+async function assertTenantCannotRead(tx, visibleTenant, hiddenTenant, hiddenIssueId, hiddenTaskId, hiddenShiftId, hiddenBreakId, hiddenAttendanceClaimId, hiddenDemandId, hiddenDemandAuditId, hiddenStockTransferId, hiddenStockCountId, hiddenHospitalityOrderId, hiddenCloseoutId) {
   assert.equal(await tx.organization.count({ where: { id: hiddenTenant } }), 0, `${visibleTenant} organization isolation`);
   assert.equal(await tx.venue.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} venue isolation`);
   assert.equal(await tx.event.count({ where: { organizationId: hiddenTenant } }), 0, `${visibleTenant} event isolation`);
@@ -369,4 +432,7 @@ async function assertTenantCannotRead(tx, visibleTenant, hiddenTenant, hiddenIss
   assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_orders WHERE id=${hiddenHospitalityOrderId}::uuid`)[0].count, 0, `${visibleTenant} hospitality order isolation`);
   assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_order_lines WHERE order_id=${hiddenHospitalityOrderId}::uuid`)[0].count, 0, `${visibleTenant} hospitality line isolation`);
   assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM hospitality_order_audit WHERE order_id=${hiddenHospitalityOrderId}::uuid`)[0].count, 0, `${visibleTenant} hospitality audit isolation`);
+  assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeouts WHERE id=${hiddenCloseoutId}::uuid`)[0].count, 0, `${visibleTenant} event closeout isolation`);
+  assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeout_followups WHERE closeout_id=${hiddenCloseoutId}::uuid`)[0].count, 0, `${visibleTenant} closeout follow-up isolation`);
+  assert.equal((await tx.$queryRaw`SELECT count(*)::int AS count FROM event_closeout_audit WHERE closeout_id=${hiddenCloseoutId}::uuid`)[0].count, 0, `${visibleTenant} closeout audit isolation`);
 }

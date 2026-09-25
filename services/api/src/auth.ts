@@ -5,8 +5,8 @@ import { createRemoteJWKSet, decodeJwt, jwtVerify, type JWTVerifyGetKey } from '
 import { AuthProvidersService, type SsoProviderConfig } from './auth-providers';
 import { PrismaService } from './prisma.service';
 
-export type Capability = 'issue:report' | 'issue:read' | 'issue:evidence' | 'issue:triage' | 'issue:escalate' | 'issue:resolve' | 'issue:verify' | 'issue:close' | 'operations:read' | 'operations:write' | 'hospitality:order' | 'hospitality:fulfill' | 'notification:read' | 'tenant:admin';
-const capabilities = new Set<Capability>(['issue:report', 'issue:read', 'issue:evidence', 'issue:triage', 'issue:escalate', 'issue:resolve', 'issue:verify', 'issue:close', 'operations:read', 'operations:write', 'hospitality:order', 'hospitality:fulfill', 'notification:read', 'tenant:admin']);
+export type Capability = 'issue:report' | 'issue:read' | 'issue:evidence' | 'issue:triage' | 'issue:escalate' | 'issue:resolve' | 'issue:verify' | 'issue:close' | 'operations:read' | 'operations:write' | 'event:closeout' | 'hospitality:order' | 'hospitality:fulfill' | 'notification:read' | 'tenant:admin';
+const capabilities = new Set<Capability>(['issue:report', 'issue:read', 'issue:evidence', 'issue:triage', 'issue:escalate', 'issue:resolve', 'issue:verify', 'issue:close', 'operations:read', 'operations:write', 'event:closeout', 'hospitality:order', 'hospitality:fulfill', 'notification:read', 'tenant:admin']);
 const uuidClaimPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export interface Identity {

@@ -16,6 +16,7 @@ import 'features/issues/issue_outbox.dart';
 import 'features/issues/secure_evidence_store.dart';
 import 'features/operations/operations_api.dart';
 import 'features/notifications/push_notifications.dart';
+import 'features/operations/event_closeout_page.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -295,6 +296,7 @@ class _LiveOperationsHome extends ConsumerWidget {
       if (caps.contains('hospitality:order') || caps.contains('hospitality:fulfill') || caps.contains('operations:write') || isAdmin) 'Hospitality',
       if (caps.contains('operations:read')) 'Stock',
       if (caps.contains('operations:read')) 'Staffing',
+      if (caps.contains('event:closeout')) 'Closeout',
       if (isAdmin) 'Setup'
     ];
     final selectedTab =
@@ -365,6 +367,19 @@ class _LiveOperationsHome extends ConsumerWidget {
                         .toList(),
                     api: ref.read(operationsApiProvider),
                     onSaved: () => ref.invalidate(operationsBootstrapProvider)),
+                'Closeout' => EventCloseoutPage(
+                    event: event,
+                    availableTabs: tabs.toSet(),
+                    onOpenWorkflow: (tab) {
+                      final target = tabs.indexOf(tab);
+                      if (target >= 0) {
+                        ref.read(_liveTabProvider.notifier).state = target;
+                      }
+                    },
+                    people: (data['people'] as List? ?? const [])
+                        .whereType<Map>()
+                        .map((e) => Map<String, dynamic>.from(e))
+                        .toList()),
                 _ => _LiveTodayPage(
                     event: event,
                     venueCount: venues.length,
@@ -418,6 +433,7 @@ class _LiveOperationsHome extends ConsumerWidget {
                   ref.invalidate(eventIssuesProvider(event['id'] as String));
                   ref.invalidate(eventTasksProvider(event['id'] as String));
                   ref.invalidate(eventShiftsProvider(event['id'] as String));
+                  ref.invalidate(eventCloseoutProvider(event['id'] as String));
                 }
               },
               icon: const Icon(Icons.refresh)),
@@ -654,7 +670,8 @@ class _NotificationInboxState extends ConsumerState<_NotificationInbox> {
                                                         as String);
                                             ref.invalidate(
                                                 userNotificationsProvider);
-                                            if ((notification['shiftId'] is String || notification['hospitalityOrderId'] is String) && notification['eventId'] is String) {
+                                            final closeoutNotice = notification['kind'] == 'event_closeout_followup';
+                                            if ((notification['shiftId'] is String || notification['hospitalityOrderId'] is String || closeoutNotice) && notification['eventId'] is String) {
                                               final identity = ref.read(operationsBootstrapProvider).valueOrNull?['identity'] as Map<String, dynamic>? ?? const {};
                                               final capabilities = (identity['capabilities'] as List? ?? const []).whereType<String>().toSet();
                                               final tabs = <String>[
@@ -664,11 +681,13 @@ class _NotificationInboxState extends ConsumerState<_NotificationInbox> {
                                                 if (capabilities.contains('hospitality:order') || capabilities.contains('hospitality:fulfill') || capabilities.contains('operations:write') || capabilities.contains('tenant:admin')) 'Hospitality',
                                                 if (capabilities.contains('operations:read')) 'Stock',
                                                 if (capabilities.contains('operations:read')) 'Staffing',
+                                                if (capabilities.contains('event:closeout')) 'Closeout',
                                                 if (capabilities.contains('tenant:admin')) 'Setup',
                                               ];
                                               ref.read(_selectedLiveEventProvider.notifier).state = notification['eventId'] as String;
-                                              final targetTab = notification['hospitalityOrderId'] is String ? 'Hospitality' : 'Staffing';
-                                              ref.read(_liveTabProvider.notifier).state = tabs.indexOf(targetTab);
+                                              final targetTab = closeoutNotice ? 'Closeout' : notification['hospitalityOrderId'] is String ? 'Hospitality' : 'Staffing';
+                                              final targetIndex = tabs.indexOf(targetTab);
+                                              if (targetIndex >= 0) ref.read(_liveTabProvider.notifier).state = targetIndex;
                                               if (context.mounted) Navigator.pop(context);
                                             }
                                           } catch (error) {

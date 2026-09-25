@@ -209,6 +209,48 @@ class OperationsApi {
                       Options(headers: {'Authorization': 'Bearer $token'}))))
               .data ??
           const []);
+  Future<Map<String, dynamic>> eventCloseout(String eventId) async =>
+      (await _request((token) => _dio.get<Map<String, dynamic>>(
+              '/api/v1/events/$eventId/closeout',
+              options: Options(headers: {'Authorization': 'Bearer $token'}))))
+          .data ??
+      const {};
+  Future<void> openEventCloseout(String eventId) async => _command<void>(
+      {'action': 'event.closeout.open', 'eventId': eventId},
+      (token, key) => _dio.post<void>('/api/v1/events/$eventId/closeout',
+          options: Options(headers: {
+            'Authorization': 'Bearer $token',
+            'Idempotency-Key': key
+          })));
+  Future<void> updateCloseoutFollowup(
+          String eventId, Map<String, Object?> input) async =>
+      _command<void>(
+          {'action': 'event.closeout.followup', 'eventId': eventId, ...input},
+          (token, key) => _dio.put<void>(
+              '/api/v1/events/$eventId/closeout/followups',
+              data: input,
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key
+              })));
+  Future<void> updateCloseoutSummary(String eventId, String summary) async =>
+      _command<void>(
+          {'action': 'event.closeout.summary', 'eventId': eventId, 'summary': summary},
+          (token, key) => _dio.put<void>(
+              '/api/v1/events/$eventId/closeout/summary',
+              data: {'summary': summary},
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key
+              })));
+  Future<void> finalizeEventCloseout(String eventId) async => _command<void>(
+      {'action': 'event.closeout.finalize', 'eventId': eventId},
+      (token, key) => _dio.post<void>(
+          '/api/v1/events/$eventId/closeout/finalize',
+          options: Options(headers: {
+            'Authorization': 'Bearer $token',
+            'Idempotency-Key': key
+          })));
   Future<List<dynamic>> shifts(String eventId) => _cachedGet(
       'shifts.$eventId',
       () async =>
@@ -707,6 +749,9 @@ final issueEventStreamProvider = StreamProvider.autoDispose
 final eventTasksProvider = FutureProvider.autoDispose
     .family<List<dynamic>, String>(
         (ref, id) => ref.watch(operationsApiProvider).tasks(id));
+final eventCloseoutProvider = FutureProvider.autoDispose
+    .family<Map<String, dynamic>, String>(
+        (ref, id) => ref.watch(operationsApiProvider).eventCloseout(id));
 final eventInventoryCountsProvider = FutureProvider.autoDispose
     .family<List<Map<String, dynamic>>, String>(
         (ref, id) => ref.watch(operationsApiProvider).inventoryCounts(id));

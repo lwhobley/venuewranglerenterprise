@@ -29,6 +29,8 @@ import { InventoryController } from './inventory.controller';
 import { InventoryService } from './inventory.service';
 import { HospitalityController } from './hospitality.controller';
 import { HospitalityService } from './hospitality.service';
+import { CloseoutController } from './closeout.controller';
+import { CloseoutService } from './closeout.service';
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true, validate: (env) => {
@@ -41,7 +43,7 @@ import { HospitalityService } from './hospitality.service';
     }
     return env;
   } })],
-  controllers: [AuthController, HealthController, IssuesController, OperationsController, StaffingController, StaffAvailabilityController, InventoryController, HospitalityController, NotificationsController, ScimController, IntegrationController, PushDevicesController, AuditController],
-  providers: [AuthProvidersService, PrismaService, JwtIdentityGuard, IssuesService, OperationsService, StaffingService, StaffAvailabilityService, InventoryService, HospitalityService, NotificationsService, EvidenceService, ScimService, IntegrationService, PushDevicesService, PushNotificationsService, AuditService],
+  controllers: [AuthController, HealthController, IssuesController, OperationsController, StaffingController, StaffAvailabilityController, InventoryController, HospitalityController, CloseoutController, NotificationsController, ScimController, IntegrationController, PushDevicesController, AuditController],
+  providers: [AuthProvidersService, PrismaService, JwtIdentityGuard, IssuesService, OperationsService, StaffingService, StaffAvailabilityService, InventoryService, HospitalityService, CloseoutService, NotificationsService, EvidenceService, ScimService, IntegrationService, PushDevicesService, PushNotificationsService, AuditService],
 })
 export class AppModule {}

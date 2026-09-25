@@ -49,7 +49,7 @@ async function setup() {
     const provider = providers.find((item) => item.id === providerId)!;
     return new SignJWT({
       ...(providerId === 'okta' ? { cid: provider.clientId } : { azp: provider.clientId }),
-      capabilities: ['issue:read', 'operations:write'],
+      capabilities: ['issue:read', 'operations:write', 'event:closeout'],
       event_ids: [eventId],
       venue_ids: [venueId],
       location_ids: [locationId],
@@ -89,7 +89,7 @@ describe('enterprise JWT identity guard', () => {
       tenantId,
       organizationSlug: 'harbor-city',
       subject: `${providers.find((item) => item.id === providerId)!.issuer}|worker-1`,
-      capabilities: ['issue:read', 'operations:write'],
+      capabilities: ['issue:read', 'operations:write', 'event:closeout'],
       venueIds: [venueId],
       eventIds: [eventId],
       locationIds: [locationId],
