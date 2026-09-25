@@ -86,10 +86,12 @@ class HospitalityPage extends ConsumerWidget {
                       onPressed: () async {
                         await showDialog<void>(
                             context: context,
-                            builder: (_) => HospitalityMenuManagerDialog(
-                                venueId: venueId));
-                        ref.invalidate(venueHospitalityMenuItemsProvider(venueId));
-                        ref.invalidate(adminVenueHospitalityMenuItemsProvider(venueId));
+                            builder: (_) =>
+                                HospitalityMenuManagerDialog(venueId: venueId));
+                        ref.invalidate(
+                            venueHospitalityMenuItemsProvider(venueId));
+                        ref.invalidate(
+                            adminVenueHospitalityMenuItemsProvider(venueId));
                       },
                       icon: const Icon(Icons.restaurant_menu_outlined),
                     ),
@@ -769,7 +771,7 @@ class _OrderComposerState extends ConsumerState<_OrderComposer> {
                         ...menuItems.map((item) => DropdownMenuItem(
                             value: item['id'] as String,
                             child: Text(
-                                  '${item['name']} (${item['category']}) · ${item['currencyCode'] ?? 'USD'} ${item['unitPrice']} / ${item['defaultUnit']}'))),
+                                '${item['name']} (${item['category']}) · ${item['currencyCode'] ?? 'USD'} ${item['unitPrice']} / ${item['defaultUnit']}'))),
                       ],
                       onChanged: _saving
                           ? null

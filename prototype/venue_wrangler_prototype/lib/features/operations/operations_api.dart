@@ -773,7 +773,11 @@ class OperationsApi {
   Future<void> createHospitalityMenuItem(
           String venueId, Map<String, Object?> data) async =>
       _command<void>(
-          {'action': 'hospitality.menu_item.create', 'venueId': venueId, 'data': data},
+          {
+            'action': 'hospitality.menu_item.create',
+            'venueId': venueId,
+            'data': data
+          },
           (token, key) => _dio.post<void>(
                 '/api/v1/admin/venues/$venueId/hospitality/menu-items',
                 data: data,
@@ -794,7 +798,12 @@ class OperationsApi {
   Future<void> setHospitalityMenuItemActive(
           String venueId, String itemId, bool active) async =>
       _command<void>(
-          {'action': 'hospitality.menu_item.status', 'venueId': venueId, 'itemId': itemId, 'active': active},
+          {
+            'action': 'hospitality.menu_item.status',
+            'venueId': venueId,
+            'itemId': itemId,
+            'active': active
+          },
           (token, key) => _dio.put<void>(
                 '/api/v1/admin/venues/$venueId/hospitality/menu-items/$itemId',
                 data: {'active': active},
@@ -805,16 +814,20 @@ class OperationsApi {
               ));
   Future<Map<String, dynamic>> hospitalityPolicy() async =>
       (await _request((token) => _dio.get<Map<String, dynamic>>(
-            '/api/v1/admin/hospitality-policy',
-            options: Options(headers: {'Authorization': 'Bearer $token'}),
-          )))
+                '/api/v1/admin/hospitality-policy',
+                options: Options(headers: {'Authorization': 'Bearer $token'}),
+              )))
           .data!;
   Future<void> updateHospitalityPolicy({
     required double? threshold,
     required String currencyCode,
   }) async =>
       _command<void>(
-          {'action': 'hospitality.policy.update', 'threshold': threshold, 'currencyCode': currencyCode},
+          {
+            'action': 'hospitality.policy.update',
+            'threshold': threshold,
+            'currencyCode': currencyCode
+          },
           (token, key) => _dio.put<void>(
                 '/api/v1/admin/hospitality-policy',
                 data: {
@@ -1307,9 +1320,8 @@ final venueHospitalityMenuItemsProvider = FutureProvider.autoDispose
     .family<List<Map<String, dynamic>>, String>(
         (ref, id) => ref.watch(operationsApiProvider).hospitalityMenuItems(id));
 final adminVenueHospitalityMenuItemsProvider = FutureProvider.autoDispose
-    .family<List<Map<String, dynamic>>, String>((ref, id) => ref
-        .watch(operationsApiProvider)
-        .adminHospitalityMenuItems(id));
+    .family<List<Map<String, dynamic>>, String>((ref, id) =>
+        ref.watch(operationsApiProvider).adminHospitalityMenuItems(id));
 final eventHospitalityDraftsProvider = FutureProvider.autoDispose
     .family<List<Map<String, dynamic>>, String>(
         (ref, id) => ref.watch(operationsApiProvider).hospitalityDrafts(id));

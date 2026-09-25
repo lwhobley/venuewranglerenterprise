@@ -226,10 +226,10 @@ export class HospitalityService {
         where: { id: identity.tenantId },
         select: { hospitalityApprovalThreshold: true },
       });
-      const threshold = org?.hospitalityApprovalThreshold ?? null;
-      const hasUnpricedCustomLine = orderLines.some(line => line.unitPrice === null);
+      const threshold = org?.hospitalityApprovalThreshold != null ? new Prisma.Decimal(org.hospitalityApprovalThreshold) : null;
+      const hasUnpricedCustomLine = orderLines.some(line => line.unitPrice === null || line.unitPrice === undefined);
       const estimatedSubtotal = orderLines.reduce(
-        (sum, line) => line.unitPrice === null ? sum : sum.plus(line.unitPrice.mul(line.quantity)),
+        (sum, line) => (line.unitPrice == null ? sum : sum.plus(new Prisma.Decimal(line.unitPrice).mul(new Prisma.Decimal(line.quantity)))),
         new Prisma.Decimal(0),
       );
       const requiresApproval = threshold !== null && (hasUnpricedCustomLine || estimatedSubtotal.greaterThan(threshold));

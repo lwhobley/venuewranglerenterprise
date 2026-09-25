@@ -45,15 +45,20 @@ class _HospitalityMenuManagerDialogState
                 const Text(
                     'Menu prices use the tenant currency configured in approval policy.'),
                 const SizedBox(height: 12),
-                ref.watch(adminVenueHospitalityMenuItemsProvider(widget.venueId)).when(
+                ref
+                    .watch(
+                        adminVenueHospitalityMenuItemsProvider(widget.venueId))
+                    .when(
                       loading: () => const LinearProgressIndicator(),
-                      error: (error, _) => Text('Menu catalog unavailable: $error'),
+                      error: (error, _) =>
+                          Text('Menu catalog unavailable: $error'),
                       data: (items) => Column(
                         children: [
                           for (final item in items)
                             ListTile(
                               contentPadding: EdgeInsets.zero,
-                              title: Text(item['name'] as String? ?? 'Menu item'),
+                              title:
+                                  Text(item['name'] as String? ?? 'Menu item'),
                               subtitle: Text(
                                   '${item['category']} · ${item['currencyCode'] ?? 'USD'} ${item['unitPrice']} / ${item['defaultUnit']}${item['active'] == true ? '' : ' · inactive'}'),
                               trailing: Switch.adaptive(
@@ -88,8 +93,8 @@ class _HospitalityMenuManagerDialogState
                     child: TextField(
                         controller: _unit,
                         maxLength: 24,
-                        decoration: const InputDecoration(
-                            labelText: 'Default unit')),
+                        decoration:
+                            const InputDecoration(labelText: 'Default unit')),
                   ),
                 ]),
                 Row(children: [
@@ -143,8 +148,13 @@ class _HospitalityMenuManagerDialogState
     final unit = _unit.text.trim();
     final category = _category.text.trim();
     final price = double.tryParse(_price.text.trim());
-    if (name.length < 2 || unit.isEmpty || category.isEmpty || price == null || price < 0) {
-      setState(() => _error = 'Enter an item name, category, unit, and valid non-negative price.');
+    if (name.length < 2 ||
+        unit.isEmpty ||
+        category.isEmpty ||
+        price == null ||
+        price < 0) {
+      setState(() => _error =
+          'Enter an item name, category, unit, and valid non-negative price.');
       return;
     }
     setState(() {
@@ -152,15 +162,15 @@ class _HospitalityMenuManagerDialogState
       _error = null;
     });
     try {
-      await ref.read(operationsApiProvider).createHospitalityMenuItem(
-          widget.venueId,
-          {
-            'name': name,
-            'description': _description.text.trim(),
-            'category': category,
-            'unit': unit,
-            'unitPrice': price,
-          });
+      await ref
+          .read(operationsApiProvider)
+          .createHospitalityMenuItem(widget.venueId, {
+        'name': name,
+        'description': _description.text.trim(),
+        'category': category,
+        'unit': unit,
+        'unitPrice': price,
+      });
       _name.clear();
       _description.clear();
       _price.clear();
@@ -277,8 +287,8 @@ class _HospitalityPolicyFormState extends State<_HospitalityPolicyForm> {
             Padding(
                 padding: const EdgeInsets.only(top: 8),
                 child: Text(_error!,
-                    style: TextStyle(
-                        color: Theme.of(context).colorScheme.error))),
+                    style:
+                        TextStyle(color: Theme.of(context).colorScheme.error))),
           const SizedBox(height: 8),
           Align(
             alignment: Alignment.centerRight,
@@ -298,10 +308,12 @@ class _HospitalityPolicyFormState extends State<_HospitalityPolicyForm> {
   Future<void> _save() async {
     final currency = _currency.text.trim().toUpperCase();
     final thresholdText = _threshold.text.trim();
-    final threshold = thresholdText.isEmpty ? null : double.tryParse(thresholdText);
+    final threshold =
+        thresholdText.isEmpty ? null : double.tryParse(thresholdText);
     if (!RegExp(r'^[A-Z]{3}$').hasMatch(currency) ||
         (thresholdText.isNotEmpty && (threshold == null || threshold < 0))) {
-      setState(() => _error = 'Enter a three-letter currency and a non-negative threshold.');
+      setState(() => _error =
+          'Enter a three-letter currency and a non-negative threshold.');
       return;
     }
     setState(() {
@@ -311,8 +323,8 @@ class _HospitalityPolicyFormState extends State<_HospitalityPolicyForm> {
     try {
       await widget.onSave(threshold, currency);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Hospitality approval policy saved.')));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Hospitality approval policy saved.')));
       }
     } catch (error) {
       setState(() => _error = 'Could not save policy: $error');
@@ -322,5 +334,6 @@ class _HospitalityPolicyFormState extends State<_HospitalityPolicyForm> {
   }
 }
 
-final hospitalityPolicyProvider = FutureProvider.autoDispose<Map<String, dynamic>>(
-    (ref) => ref.watch(operationsApiProvider).hospitalityPolicy());
+final hospitalityPolicyProvider =
+    FutureProvider.autoDispose<Map<String, dynamic>>(
+        (ref) => ref.watch(operationsApiProvider).hospitalityPolicy());
