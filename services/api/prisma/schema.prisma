@@ -94,6 +94,8 @@ model Organization {
   setupAuditEvents      TenantSetupAuditEvent[]
   staffShifts           StaffShift[]
   staffShiftAuditEvents StaffShiftAuditEvent[]
+  staffUnavailability  StaffUnavailability[]
+  staffUnavailabilityAudits StaffUnavailabilityAudit[]
 
   @@map("organizations")
 }
@@ -333,6 +335,38 @@ model StaffShift {
   @@index([organizationId, eventId, state, startsAt])
   @@index([organizationId, assignedSubject, startsAt])
   @@map("staff_shifts")
+}
+
+model StaffUnavailability {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  subject        String
+  startsAt       DateTime @map("starts_at")
+  endsAt         DateTime @map("ends_at")
+  note           String   @default("")
+  deletedAt      DateTime? @map("deleted_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  auditEvents    StaffUnavailabilityAudit[]
+
+  @@unique([id, organizationId])
+  @@index([organizationId, subject, startsAt, endsAt])
+  @@map("staff_unavailability")
+}
+
+model StaffUnavailabilityAudit {
+  id                String   @id @default(uuid()) @db.Uuid
+  organizationId    String   @map("organization_id") @db.Uuid
+  unavailabilityId  String   @map("unavailability_id") @db.Uuid
+  actorId           String   @map("actor_id")
+  action            String
+  createdAt         DateTime @default(now()) @map("created_at")
+  organization      Organization @relation(fields: [organizationId], references: [id])
+  unavailability    StaffUnavailability @relation(fields: [unavailabilityId, organizationId], references: [id, organizationId], map: "staff_unavailability_audit_tenant_fk")
+
+  @@index([organizationId, unavailabilityId, createdAt])
+  @@map("staff_unavailability_audit")
 }
 
 model StaffShiftAuditEvent {

@@ -15,6 +15,8 @@ const eventB = '20000000-0000-4000-8000-000000000002';
 const locationA = '30000000-0000-4000-8000-000000000001';
 const annexLocationA = '30000000-0000-4000-8000-000000000004';
 const locationB = '30000000-0000-4000-8000-000000000010';
+const subjectA = 'https://test.invalid|worker-a';
+const subjectB = 'https://test.invalid|worker-b';
 const rollback = new Error('rollback tenant isolation fixtures');
 
 async function setTenant(tx, tenantId, actorId = 'tenant-isolation-test') {
@@ -62,7 +64,11 @@ try {
       await tx.issueAuditEvent.create({ data: { organizationId: tenantA, issueId: issueA.id, actorId: 'tenant-isolation-test', action: 'reported' } });
       await tx.commandReceipt.create({ data: { organizationId: tenantA, key: `tenant-a-${randomUUID()}`, fingerprint: 'a', action: 'test', response: {} } });
       await tx.issueDomainEvent.create({ data: { organizationId: tenantA, eventId: eventA, issueId: issueA.id, action: 'reported', payload: { issueId: issueA.id } } });
-      await tx.person.create({ data: { organizationId: tenantA, externalSubject: `tenant-a-${randomUUID()}`, email: `${randomUUID()}@example.invalid`, displayName: 'Tenant A' } });
+      await tx.person.create({ data: { organizationId: tenantA, externalSubject: subjectA, email: `${randomUUID()}@example.invalid`, displayName: 'Tenant A' } });
+      await setTenant(tx, tenantA, subjectA);
+      const unavailableA = await tx.staffUnavailability.create({ data: { organizationId: tenantA, subject: subjectA, startsAt: new Date('2026-10-01T17:00:00Z'), endsAt: new Date('2026-10-01T22:00:00Z'), note: 'test' } });
+      await tx.staffUnavailabilityAudit.create({ data: { organizationId: tenantA, unavailabilityId: unavailableA.id, actorId: subjectA, action: 'created' } });
+      await setTenant(tx, tenantA);
       const setupAuditA = await tx.tenantSetupAuditEvent.create({ data: { organizationId: tenantA, actorId: 'tenant-isolation-test', action: 'created', resourceType: 'venue', resourceId: venueA, changedFields: ['name'] } });
       await tx.externalIntegrationEvent.create({ data: { organizationId: tenantA, eventId: eventA, source: 'test-labor', externalId: `tenant-a-${randomUUID()}`, eventType: 'test.snapshot', occurredAt: new Date(), payload: { tenant: 'a' }, bodySha256: 'a'.repeat(64) } });
       const taskA = await tx.operationalTask.create({ data: { organizationId: tenantA, venueId: venueA, eventId: eventA, locationId: locationA, kind: 'SERVICE', title: `Tenant A ${randomUUID()}`, createdBy: 'tenant-isolation-test', updatedBy: 'tenant-isolation-test' } });
@@ -86,7 +92,11 @@ try {
       await tx.issueAuditEvent.create({ data: { organizationId: tenantB, issueId: issueB.id, actorId: 'tenant-isolation-test', action: 'reported' } });
       await tx.commandReceipt.create({ data: { organizationId: tenantB, key: `tenant-b-${randomUUID()}`, fingerprint: 'b', action: 'test', response: {} } });
       await tx.issueDomainEvent.create({ data: { organizationId: tenantB, eventId: eventB, issueId: issueB.id, action: 'reported', payload: { issueId: issueB.id } } });
-      await tx.person.create({ data: { organizationId: tenantB, externalSubject: `tenant-b-${randomUUID()}`, email: `${randomUUID()}@example.invalid`, displayName: 'Tenant B' } });
+      await tx.person.create({ data: { organizationId: tenantB, externalSubject: subjectB, email: `${randomUUID()}@example.invalid`, displayName: 'Tenant B' } });
+      await setTenant(tx, tenantB, subjectB);
+      const unavailableB = await tx.staffUnavailability.create({ data: { organizationId: tenantB, subject: subjectB, startsAt: new Date('2026-10-01T17:00:00Z'), endsAt: new Date('2026-10-01T22:00:00Z') } });
+      await tx.staffUnavailabilityAudit.create({ data: { organizationId: tenantB, unavailabilityId: unavailableB.id, actorId: subjectB, action: 'created' } });
+      await setTenant(tx, tenantB);
       const setupAuditB = await tx.tenantSetupAuditEvent.create({ data: { organizationId: tenantB, actorId: 'tenant-isolation-test', action: 'created', resourceType: 'venue', resourceId: venueB, changedFields: ['name'] } });
       await tx.externalIntegrationEvent.create({ data: { organizationId: tenantB, eventId: eventB, source: 'test-labor', externalId: `tenant-b-${randomUUID()}`, eventType: 'test.snapshot', occurredAt: new Date(), payload: { tenant: 'b' }, bodySha256: 'b'.repeat(64) } });
       const taskB = await tx.operationalTask.create({ data: { organizationId: tenantB, venueId: venueB, eventId: eventB, locationId: locationB, kind: 'SERVICE', title: `Tenant B ${randomUUID()}`, createdBy: 'tenant-isolation-test', updatedBy: 'tenant-isolation-test' } });
@@ -101,6 +111,7 @@ try {
 
       await setTenant(tx, tenantA);
       assert.equal(await tx.userNotification.count({ where: { organizationId: tenantA, shiftId: shiftA.id, recipientSubject: 'tenant-isolation-test' } }), 1, 'the assigned worker can read the shift notification');
+      assert.equal(await tx.staffUnavailability.count({ where: { organizationId: tenantA } }), 1, 'tenant A sees only its availability records');
       const auditService = new AuditService({
         withTenant: async (identity, action) => {
           await setTenant(tx, identity.tenantId, identity.subject);
@@ -131,6 +142,8 @@ try {
       assert.equal(auditB.items.some((row) => row.resourceId === issueA.id || row.resourceId === taskA.id || row.id === setupAuditA.id), false, 'tenant B audit feed must exclude tenant A records');
 
       await setTenant(tx, tenantA);
+      assert.equal(await tx.staffUnavailability.count({ where: { organizationId: tenantB } }), 0, 'tenant A cannot read tenant B availability');
+      assert.equal(await tx.staffUnavailabilityAudit.count({ where: { organizationId: tenantB } }), 0, 'tenant A cannot read tenant B availability audit');
       await assertTenantCannotRead(tx, tenantA, tenantB, issueB.id, taskB.id, shiftB.id);
       const updated = await tx.issue.updateMany({ where: { id: issueB.id }, data: { title: 'forbidden update' } });
       const deleted = await tx.issue.deleteMany({ where: { id: issueB.id } });
@@ -142,6 +155,8 @@ try {
       assert.equal(updatedShift.count, 0, 'tenant A must not update tenant B staff shifts');
 
       await setTenant(tx, tenantB);
+      assert.equal(await tx.staffUnavailability.count({ where: { organizationId: tenantA } }), 0, 'tenant B cannot read tenant A availability');
+      assert.equal(await tx.staffUnavailabilityAudit.count({ where: { organizationId: tenantA } }), 0, 'tenant B cannot read tenant A availability audit');
       await assertTenantCannotRead(tx, tenantB, tenantA, issueA.id, taskA.id, shiftA.id);
       await setTenant(tx, tenantB, 'unrelated-recipient');
       assert.equal(await tx.userNotification.count({ where: { organizationId: tenantB } }), 0, 'notifications must only be visible to their recipient subject');

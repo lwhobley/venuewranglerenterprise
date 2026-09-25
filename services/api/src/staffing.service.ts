@@ -42,6 +42,8 @@ export class StaffingService {
       if (!event) throw new NotFoundException('Event not found in the selected venue.');
       if (dto.locationId && !await tx.location.findFirst({ where: { id: dto.locationId, venueId: dto.venueId, organizationId: identity.tenantId } })) throw new NotFoundException('Location not found in this venue.');
       await this.assertAssignable(tx, identity, dto.assignedSubject);
+      await this.lockScheduleSubjects(tx, identity.tenantId, [dto.assignedSubject]);
+      await this.assertAvailable(tx, identity.tenantId, dto.assignedSubject, start, end);
       const shift = await tx.staffShift.create({ data: {
         organizationId: identity.tenantId, eventId, venueId: dto.venueId, locationId: dto.locationId,
         assignedSubject: dto.assignedSubject, role: input.role, instructions: input.instructions,
@@ -80,6 +82,9 @@ export class StaffingService {
         await this.lockScheduleSubjects(tx, identity.tenantId, [current.assignedSubject, assignedSubject]);
         await this.assertNoOverlap(tx, identity.tenantId, assignedSubject, start, end, shiftId);
       }
+      const nextSubject = dto.assignedSubject === undefined ? current.assignedSubject : dto.assignedSubject;
+      if (current.state !== 'PUBLISHED') await this.lockScheduleSubjects(tx, identity.tenantId, [nextSubject]);
+      await this.assertAvailable(tx, identity.tenantId, nextSubject, start, end);
       const patchData = {
         ...dto,
         role: normalized.role,
@@ -111,6 +116,7 @@ export class StaffingService {
       if (current.state !== 'DRAFT') throw new ConflictException('Only a draft shift can be published.');
       await this.assertAssignable(tx, identity, current.assignedSubject ?? undefined);
       await this.lockScheduleSubjects(tx, identity.tenantId, [current.assignedSubject]);
+      await this.assertAvailable(tx, identity.tenantId, current.assignedSubject, current.startsAt, current.endsAt);
       await this.assertNoOverlap(tx, identity.tenantId, current.assignedSubject, current.startsAt, current.endsAt, shiftId);
       const updated = await tx.staffShift.update({ where: { id: shiftId }, data: { state: 'PUBLISHED', response: 'PENDING', responseRevision: null, updatedBy: identity.subject } });
       await this.audit(tx, identity, shiftId, 'published', current, updated);
@@ -132,6 +138,7 @@ export class StaffingService {
       const activePerson = await tx.person.findFirst({ where: { organizationId: identity.tenantId, externalSubject: identity.subject, active: true }, select: { id: true } });
       if (!activePerson) throw new ForbiddenException('An active organization roster record is required to claim a shift.');
       await this.lockScheduleSubjects(tx, identity.tenantId, [identity.subject]);
+      await this.assertAvailable(tx, identity.tenantId, identity.subject, current.startsAt, current.endsAt);
       await this.assertNoOverlap(tx, identity.tenantId, identity.subject, current.startsAt, current.endsAt, shiftId);
       const updated = await tx.staffShift.update({ where: { id: shiftId }, data: {
         assignedSubject: identity.subject,
@@ -242,6 +249,15 @@ export class StaffingService {
       endsAt: { gt: startsAt },
     }, select: { id: true } });
     if (conflict) throw new ConflictException('This worker already has an overlapping published shift. Adjust the schedule before publishing.');
+  }
+
+  private async assertAvailable(tx: Prisma.TransactionClient, tenantId: string, subject: string | null | undefined, startsAt: Date, endsAt: Date) {
+    if (!subject) return;
+    const unavailable = await tx.staffUnavailability.findFirst({ where: {
+      organizationId: tenantId, subject, deletedAt: null,
+      startsAt: { lt: endsAt }, endsAt: { gt: startsAt },
+    }, select: { id: true } });
+    if (unavailable) throw new ConflictException('This worker has marked part of the shift unavailable. Adjust the schedule before assigning or publishing.');
   }
 
   private audit(tx: Prisma.TransactionClient, identity: Identity, shiftId: string, action: string, before?: unknown, after?: unknown, reason?: string) {

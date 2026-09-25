@@ -217,6 +217,22 @@ class OperationsApi {
                       Options(headers: {'Authorization': 'Bearer $token'}))))
               .data ??
           const []);
+  Future<List<dynamic>> myUnavailability() async =>
+      (await _request((token) => _dio.get<List<dynamic>>(
+              '/api/v1/me/unavailability',
+              options: Options(headers: {'Authorization': 'Bearer $token'}))))
+          .data ?? const [];
+  Future<void> createUnavailability(DateTime startsAt, DateTime endsAt) async =>
+      _command<void>(
+          {'action': 'staff-unavailability.create', 'startsAt': startsAt.toUtc().toIso8601String(), 'endsAt': endsAt.toUtc().toIso8601String()},
+          (token, key) => _dio.post<void>('/api/v1/me/unavailability',
+              data: {'startsAt': startsAt.toUtc().toIso8601String(), 'endsAt': endsAt.toUtc().toIso8601String()},
+              options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
+  Future<void> deleteUnavailability(String id) async =>
+      _command<void>(
+          {'action': 'staff-unavailability.delete', 'id': id},
+          (token, key) => _dio.delete<void>('/api/v1/me/unavailability/$id',
+              options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
   Future<List<dynamic>> evidence(String eventId, String issueId) async =>
       (await _request((token) => _dio.get<List<dynamic>>(
               '/api/v1/events/$eventId/issues/$issueId/evidence',
@@ -445,5 +461,7 @@ final eventTasksProvider = FutureProvider.autoDispose
 final eventShiftsProvider = FutureProvider.autoDispose
     .family<List<dynamic>, String>(
         (ref, id) => ref.watch(operationsApiProvider).shifts(id));
+final myUnavailabilityProvider = FutureProvider.autoDispose<List<dynamic>>(
+    (ref) => ref.watch(operationsApiProvider).myUnavailability());
 final userNotificationsProvider = FutureProvider.autoDispose<List<dynamic>>(
     (ref) => ref.watch(operationsApiProvider).notifications());

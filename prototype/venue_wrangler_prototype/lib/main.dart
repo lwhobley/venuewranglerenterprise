@@ -1167,7 +1167,9 @@ class _LiveStaffingPage extends ConsumerWidget {
       error: (error, _) => Center(
           child: Text('Staffing schedule unavailable: $error',
               textAlign: TextAlign.center)),
-      data: (rows) => rows.isEmpty
+      data: (rows) => Column(children: [
+            const _MyUnavailabilityPanel(),
+            Expanded(child: rows.isEmpty
           ? const Center(child: Text('No shifts are scheduled for this event.'))
           : ListView.separated(
               itemCount: rows.length,
@@ -1223,9 +1225,56 @@ class _LiveStaffingPage extends ConsumerWidget {
                   ),
                 );
               },
-            ),
+            )),
+          ]),
     );
   }
+}
+
+class _MyUnavailabilityPanel extends ConsumerWidget {
+  const _MyUnavailabilityPanel();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) => Card(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(
+            title: const Text('My unavailable time'),
+            subtitle: const Text('Tell schedulers which days you cannot work.'),
+            trailing: TextButton(onPressed: () async {
+              final now = DateTime.now();
+              final day = await showDatePicker(context: context, initialDate: now.add(const Duration(days: 1)), firstDate: now, lastDate: now.add(const Duration(days: 730)));
+              if (day == null || !context.mounted) return;
+              try {
+                await ref.read(operationsApiProvider).createUnavailability(DateTime(day.year, day.month, day.day), DateTime(day.year, day.month, day.day).add(const Duration(days: 1)));
+                ref.invalidate(myUnavailabilityProvider);
+              } catch (error) {
+                if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not save unavailable time: $error')));
+              }
+            }, child: const Text('Block a day')),
+          ),
+          ref.watch(myUnavailabilityProvider).when(
+            loading: () => const LinearProgressIndicator(),
+            error: (error, _) => ListTile(title: const Text('Availability could not be loaded'), subtitle: Text('$error')),
+            data: (rows) => Column(children: rows.map((item) {
+              final row = Map<String, dynamic>.from(item as Map);
+              final start = DateTime.tryParse(row['startsAt'] as String? ?? '')?.toLocal();
+              return ListTile(
+                dense: true,
+                leading: const Icon(Icons.event_busy_outlined),
+                title: Text(start == null ? 'Unavailable time' : '${start.month}/${start.day}'),
+                trailing: IconButton(tooltip: 'Remove unavailable time', icon: const Icon(Icons.delete_outline), onPressed: () async {
+                  try {
+                    await ref.read(operationsApiProvider).deleteUnavailability(row['id'] as String);
+                    ref.invalidate(myUnavailabilityProvider);
+                  } catch (error) {
+                    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not remove unavailable time: $error')));
+                  }
+                }),
+              );
+            }).toList()),
+          ),
+        ]),
+      );
 }
 
 String _shiftTimeLabel(DateTime? start, DateTime? end) {

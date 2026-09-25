@@ -19,6 +19,7 @@ function harness(current?: Record<string, unknown>) {
     event: { findFirst: vi.fn().mockResolvedValue({ id: 'event-1' }) },
     location: { findFirst: vi.fn().mockResolvedValue({ id: 'location-1' }) },
     person: { findFirst: vi.fn().mockResolvedValue({ id: 'person-1' }) },
+    staffUnavailability: { findFirst: vi.fn().mockResolvedValue(null) },
     staffShift: {
       create: vi.fn().mockImplementation(({ data }) => ({ id: 'shift-1', state: 'DRAFT', response: 'PENDING', attendance: 'NOT_STARTED', revision: 1, ...data })),
       findFirst: vi.fn().mockImplementation(({ where }) => Promise.resolve(typeof where?.id === 'object' ? null : current ?? null)),
