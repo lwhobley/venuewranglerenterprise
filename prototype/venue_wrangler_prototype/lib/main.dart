@@ -291,6 +291,7 @@ class _LiveOperationsHome extends ConsumerWidget {
       if (caps.contains('issue:read') || caps.contains('issue:report'))
         'Issues',
       if (caps.contains('operations:read')) 'Operations',
+      if (caps.contains('operations:read')) 'Stock',
       if (caps.contains('operations:read')) 'Staffing',
       if (isAdmin) 'Setup'
     ];
@@ -334,6 +335,11 @@ class _LiveOperationsHome extends ConsumerWidget {
                         .toList()),
                 'Operations' => _LiveTasksPage(
                     event: event, canWrite: caps.contains('operations:write')),
+                'Stock' => _LiveInventoryPage(
+                    event: event,
+                    canWrite: caps.contains('operations:write'),
+                    isAdmin: isAdmin,
+                    locations: locations),
                 'Staffing' => _LiveStaffingPage(
                     event: event,
                     canWrite: caps.contains('operations:write'),
@@ -1173,6 +1179,98 @@ class _LiveTasksPage extends ConsumerWidget {
                                       ])
                               : Text(state)));
                 }).toList()));
+}
+
+class _LiveInventoryPage extends ConsumerWidget {
+  const _LiveInventoryPage({required this.event, required this.canWrite, required this.isAdmin, required this.locations});
+  final Map<String, dynamic> event;
+  final bool canWrite;
+  final bool isAdmin;
+  final List<Map<String, dynamic>> locations;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final eventId = event['id'] as String;
+    final venueId = event['venueId'] as String;
+    return ref.watch(eventInventoryCountsProvider(eventId)).when(
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (error, _) => Center(child: Text('Inventory counts unavailable: $error')),
+      data: (counts) => Column(children: [
+        Padding(padding: const EdgeInsets.all(12), child: Wrap(spacing: 8, children: [
+          if (canWrite) FilledButton.icon(onPressed: () => _startStockCount(context, ref, eventId, venueId), icon: const Icon(Icons.playlist_add_check), label: const Text('Start venue count')),
+          for (final location in locations.where((row) => row['venueId'] == venueId)) if (canWrite) OutlinedButton.icon(onPressed: () => _startStockCount(context, ref, eventId, venueId, locationId: location['id'] as String), icon: const Icon(Icons.location_on_outlined), label: Text('Count ${location['name']}')),
+          if (isAdmin) OutlinedButton.icon(onPressed: () => _addStockItem(context, ref, venueId, eventId), icon: const Icon(Icons.add_box_outlined), label: const Text('Add stock item')),
+        ])),
+        if (counts.isEmpty) const Expanded(child: Center(child: Text('No stock counts for this event. Start a count or add items to the catalog.')))
+        else Expanded(child: ListView.builder(itemCount: counts.length, itemBuilder: (context, index) {
+          final count = counts[index];
+          final lines = (count['lines'] as List? ?? const []).whereType<Map>().map((row) => Map<String, dynamic>.from(row)).toList();
+          final countId = count['id'] as String;
+          final state = count['state'] as String? ?? 'IN_PROGRESS';
+          return Card(child: ExpansionTile(
+            title: Text('Stock count · $state'),
+            subtitle: Text('Started ${DateTime.tryParse(count['createdAt'] as String? ?? '')?.toLocal().toString() ?? ''} · ${lines.length} items'),
+            children: [
+              for (final line in lines) ListTile(
+                title: Text('${line['name']} (${line['sku']})'),
+                subtitle: Text('${line['unit']} · counted ${line['countedQuantity'] ?? 'not entered'}${line['expectedQuantity'] == null ? '' : ' · expected ${line['expectedQuantity']}'}'),
+                trailing: canWrite && state == 'IN_PROGRESS' ? IconButton(icon: const Icon(Icons.edit_outlined), tooltip: 'Enter count', onPressed: () => _recordStockLine(context, ref, eventId, countId, line)) : null,
+              ),
+              if (canWrite && state == 'IN_PROGRESS') Align(alignment: Alignment.centerRight, child: TextButton(onPressed: () async {
+                try { await ref.read(operationsApiProvider).inventoryCountCommand(eventId, countId, 'submit'); ref.invalidate(eventInventoryCountsProvider(eventId)); }
+                catch (error) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not submit count: $error'))); }
+              }, child: const Text('Submit for independent review'))),
+              if (canWrite && state == 'SUBMITTED') Align(alignment: Alignment.centerRight, child: TextButton(onPressed: () => _approveStockCount(context, ref, eventId, countId), child: const Text('Review and approve'))),
+            ],
+          ));
+        })),
+      ]),
+    );
+  }
+
+  Future<void> _startStockCount(BuildContext context, WidgetRef ref, String eventId, String venueId, {String? locationId}) async {
+    try { await ref.read(operationsApiProvider).startInventoryCount(eventId, venueId, locationId: locationId); ref.invalidate(eventInventoryCountsProvider(eventId)); }
+    catch (error) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not start count: $error'))); }
+  }
+
+  Future<void> _recordStockLine(BuildContext context, WidgetRef ref, String eventId, String countId, Map<String, dynamic> line) async {
+    final quantity = TextEditingController(text: line['countedQuantity']?.toString() ?? '');
+    final note = TextEditingController(text: line['note']?.toString() ?? '');
+    final save = await showDialog<bool>(context: context, builder: (dialogContext) => AlertDialog(
+      title: Text('Count ${line['name']}'),
+      content: Column(mainAxisSize: MainAxisSize.min, children: [TextField(controller: quantity, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: InputDecoration(labelText: 'Quantity (${line['unit']})')), TextField(controller: note, decoration: const InputDecoration(labelText: 'Note (optional)'))]),
+      actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')), FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Save count'))],
+    ));
+    if (save != true) return;
+    final parsed = double.tryParse(quantity.text.trim());
+    if (parsed == null || parsed < 0) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Enter a valid non-negative quantity.'))); return; }
+    try { await ref.read(operationsApiProvider).recordInventoryCount(eventId, countId, line['id'] as String, parsed, note: note.text.trim().isEmpty ? null : note.text.trim()); ref.invalidate(eventInventoryCountsProvider(eventId)); }
+    catch (error) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not save count: $error'))); }
+  }
+
+  Future<void> _approveStockCount(BuildContext context, WidgetRef ref, String eventId, String countId) async {
+    final reason = TextEditingController();
+    final approve = await showDialog<bool>(context: context, builder: (dialogContext) => AlertDialog(
+      title: const Text('Review stock variance'),
+      content: TextField(controller: reason, minLines: 2, maxLines: 4, decoration: const InputDecoration(labelText: 'Reason for approval')),
+      actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')), FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Approve adjustments'))],
+    ));
+    if (approve != true) return;
+    try { await ref.read(operationsApiProvider).inventoryCountCommand(eventId, countId, 'approve', reason: reason.text.trim()); ref.invalidate(eventInventoryCountsProvider(eventId)); }
+    catch (error) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not approve count: $error'))); }
+  }
+
+  Future<void> _addStockItem(BuildContext context, WidgetRef ref, String venueId, String eventId) async {
+    final sku = TextEditingController(), name = TextEditingController(), unit = TextEditingController();
+    final save = await showDialog<bool>(context: context, builder: (dialogContext) => AlertDialog(
+      title: const Text('Add stock catalog item'),
+      content: Column(mainAxisSize: MainAxisSize.min, children: [TextField(controller: sku, decoration: const InputDecoration(labelText: 'SKU')), TextField(controller: name, decoration: const InputDecoration(labelText: 'Item name')), TextField(controller: unit, decoration: const InputDecoration(labelText: 'Count unit (e.g. case, each)'))]),
+      actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')), FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Add item'))],
+    ));
+    if (save != true) return;
+    try { await ref.read(operationsApiProvider).createInventoryItem(venueId, sku.text.trim(), name.text.trim(), unit.text.trim()); ref.invalidate(eventInventoryCountsProvider(eventId)); if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Catalog item added.'))); }
+    catch (error) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not add catalog item: $error'))); }
+  }
 }
 
 class _LiveStaffingPage extends ConsumerWidget {

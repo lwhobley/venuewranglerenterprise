@@ -385,6 +385,31 @@ class OperationsApi {
                 'Authorization': 'Bearer $token',
                 'Idempotency-Key': key,
               })));
+  Future<List<Map<String, dynamic>>> inventoryCounts(String eventId) async =>
+      (await _request((token) => _dio.get<List<dynamic>>(
+            '/api/v1/events/$eventId/inventory/counts',
+            options: Options(headers: {'Authorization': 'Bearer $token'}),
+          ))).data!.whereType<Map>().map((row) => Map<String, dynamic>.from(row)).toList();
+  Future<void> startInventoryCount(String eventId, String venueId, {String? locationId}) async =>
+      _command<void>({'action': 'stock-count.start', 'eventId': eventId, 'venueId': venueId, 'locationId': locationId},
+          (token, key) => _dio.post<void>('/api/v1/events/$eventId/inventory/counts',
+              data: {'venueId': venueId, if (locationId != null) 'locationId': locationId},
+              options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
+  Future<void> createInventoryItem(String venueId, String sku, String name, String unit, {String? locationId}) async =>
+      _command<void>({'action': 'stock-item.create', 'venueId': venueId, 'sku': sku, 'name': name, 'unit': unit, 'locationId': locationId},
+          (token, key) => _dio.post<void>('/api/v1/admin/inventory/items',
+              data: {'venueId': venueId, 'sku': sku, 'name': name, 'unit': unit, if (locationId != null) 'locationId': locationId},
+              options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
+  Future<void> recordInventoryCount(String eventId, String countId, String lineId, double quantity, {String? note}) async =>
+      _command<void>({'action': 'stock-count.record', 'eventId': eventId, 'countId': countId, 'lineId': lineId, 'quantity': quantity, 'note': note},
+          (token, key) => _dio.put<void>('/api/v1/events/$eventId/inventory/counts/$countId/lines/$lineId',
+              data: {'quantity': quantity, if (note != null) 'note': note},
+              options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
+  Future<void> inventoryCountCommand(String eventId, String countId, String action, {String? reason}) async =>
+      _command<void>({'action': 'stock-count.$action', 'eventId': eventId, 'countId': countId, 'reason': reason},
+          (token, key) => _dio.post<void>('/api/v1/events/$eventId/inventory/counts/$countId/$action',
+              data: action == 'approve' ? {'reason': reason} : null,
+              options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
   Future<Map<String, dynamic>> shiftAssignmentSuggestions(String eventId, String shiftId) async =>
       (await _request((token) => _dio.get<Map<String, dynamic>>(
             '/api/v1/events/$eventId/shifts/$shiftId/assignment-suggestions',
@@ -618,6 +643,9 @@ final issueEventStreamProvider = StreamProvider.autoDispose
 final eventTasksProvider = FutureProvider.autoDispose
     .family<List<dynamic>, String>(
         (ref, id) => ref.watch(operationsApiProvider).tasks(id));
+final eventInventoryCountsProvider = FutureProvider.autoDispose
+    .family<List<Map<String, dynamic>>, String>(
+        (ref, id) => ref.watch(operationsApiProvider).inventoryCounts(id));
 final eventShiftsProvider = FutureProvider.autoDispose
     .family<List<dynamic>, String>(
         (ref, id) => ref.watch(operationsApiProvider).shifts(id));
