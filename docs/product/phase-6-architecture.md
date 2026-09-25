@@ -82,9 +82,10 @@ Health checks fail closed for missing JWT verification configuration, database c
 
 ## Observability
 
-- Every request logs a correlation ID, tenant hash, event ID, command name, outcome, and latency; raw descriptions and tokens are excluded.
-- Metrics track command success/failure/idempotent replay, stale-client conflicts, sync retries, authorization failures, and event-stream delivery lag.
-- Traces connect mobile command, API command, database transaction, durable event, and notification delivery.
+- Every completed HTTP request emits one JSON stdout log with a validated/generated correlation ID, route template, method, status class, duration, and (after authentication) a truncated SHA-256 tenant hash. Request bodies, query strings, tokens, user identifiers, and raw tenant IDs are never logged.
+- OpenTelemetry HTTP and Express spans plus request count and duration metrics are enabled when `OTEL_EXPORTER_OTLP_ENDPOINT` points to an OTLP/HTTP collector. Export is optional for local development. Configure collector access/networking separately; the API exporter does not attach cloud credentials, and collector credentials must not be put in the endpoint URL. Without an endpoint, structured request logs still work, but metrics and traces are not exported.
+- Metrics currently cover HTTP request count and duration with bounded method, route-template, and status-class attributes. Domain command outcomes, replay counts, authorization failures, sync retry counts, and SSE delivery lag remain future instrumentation work; no claim is made that those signals are currently emitted.
+- API request traces are produced by HTTP and Express instrumentation. Cross-service mobile, database transaction, durable event, and notification spans are not yet connected end to end.
 
 ## Implementation artifact map
 
