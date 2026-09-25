@@ -2,7 +2,7 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <application
-        android:label="venue_wrangler_prototype"
+        android:label="Venue Wrangler"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

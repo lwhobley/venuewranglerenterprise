@@ -1,6 +1,6 @@
 {
-    "name": "venue_wrangler_prototype",
-    "short_name": "venue_wrangler_prototype",
+    "name": "Venue Wrangler",
+    "short_name": "Venue Wrangler",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
