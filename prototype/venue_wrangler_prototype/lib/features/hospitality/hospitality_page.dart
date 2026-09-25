@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../operations/operations_api.dart';
+import 'hospitality_admin_dialogs.dart';
 
 class HospitalityPage extends ConsumerWidget {
   const HospitalityPage(
@@ -32,7 +33,7 @@ class HospitalityPage extends ConsumerWidget {
           error: (error, _) =>
               Center(child: Text('Hospitality queue unavailable: $error')),
           data: (orders) => Column(children: [
-            if (canOrder || canFulfill)
+            if (canOrder || canFulfill || canManageMenu || canManagePolicy)
               Padding(
                 padding: const EdgeInsets.all(12),
                 child: Row(children: [
@@ -78,6 +79,27 @@ class HospitalityPage extends ConsumerWidget {
                       },
                       icon: const Icon(Icons.room_service_outlined),
                       label: const Text('New request'),
+                    ),
+                  if (canManageMenu)
+                    IconButton(
+                      tooltip: 'Manage hospitality menu',
+                      onPressed: () async {
+                        await showDialog<void>(
+                            context: context,
+                            builder: (_) => HospitalityMenuManagerDialog(
+                                venueId: venueId));
+                        ref.invalidate(venueHospitalityMenuItemsProvider(venueId));
+                        ref.invalidate(adminVenueHospitalityMenuItemsProvider(venueId));
+                      },
+                      icon: const Icon(Icons.restaurant_menu_outlined),
+                    ),
+                  if (canManagePolicy)
+                    IconButton(
+                      tooltip: 'Hospitality approval policy',
+                      onPressed: () => showDialog<void>(
+                          context: context,
+                          builder: (_) => const HospitalityPolicyDialog()),
+                      icon: const Icon(Icons.rule_outlined),
                     ),
                 ]),
               ),
@@ -264,7 +286,7 @@ class _HospitalityOrderCard extends ConsumerWidget {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'Awaiting manager approval before submission to kitchen (order exceeds tenant threshold).',
+                    'Awaiting manager approval before kitchen acceptance. The configured value uses priced menu items; unpriced custom items also require approval.',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ),
@@ -747,7 +769,7 @@ class _OrderComposerState extends ConsumerState<_OrderComposer> {
                         ...menuItems.map((item) => DropdownMenuItem(
                             value: item['id'] as String,
                             child: Text(
-                                '${item['name']} (${item['category']}) · \$${item['unitPrice']} / ${item['defaultUnit']}'))),
+                                  '${item['name']} (${item['category']}) · ${item['currencyCode'] ?? 'USD'} ${item['unitPrice']} / ${item['defaultUnit']}'))),
                       ],
                       onChanged: _saving
                           ? null

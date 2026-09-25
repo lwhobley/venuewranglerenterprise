@@ -1306,6 +1306,10 @@ final eventHospitalityOrdersProvider = FutureProvider.autoDispose
 final venueHospitalityMenuItemsProvider = FutureProvider.autoDispose
     .family<List<Map<String, dynamic>>, String>(
         (ref, id) => ref.watch(operationsApiProvider).hospitalityMenuItems(id));
+final adminVenueHospitalityMenuItemsProvider = FutureProvider.autoDispose
+    .family<List<Map<String, dynamic>>, String>((ref, id) => ref
+        .watch(operationsApiProvider)
+        .adminHospitalityMenuItems(id));
 final eventHospitalityDraftsProvider = FutureProvider.autoDispose
     .family<List<Map<String, dynamic>>, String>(
         (ref, id) => ref.watch(operationsApiProvider).hospitalityDrafts(id));

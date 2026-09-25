@@ -149,7 +149,7 @@ model Organization {
   staffUnavailability          StaffUnavailability[]
   staffUnavailabilityAudits    StaffUnavailabilityAudit[]
   qualifications               PersonQualification[]
-  hospitalityApprovalThreshold Decimal?                      @map("hospitality_approval_threshold") @db.Decimal(10, 3)
+  hospitalityApprovalThreshold Decimal?                      @map("hospitality_approval_threshold") @db.Decimal(12, 2)
   hospitalityCurrencyCode      String                         @default("USD") @map("hospitality_currency_code") @db.Char(3)
   hospitalityMenuItems         HospitalityMenuItem[]
   hospitalityOrders            HospitalityOrder[]

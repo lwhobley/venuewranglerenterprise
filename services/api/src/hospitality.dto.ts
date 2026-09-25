@@ -38,7 +38,7 @@ export class UpdateHospitalityPolicyDto {
   @IsOptional()
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
-  @Max(99999999)
+  @Max(9999999999.99)
   hospitalityApprovalThreshold?: number | null;
   @ApiPropertyOptional({ description: 'ISO 4217 currency code used for menu prices and approval threshold.' })
   @IsOptional() @IsString() @Matches(/^[A-Z]{3}$/)

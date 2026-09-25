@@ -1,7 +1,7 @@
 ALTER TYPE hospitality_order_state ADD VALUE 'AWAITING_APPROVAL';
 
 ALTER TABLE organizations
-  ADD COLUMN hospitality_approval_threshold numeric(10,3)
+  ADD COLUMN hospitality_approval_threshold numeric(12,2)
   CHECK (hospitality_approval_threshold IS NULL OR hospitality_approval_threshold >= 0),
   ADD COLUMN hospitality_currency_code char(3) NOT NULL DEFAULT 'USD'
   CHECK (hospitality_currency_code ~ '^[A-Z]{3}$');

@@ -21,13 +21,15 @@ function harness(order: Record<string, unknown> = {}, orgSettings: Record<string
     location: { findFirst: vi.fn().mockResolvedValue({ id: 'loc-1' }) },
     person: { findFirst: vi.fn().mockResolvedValue({ id: 'person-1' }) },
     organization: {
-      findUnique: vi.fn().mockResolvedValue({ id: tenantId, hospitalityApprovalThreshold: null, ...orgSettings }),
+      findUnique: vi.fn().mockResolvedValue({ id: tenantId, hospitalityApprovalThreshold: null, hospitalityCurrencyCode: 'USD', ...orgSettings }),
       update: vi.fn().mockImplementation(({ data }) => ({ id: tenantId, hospitalityCurrencyCode: 'USD', ...orgSettings, ...data })),
     },
     hospitalityMenuItem: {
       findFirst: vi.fn().mockResolvedValue(null),
       findMany: vi.fn().mockResolvedValue([]),
+      count: vi.fn().mockResolvedValue(0),
       create: vi.fn().mockImplementation(({ data }) => ({ id: 'menu-1', ...data })),
+      update: vi.fn().mockImplementation(({ data }) => ({ id: 'menu-1', ...data })),
     },
     tenantSetupAuditEvent: { create: vi.fn().mockResolvedValue({}) },
     hospitalityOrder: {
@@ -254,7 +256,7 @@ describe('hospitality order lifecycle', () => {
     const { service, tx } = harness();
     tx.hospitalityMenuItem.findFirst.mockResolvedValueOnce({ id: 'menu-existing' });
     await expect(service.createMenuItem(admin, {
-      venueId, name: 'Premium Coffee Urn',
+      venueId, name: 'Premium Coffee Urn', unitPrice: 0,
     }, 'menu-item-create-dup-key')).rejects.toThrow('A menu item with this name already exists in this venue.');
   });
 
@@ -263,11 +265,11 @@ describe('hospitality order lifecycle', () => {
     const current = await service.getHospitalityPolicy(admin);
     expect(current).toEqual({ hospitalityApprovalThreshold: 25, hospitalityCurrencyCode: 'USD' });
 
-    const updated = await service.updateHospitalityPolicy(admin, { hospitalityApprovalThreshold: 50 }, 'policy-update-key');
-    expect(updated).toEqual({ hospitalityApprovalThreshold: 50, hospitalityCurrencyCode: 'USD' });
+    const updated = await service.updateHospitalityPolicy(admin, { hospitalityApprovalThreshold: 50, hospitalityCurrencyCode: 'CAD' }, 'policy-update-key');
+    expect(updated).toEqual({ hospitalityApprovalThreshold: 50, hospitalityCurrencyCode: 'CAD' });
     expect(tx.organization.update).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: tenantId },
-      data: { hospitalityApprovalThreshold: 50 },
+      data: { hospitalityApprovalThreshold: 50, hospitalityCurrencyCode: 'CAD' },
     }));
     expect(tx.tenantSetupAuditEvent.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ action: 'updated', resourceType: 'hospitality_policy' }),

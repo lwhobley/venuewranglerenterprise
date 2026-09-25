@@ -123,6 +123,18 @@ export class HospitalityService {
       throw new ForbiddenException('Only a tenant administrator can update hospitality policy.');
     }
     return this.command(identity, key, 'hospitality.policy.update', dto, async tx => {
+      if (dto.hospitalityCurrencyCode) {
+        const current = await tx.organization.findUnique({
+          where: { id: identity.tenantId },
+          select: { hospitalityCurrencyCode: true },
+        });
+        if (current?.hospitalityCurrencyCode !== dto.hospitalityCurrencyCode) {
+          const menuItemCount = await tx.hospitalityMenuItem.count({ where: { organizationId: identity.tenantId } });
+          if (menuItemCount > 0) {
+            throw new ConflictException('Set the tenant currency before adding menu items. Reprice and migrate the menu through an approved process before changing currency.');
+          }
+        }
+      }
       const updated = await tx.organization.update({
         where: { id: identity.tenantId },
         data: {
@@ -214,10 +226,13 @@ export class HospitalityService {
         where: { id: identity.tenantId },
         select: { hospitalityApprovalThreshold: true },
       });
-      const threshold = org?.hospitalityApprovalThreshold != null ? Number(org.hospitalityApprovalThreshold) : null;
+      const threshold = org?.hospitalityApprovalThreshold ?? null;
       const hasUnpricedCustomLine = orderLines.some(line => line.unitPrice === null);
-      const estimatedSubtotal = orderLines.reduce((sum, line) => sum + Number(line.unitPrice ?? 0) * line.quantity, 0);
-      const requiresApproval = threshold !== null && (hasUnpricedCustomLine || estimatedSubtotal > threshold);
+      const estimatedSubtotal = orderLines.reduce(
+        (sum, line) => line.unitPrice === null ? sum : sum.plus(line.unitPrice.mul(line.quantity)),
+        new Prisma.Decimal(0),
+      );
+      const requiresApproval = threshold !== null && (hasUnpricedCustomLine || estimatedSubtotal.greaterThan(threshold));
       const initialState: HospitalityOrderState = requiresApproval ? 'AWAITING_APPROVAL' : 'SUBMITTED';
 
       const order = await tx.hospitalityOrder.create({ data: {
