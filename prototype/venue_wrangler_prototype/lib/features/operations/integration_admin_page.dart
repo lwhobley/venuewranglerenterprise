@@ -25,22 +25,104 @@ class _IntegrationAdminPageState extends State<IntegrationAdminPage> {
       ({
         List<Map<String, dynamic>> sources,
         List<Map<String, dynamic>> mappings,
-        List<Map<String, dynamic>> transforms
+        List<Map<String, dynamic>> transforms,
+        List<Map<String, dynamic>> ownership
       })> _loaded = _load();
 
   Future<
       ({
         List<Map<String, dynamic>> sources,
         List<Map<String, dynamic>> mappings,
-        List<Map<String, dynamic>> transforms
+        List<Map<String, dynamic>> transforms,
+        List<Map<String, dynamic>> ownership
       })> _load() async {
     final sources = await widget.api.integrationSources();
     final mappings = await widget.api.integrationIdentifiers();
     final transforms = await widget.api.integrationTransforms();
-    return (sources: sources, mappings: mappings, transforms: transforms);
+    final ownership = await widget.api.integrationOwnership();
+    return (sources: sources, mappings: mappings, transforms: transforms, ownership: ownership);
   }
 
   void _refresh() => setState(() => _loaded = _load());
+
+  Future<void> _reviewDeadLetters(String sourceId) async {
+    try {
+      final letters = await widget.api.integrationDeadLetters(sourceId);
+      if (!mounted) return;
+      await showDialog<void>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+                title: Text('Dead letters · $sourceId'),
+                content: SizedBox(
+                    width: 420,
+                    child: letters.isEmpty
+                        ? const Text('No open dead letters.')
+                        : Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: letters
+                                .map((letter) => ListTile(
+                                      title: Text(letter['externalId'] as String? ?? 'Item'),
+                                      subtitle: Text(
+                                          '${letter['state']} · ${letter['attempts']} attempts · ${letter['error']}'),
+                                      trailing: TextButton(
+                                          onPressed: () async {
+                                            await widget.api.replayIntegrationDeadLetter(letter['id'] as String);
+                                            if (dialogContext.mounted) Navigator.pop(dialogContext);
+                                            _refresh();
+                                          },
+                                          child: const Text('Replay')),
+                                    ))
+                                .toList())),
+                actions: [
+                  TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Close'))
+                ],
+              ));
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not review dead letters: $error')));
+      }
+    }
+  }
+
+  Future<void> _setOwnership(List<Map<String, dynamic>> sources) async {
+    var domain = 'LABOR';
+    var source = sources.first['id'] as String;
+    final saved = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(
+            builder: (context, setDialogState) => AlertDialog(
+                  title: const Text('Set field owner'),
+                  content: Column(mainAxisSize: MainAxisSize.min, children: [
+                    DropdownButtonFormField<String>(
+                        initialValue: domain,
+                        decoration: const InputDecoration(labelText: 'Domain'),
+                        items: const ['LABOR', 'POS', 'TICKETING', 'INVENTORY', 'EVENT']
+                            .map((item) => DropdownMenuItem(value: item, child: Text(item)))
+                            .toList(),
+                        onChanged: (value) => setDialogState(() => domain = value ?? domain)),
+                    DropdownButtonFormField<String>(
+                        initialValue: source,
+                        decoration: const InputDecoration(labelText: 'Owning source'),
+                        items: sources
+                            .map((item) => DropdownMenuItem(value: item['id'] as String, child: Text(item['id'] as String)))
+                            .toList(),
+                        onChanged: (value) => setDialogState(() => source = value ?? source)),
+                  ]),
+                  actions: [
+                    TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+                    FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Save')),
+                  ],
+                )));
+    if (saved != true) return;
+    try {
+      await widget.api.setIntegrationOwnership(domain, source);
+      _refresh();
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not save field owner: $error')));
+      }
+    }
+  }
 
   Future<void> _poll(String sourceId) async {
     try {
@@ -104,6 +186,10 @@ class _IntegrationAdminPageState extends State<IntegrationAdminPage> {
                         child: const Text('Poll'),
                       ),
                     TextButton(
+                      onPressed: () => _reviewDeadLetters(source['id'] as String),
+                      child: const Text('Dead letters'),
+                    ),
+                    TextButton(
                       onPressed: () =>
                           _configureTransform(source['id'] as String, latest),
                       child: const Text('Configure transform'),
@@ -111,6 +197,26 @@ class _IntegrationAdminPageState extends State<IntegrationAdminPage> {
                   ]),
                 ));
               }),
+              const SizedBox(height: 20),
+              const Text('Field ownership',
+                  style: TextStyle(fontSize: 21, fontWeight: FontWeight.w800)),
+              const SizedBox(height: 6),
+              const Text(
+                  'Assign one source to own labor, POS, ticketing, inventory, or event fields. Other sources are rejected for that domain. No assignment means existing sources are not blocked.'),
+              const SizedBox(height: 8),
+              if (data.ownership.isEmpty)
+                const Card(child: ListTile(title: Text('No field owner configured'))),
+              ...data.ownership.map((row) => Card(
+                      child: ListTile(
+                    title: Text('${row['domain']} · ${row['source']}'),
+                    subtitle: const Text('Configured owner'),
+                  ))),
+              if (data.sources.isNotEmpty)
+                Align(
+                    alignment: Alignment.centerLeft,
+                    child: OutlinedButton(
+                        onPressed: () => _setOwnership(data.sources),
+                        child: const Text('Set field owner'))),
               const SizedBox(height: 20),
               Row(children: [
                 const Expanded(

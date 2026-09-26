@@ -2,7 +2,7 @@ import { Body, Controller, Get, Headers, Param, ParseUUIDPipe, Post, Put, RawBod
 import { Request } from 'express';
 import { JwtIdentityGuard } from './auth';
 import { IntegrationService } from './integration.service';
-import { CorrectIntegrationIdentifierDto, PutIntegrationIdentifierDto, SaveIntegrationTransformDto } from './integration.dto';
+import { CorrectIntegrationIdentifierDto, PutIntegrationIdentifierDto, SaveIntegrationTransformDto, SetIntegrationOwnershipDto } from './integration.dto';
 
 @Controller('v1/integrations')
 export class IntegrationController {
@@ -31,6 +31,14 @@ export class IntegrationController {
   replay(@Req() request: Request, @Param('letterId', new ParseUUIDPipe()) letterId: string) {
     return this.integrations.replayDeadLetter(request.identity, letterId);
   }
+
+  @Get('ownership')
+  @UseGuards(JwtIdentityGuard)
+  ownership(@Req() request: Request) { return this.integrations.ownership(request.identity); }
+
+  @Put('ownership')
+  @UseGuards(JwtIdentityGuard)
+  setOwnership(@Req() request: Request, @Body() dto: SetIntegrationOwnershipDto) { return this.integrations.setOwnership(request.identity, dto); }
 
   @Post('preview')
   @UseGuards(JwtIdentityGuard)

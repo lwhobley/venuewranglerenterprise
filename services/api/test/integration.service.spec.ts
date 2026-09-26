@@ -25,6 +25,7 @@ function service(currentTask: Record<string, unknown> | null = null) {
       update: vi.fn().mockImplementation(({ data }) => ({ id: 'task-record', ...data })),
     },
     operationalTaskAudit: { create: vi.fn().mockResolvedValue({}) },
+    integrationFieldOwnership: { findUnique: vi.fn().mockResolvedValue(null) },
   };
   const prisma = {
     withTenant: vi.fn((_identity, callback) => callback(tx)),
@@ -128,6 +129,16 @@ describe('IntegrationService operational task mapping', () => {
     await expect(integration.ingest('arena-labor', signed.timestamp, signed.signature, signed.rawBody, signed.body))
       .rejects.toThrow('The task location must belong to the mapped venue event.');
     expect(tx.operationalTask.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a staffing task when another source owns labor fields', async () => {
+    const { service: integration, tx } = service();
+    tx.integrationFieldOwnership.findUnique.mockResolvedValue({ source: 'arena-pos', domain: 'LABOR' });
+    const signed = request({ externalTaskId: 'shift-42', kind: 'STAFFING', title: 'Fill guest services shift' });
+
+    await expect(integration.ingest('arena-labor', signed.timestamp, signed.signature, signed.rawBody, signed.body))
+      .rejects.toThrow('cannot write LABOR fields');
+    expect(tx.externalIntegrationEvent.create).not.toHaveBeenCalled();
   });
 
   it('defers polling inside the source interval and does not call the remote page', async () => {

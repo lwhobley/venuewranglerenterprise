@@ -23,6 +23,15 @@ export class CorrectIntegrationIdentifierDto {
   @IsInt() @Min(0) observedCount!: number;
 }
 
+export class SetIntegrationOwnershipDto {
+  @IsIn(['LABOR', 'POS', 'TICKETING', 'INVENTORY', 'EVENT'])
+  domain!: 'LABOR' | 'POS' | 'TICKETING' | 'INVENTORY' | 'EVENT';
+
+  @IsString()
+  @Matches(/^[a-z0-9][a-z0-9-]{1,62}$/)
+  source!: string;
+}
+
 export class SaveIntegrationTransformDto {
   @IsString() @Matches(/^[a-z0-9][a-z0-9-]{1,62}$/) source!: string;
   @IsObject() definition!: Record<string, unknown>;

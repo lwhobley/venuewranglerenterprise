@@ -269,6 +269,21 @@ class OperationsApi {
       (token) => _dio.post<void>('/api/v1/integrations/sources/$sourceId/poll',
           options: Options(headers: {'Authorization': 'Bearer $token'})));
 
+  Future<List<Map<String, dynamic>>> integrationOwnership() async =>
+      (await _request((token) => _dio.get<List<dynamic>>(
+                '/api/v1/integrations/ownership',
+                options: Options(headers: {'Authorization': 'Bearer $token'}),
+              )))
+          .data!
+          .whereType<Map>()
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList();
+
+  Future<void> setIntegrationOwnership(String domain, String source) async =>
+      _request((token) => _dio.put<void>('/api/v1/integrations/ownership',
+          data: {'domain': domain, 'source': source},
+          options: Options(headers: {'Authorization': 'Bearer $token'})));
+
   Future<List<Map<String, dynamic>>> integrationDeadLetters(
           String sourceId) async =>
       (await _request((token) => _dio.get<List<dynamic>>(

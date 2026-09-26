@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { OperationalTaskKind, Prisma, type OperationalTask } from '@prisma/client';
 import { assertScope, assertTenantAdmin, type Identity } from './auth';
-import { CorrectIntegrationIdentifierDto, PutIntegrationIdentifierDto } from './integration.dto';
+import { CorrectIntegrationIdentifierDto, PutIntegrationIdentifierDto, SetIntegrationOwnershipDto } from './integration.dto';
 import { SaveIntegrationTransformDto } from './integration.dto';
 import { transformIntegrationRecord, validateIntegrationTransform } from './integration-transform';
 import { PrismaService } from './prisma.service';
@@ -77,6 +77,7 @@ export class IntegrationService {
     if (Buffer.byteLength(JSON.stringify(event), 'utf8') > 65536) throw new BadRequestException('Preview event must be at most 65536 bytes.');
     const envelope = this.envelope(event);
     return this.prisma.withTenant(identity, async (tx) => {
+      await this.assertFieldOwner(tx, provider, envelope);
       const venueEvent = await this.resolveEvent(tx, provider, envelope);
       let resolvedLocationId: string | null = null;
       if (envelope.eventType === 'operations.task.upserted') {
@@ -316,6 +317,43 @@ export class IntegrationService {
     }
   }
 
+  async ownership(identity: Identity) {
+    assertTenantAdmin(identity);
+    return this.prisma.withTenant(identity, (tx) => tx.integrationFieldOwnership.findMany({ where: { organizationId: identity.tenantId }, orderBy: { domain: 'asc' } }));
+  }
+
+  async setOwnership(identity: Identity, dto: SetIntegrationOwnershipDto) {
+    assertTenantAdmin(identity);
+    this.requireTenantSource(identity, dto.source);
+    return this.prisma.withTenant(identity, async (tx) => {
+      const current = await tx.integrationFieldOwnership.findUnique({ where: { organizationId_domain: { organizationId: identity.tenantId, domain: dto.domain } } });
+      if (current?.source === dto.source) return current;
+      const saved = current
+        ? await tx.integrationFieldOwnership.update({ where: { id: current.id }, data: { source: dto.source, updatedBy: identity.subject } })
+        : await tx.integrationFieldOwnership.create({ data: { organizationId: identity.tenantId, domain: dto.domain, source: dto.source, updatedBy: identity.subject } });
+      await tx.tenantSetupAuditEvent.create({ data: { organizationId: identity.tenantId, actorId: identity.subject, action: current ? 'updated' : 'created', resourceType: 'integration_ownership', resourceId: saved.id, changedFields: ['domain', 'source'] } });
+      return saved;
+    });
+  }
+
+  private async assertFieldOwner(tx: Prisma.TransactionClient, provider: IntegrationProvider, envelope: ReturnType<IntegrationService['envelope']>) {
+    const domain = this.ownedDomain(envelope);
+    if (!domain) return;
+    const owner = await tx.integrationFieldOwnership.findUnique({ where: { organizationId_domain: { organizationId: provider.tenantId, domain } } });
+    if (owner && owner.source !== provider.id) throw new ConflictException(`${provider.id} cannot write ${domain} fields. ${owner.source} owns that domain.`);
+  }
+
+  private ownedDomain(envelope: ReturnType<IntegrationService['envelope']>) {
+    if (envelope.eventType.startsWith('ticketing.')) return 'TICKETING';
+    if (envelope.eventType !== 'operations.task.upserted') return null;
+    const kind = envelope.payload.kind;
+    if (kind === 'STAFFING') return 'LABOR';
+    if (kind === 'STOCK') return 'INVENTORY';
+    if (kind === 'SERVICE') return 'POS';
+    if (kind === 'PLAN') return 'EVENT';
+    return null;
+  }
+
   private integrationIdentity(provider: IntegrationProvider): Identity {
     return {
       subject: `integration:${provider.id}`,
@@ -334,7 +372,8 @@ export class IntegrationService {
     const bodySha256 = createHmac('sha256', 'venue-wrangler-integration-event-fingerprint-v1').update(rawBody).digest('hex');
     try {
       const event = await this.prisma.withTenant(identity, async (tx) => {
-        const venueEvent = await this.resolveEvent(tx, provider, envelope);
+      await this.assertFieldOwner(tx, provider, envelope);
+      const venueEvent = await this.resolveEvent(tx, provider, envelope);
         const recordedEvent = await tx.externalIntegrationEvent.create({
           data: {
             organizationId: provider.tenantId,
