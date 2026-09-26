@@ -91,6 +91,13 @@ export class AuthProvidersService {
     return this.providers.find((provider) => provider.issuer === issuer);
   }
 
+  tenantConfigs() {
+    return [...new Map(this.providers.map((provider) => [provider.tenantId, {
+      tenantId: provider.tenantId,
+      organizationSlug: provider.organizationSlug,
+    }])).values()];
+  }
+
   get hasProviders() {
     return this.providers.length > 0;
   }

@@ -11,6 +11,7 @@ import 'package:uuid/uuid.dart';
 import 'config/api_configuration.dart';
 import 'auth/auth.dart';
 import 'auth/sign_in_page.dart';
+import 'auth/support_access_page.dart';
 import 'features/hospitality/hospitality_page.dart';
 import 'features/issues/issue_outbox.dart';
 import 'features/issues/secure_evidence_store.dart';
@@ -108,6 +109,31 @@ class AuthGate extends ConsumerWidget {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
     if (auth.session == null) return const SignInPage();
+    if (auth.session!.supportCandidate) {
+      return const SupportAccessGate(child: PrototypeShell());
+    }
+    if (auth.session!.verifiedTestFixture) {
+      return Column(children: [
+        Material(
+          color: const Color(0xFFD9F3E5),
+          child: SafeArea(
+            bottom: false,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Row(children: [
+                const Icon(Icons.verified_outlined, size: 20),
+                const SizedBox(width: 8),
+                const Expanded(child: Text('Venue Test Lab · verified test fixture')),
+                TextButton(
+                    onPressed: () => ref.read(authSessionProvider.notifier).signOut(),
+                    child: const Text('Sign out')),
+              ]),
+            ),
+          ),
+        ),
+        const Expanded(child: PrototypeShell()),
+      ]);
+    }
     if (!auth.session!.offlineReadOnly) {
       return const _PushNotificationGate(child: PrototypeShell());
     }

@@ -31,8 +31,11 @@ services:
   api:
     build: .
     environment:
+      NODE_ENV: development
       PORT: 3000
       JWT_HS256_SECRET: local-development-secret-that-is-not-for-deployment
+      ENABLE_DEV_TEST_LOGIN: "true"
+      DEV_TEST_LOGIN_PASSWORD: local-test-password-change-me
       CORS_ORIGINS: http://localhost:8080
       DATABASE_URL: postgresql://venue_app:local-app-change-me@db:5432/venue_wrangler
     ports:

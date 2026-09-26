@@ -156,6 +156,8 @@ model Organization {
   integrationFieldOwnership    IntegrationFieldOwnership[]
   venueNoticeRecipients        VenueNoticeRecipient[]
   venueNotices                 VenueNotice[]
+  supportAccessSessions        SupportAccessSession[]
+  supportAccessActivity        SupportAccessActivity[]
   venueDepartments             VenueDepartment[]
   venueServiceAreas            VenueServiceArea[]
   venueTemplates               VenueTemplate[]
@@ -208,6 +210,7 @@ model Venue {
   scheduleViews               ScheduleSavedView[]
   noticeRecipients            VenueNoticeRecipient[]
   notices                     VenueNotice[]
+  supportAccessSessions       SupportAccessSession[]
 
   @@unique([id, organizationId])
   @@index([organizationId])
@@ -1236,6 +1239,40 @@ model VenueNotice {
 
   @@index([organizationId, recipientSubject, readAt, createdAt(sort: Desc)])
   @@map("venue_notices")
+}
+
+model SupportAccessSession {
+  id                String                  @id @default(uuid()) @db.Uuid
+  organizationId    String                  @map("organization_id") @db.Uuid
+  venueId           String                  @map("venue_id") @db.Uuid
+  operatorSubject   String                  @map("operator_subject")
+  operatorTenantId  String                  @map("operator_tenant_id") @db.Uuid
+  reason            String
+  tokenHash         String                  @unique @map("token_hash")
+  expiresAt         DateTime                @map("expires_at") @db.Timestamptz(6)
+  revokedAt         DateTime?               @map("revoked_at") @db.Timestamptz(6)
+  createdAt         DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  organization      Organization            @relation(fields: [organizationId], references: [id])
+  venue             Venue                   @relation(fields: [venueId, organizationId], references: [id, organizationId])
+  activity          SupportAccessActivity[]
+
+  @@unique([id, organizationId])
+  @@index([organizationId, venueId, expiresAt])
+  @@map("support_access_sessions")
+}
+
+model SupportAccessActivity {
+  id             String               @id @default(uuid()) @db.Uuid
+  organizationId String               @map("organization_id") @db.Uuid
+  sessionId      String               @map("session_id") @db.Uuid
+  method         String
+  path           String
+  createdAt      DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  organization   Organization         @relation(fields: [organizationId], references: [id])
+  session        SupportAccessSession @relation(fields: [sessionId, organizationId], references: [id, organizationId])
+
+  @@index([organizationId, sessionId, createdAt])
+  @@map("support_access_activity")
 }
 
 model PushDevice {

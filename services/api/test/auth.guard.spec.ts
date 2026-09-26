@@ -6,6 +6,7 @@ import type { Identity } from '../src/auth';
 import { JwtIdentityGuard } from '../src/auth';
 import { AuthProvidersService } from '../src/auth-providers';
 import type { PrismaService } from '../src/prisma.service';
+import type { SupportAccessService } from '../src/support-access.service';
 
 const tenantId = '00000000-0000-4000-8000-000000000001';
 const venueId = '10000000-0000-4000-8000-000000000001';
@@ -39,7 +40,8 @@ async function setup() {
   const prisma = {
     withTenant: vi.fn((_identity: Identity, action: (transaction: typeof tx) => unknown) => Promise.resolve(action(tx))),
   } as unknown as PrismaService;
-  const guard = new JwtIdentityGuard(config, providerService, prisma);
+  const support = { resolve: vi.fn() } as unknown as SupportAccessService;
+  const guard = new JwtIdentityGuard(config, providerService, prisma, support);
 
   async function token(
     providerId: 'okta' | 'entra',

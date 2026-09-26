@@ -22,28 +22,33 @@ export class OperationsService {
   async bootstrap(identity: Identity, claims: { email?: string; name?: string }) {
     return this.prisma.withTenant(identity, async (tx) => {
       const slug = identity.organizationSlug;
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`org-bootstrap:${identity.tenantId}`}, 0))`;
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`org-bootstrap:${identity.tenantId}`}, 0))`;
       const previousOrg = await tx.organization.findUnique({ where: { id: identity.tenantId } });
-      const org = await tx.organization.upsert({
-        where: { id: identity.tenantId },
-        create: { id: identity.tenantId, name: slug ? this.title(slug) : 'Venue organization', slug },
-        update: slug ? { slug } : {},
-      });
-      const changedFields = previousOrg
-        ? (previousOrg.slug !== org.slug ? ['slug'] : [])
-        : ['name', ...(org.slug ? ['slug'] : [])];
-      if (changedFields.length > 0) {
-        await tx.tenantSetupAuditEvent.create({ data: {
-          organizationId: identity.tenantId,
-          actorId: identity.subject,
-          action: previousOrg ? 'updated' : 'created',
-          resourceType: 'organization',
-          resourceId: org.id,
-          changedFields,
-        } });
+      if (identity.supportAccessSessionId && !previousOrg) throw new NotFoundException('The support venue organization is unavailable.');
+      const org = identity.supportAccessSessionId
+        ? previousOrg!
+        : await tx.organization.upsert({
+          where: { id: identity.tenantId },
+          create: { id: identity.tenantId, name: slug ? this.title(slug) : 'Venue organization', slug },
+          update: slug ? { slug } : {},
+        });
+      if (!identity.supportAccessSessionId) {
+        const changedFields = previousOrg
+          ? (previousOrg.slug !== org.slug ? ['slug'] : [])
+          : ['name', ...(org.slug ? ['slug'] : [])];
+        if (changedFields.length > 0) {
+          await tx.tenantSetupAuditEvent.create({ data: {
+            organizationId: identity.tenantId,
+            actorId: identity.subject,
+            action: previousOrg ? 'updated' : 'created',
+            resourceType: 'organization',
+            resourceId: org.id,
+            changedFields,
+          } });
+        }
       }
       const email = claims.email?.trim().toLowerCase();
-      if (email && email.length <= 320) {
+      if (!identity.supportAccessSessionId && email && email.length <= 320) {
         const previousPerson = await tx.person.findUnique({
           where: { organizationId_externalSubject: { organizationId: identity.tenantId, externalSubject: identity.subject } },
         });
@@ -337,7 +342,7 @@ export class OperationsService {
     assertTenantAdmin(identity);
     const input = { sourceVenueId: dto.sourceVenueId, code: dto.code.trim().toUpperCase(), name: dto.name.trim(), defaultEventStartLocal: dto.defaultEventStartLocal ?? null };
     return this.command(identity, key, 'venue-template.capture', input, async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`venue-template:${identity.tenantId}:${input.code}`}, 0))`;
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`venue-template:${identity.tenantId}:${input.code}`}, 0))`;
       const venue = await tx.venue.findFirst({ where: { id: input.sourceVenueId, organizationId: identity.tenantId } });
       if (!venue) throw new NotFoundException('Source venue not found in this organization.');
       const [departments, areas, locations, latest] = await Promise.all([
@@ -369,7 +374,7 @@ export class OperationsService {
   async applyVenueTemplate(identity: Identity, templateId: string, venueId: string, key: string) {
     assertVenueAdmin(identity, venueId);
     return this.command(identity, key, 'venue-template.apply', { templateId, venueId }, async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`venue-template-apply:${identity.tenantId}:${venueId}`}, 0))`;
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`venue-template-apply:${identity.tenantId}:${venueId}`}, 0))`;
       const plan = await this.venueTemplatePlan(tx, identity, templateId, venueId);
       if (plan.conflicts.length > 0) throw new ConflictException(`Resolve template conflicts before applying: ${plan.conflicts.join('; ')}`);
       const departmentIds = new Map(plan.currentDepartments.map((item) => [item.code, item.id]));
@@ -547,7 +552,7 @@ export class OperationsService {
     return this.command(identity, key, 'person-qualification.grant', input, async (tx) => {
       const person = await tx.person.findFirst({ where: { id: personId, organizationId: identity.tenantId, active: true }, select: { id: true, externalSubject: true } });
       if (!person) throw new NotFoundException('An active person in this organization is required.');
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`staff-schedule:${identity.tenantId}:${person.externalSubject}`}, 0))`;
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`staff-schedule:${identity.tenantId}:${person.externalSubject}`}, 0))`;
       const existing = await tx.personQualification.findUnique({ where: { organizationId_personId_code: { organizationId: identity.tenantId, personId, code: input.code } } });
       const expiresAt = input.expiresAt ? new Date(input.expiresAt) : null;
       const qualification = existing
@@ -563,7 +568,7 @@ export class OperationsService {
     return this.command(identity, key, 'person-qualification.revoke', { qualificationId }, async (tx) => {
       const current = await tx.personQualification.findFirst({ where: { id: qualificationId, organizationId: identity.tenantId, revokedAt: null }, include: { person: { select: { externalSubject: true } } } });
       if (!current) throw new NotFoundException('Active qualification not found in this organization.');
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`staff-schedule:${identity.tenantId}:${current.person.externalSubject}`}, 0))`;
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`staff-schedule:${identity.tenantId}:${current.person.externalSubject}`}, 0))`;
       const revoked = await tx.personQualification.update({ where: { id: qualificationId }, data: { revokedAt: new Date() } });
       await tx.tenantSetupAuditEvent.create({ data: { organizationId: identity.tenantId, actorId: identity.subject, action: 'updated', resourceType: 'qualification', resourceId: revoked.id, changedFields: ['revoked_at'] } });
       return revoked;
@@ -662,7 +667,7 @@ export class OperationsService {
   private async command<T>(identity: Identity, key: string, action: string, input: unknown, work: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
     const fingerprint = createHash('sha256').update(JSON.stringify({ action, actor: identity.subject, input })).digest('hex');
     return this.prisma.withTenant(identity, async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`command:${identity.tenantId}:${key}`}, 0))`;
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`command:${identity.tenantId}:${key}`}, 0))`;
       const receipt = await tx.commandReceipt.findUnique({ where: { organizationId_key: { organizationId: identity.tenantId, key } } });
       if (receipt) {
         if (receipt.fingerprint !== fingerprint) throw new ConflictException('This Idempotency-Key was already used for a different command.');

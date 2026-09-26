@@ -39,7 +39,7 @@ export class InventoryService {
   async createItem(identity: Identity, dto: CreateStockItemDto, key: string) {
     assertTenantAdmin(identity);
     return this.command(identity, key, 'stock-item.create', dto, async tx => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`stock-item:${identity.tenantId}:${dto.venueId}:${dto.locationId ?? 'venue'}:${dto.sku.trim().toLowerCase()}`}, 0))`;
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`stock-item:${identity.tenantId}:${dto.venueId}:${dto.locationId ?? 'venue'}:${dto.sku.trim().toLowerCase()}`}, 0))`;
       const venue = await tx.venue.findFirst({ where: { id: dto.venueId, organizationId: identity.tenantId } });
       if (!venue) throw new NotFoundException('Venue not found.');
       if (dto.locationId && !await tx.location.findFirst({ where: { id: dto.locationId, venueId: dto.venueId, organizationId: identity.tenantId } })) throw new NotFoundException('Location not found in this venue.');
@@ -209,20 +209,20 @@ export class InventoryService {
   async dispatchTransfer(identity: Identity, eventId: string, transferId: string, key: string) {
     assertScope(identity, 'operations:write', eventId);
     return this.command(identity, key, 'stock-transfer.dispatch', { eventId, transferId }, async tx => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`stock-transfer:${identity.tenantId}:${transferId}`},0))`;
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`stock-transfer:${identity.tenantId}:${transferId}`},0))`;
       const transfers = await tx.$queryRaw`SELECT venue_id AS "venueId",source_location_id AS "sourceLocationId",destination_location_id AS "destinationLocationId",state,requested_by AS "requestedBy"
         FROM stock_transfers WHERE id=${transferId}::uuid AND event_id=${eventId}::uuid AND organization_id=${identity.tenantId}::uuid FOR UPDATE` as { venueId: string; sourceLocationId: string | null; destinationLocationId: string | null; state: string; requestedBy: string }[];
       const transfer = transfers[0];
       if (!transfer) throw new NotFoundException('Stock transfer not found.');
       this.assertTransferScope(identity, eventId, transfer);
       if (transfer.state !== 'REQUESTED') throw new ConflictException('Only a requested transfer can be dispatched.');
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`stock-transfer-dispatch:${identity.tenantId}:${transfer.venueId}`},0))`;
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`stock-transfer-dispatch:${identity.tenantId}:${transfer.venueId}`},0))`;
       const lines = await tx.$queryRaw`SELECT l.id,l.source_item_id AS "sourceItemId",l.requested_quantity AS quantity,i.sku,i.name,i.unit,i.on_hand AS "onHand"
         FROM stock_transfer_lines l JOIN stock_items i ON i.id=l.source_item_id AND i.organization_id=l.organization_id
         WHERE l.transfer_id=${transferId}::uuid AND l.organization_id=${identity.tenantId}::uuid ORDER BY l.source_item_id FOR UPDATE OF i` as { id: string; sourceItemId: string; quantity: string; sku: string; name: string; unit: string; onHand: string }[];
       for (const line of lines) if (Number(line.onHand) < Number(line.quantity)) throw new ConflictException(`Insufficient stock for ${line.name}; refresh the inventory and edit the transfer request.`);
       for (const line of lines) {
-        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`stock-item:${identity.tenantId}:${transfer.venueId}:${transfer.destinationLocationId ?? 'venue'}:${line.sku.toLowerCase()}`},0))`;
+        await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`stock-item:${identity.tenantId}:${transfer.venueId}:${transfer.destinationLocationId ?? 'venue'}:${line.sku.toLowerCase()}`},0))`;
         let destination = await tx.$queryRaw`SELECT id FROM stock_items WHERE organization_id=${identity.tenantId}::uuid AND venue_id=${transfer.venueId}::uuid AND location_id IS NOT DISTINCT FROM ${transfer.destinationLocationId}::uuid AND lower(sku)=lower(${line.sku}) AND active FOR UPDATE` as { id: string }[];
         if (!destination.length) {
           const created = await tx.$queryRaw`INSERT INTO stock_items(organization_id,venue_id,location_id,sku,name,unit)
@@ -244,7 +244,7 @@ export class InventoryService {
   async receiveTransfer(identity: Identity, eventId: string, transferId: string, dto: ReceiveStockTransferDto, key: string) {
     assertScope(identity, 'operations:write', eventId);
     return this.command(identity, key, 'stock-transfer.receive', { eventId, transferId, ...dto }, async tx => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`stock-transfer:${identity.tenantId}:${transferId}`},0))`;
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`stock-transfer:${identity.tenantId}:${transferId}`},0))`;
       const rows = await tx.$queryRaw`SELECT venue_id AS "venueId",source_location_id AS "sourceLocationId",destination_location_id AS "destinationLocationId",state,dispatched_by AS "dispatchedBy",requested_by AS "requestedBy"
         FROM stock_transfers WHERE id=${transferId}::uuid AND event_id=${eventId}::uuid AND organization_id=${identity.tenantId}::uuid FOR UPDATE` as { venueId: string; sourceLocationId: string | null; destinationLocationId: string | null; state: string; dispatchedBy: string | null; requestedBy: string }[];
       const transfer = rows[0];
@@ -357,7 +357,7 @@ export class InventoryService {
   async receivePurchaseOrder(identity: Identity, eventId: string, orderId: string, dto: ReceiveStockPurchaseOrderDto, key: string) {
     assertScope(identity, 'operations:write', eventId);
     return this.command(identity, key, 'stock-purchase-order.receive', { eventId, orderId, ...dto }, async tx => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`stock-purchase-order:${identity.tenantId}:${orderId}`},0))`;
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`stock-purchase-order:${identity.tenantId}:${orderId}`},0))`;
       const rows = await tx.$queryRaw`SELECT venue_id AS "venueId",location_id AS "locationId",state,approved_by AS "approvedBy"
         FROM stock_purchase_orders WHERE id=${orderId}::uuid AND event_id=${eventId}::uuid AND organization_id=${identity.tenantId}::uuid FOR UPDATE` as { venueId: string; locationId: string | null; state: string; approvedBy: string | null }[];
       const order = rows[0];
@@ -444,7 +444,7 @@ export class InventoryService {
   private async command<T>(identity: Identity, key: string, action: string, input: unknown, work: (tx: any) => Promise<T>): Promise<T> {
     const fingerprint = createHash('sha256').update(JSON.stringify({ action, actor: identity.subject, input })).digest('hex');
     return this.prisma.withTenant(identity, async tx => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`command:${identity.tenantId}:${key}`}, 0))`;
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`command:${identity.tenantId}:${key}`}, 0))`;
       const prior = await tx.commandReceipt.findUnique({ where: { organizationId_key: { organizationId: identity.tenantId, key } } });
       if (prior) {
         if (prior.fingerprint !== fingerprint) throw new ConflictException('This Idempotency-Key was already used for a different command.');

@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AttachmentStatus } from '@prisma/client';
 import { Storage } from '@google-cloud/storage';
@@ -15,7 +15,7 @@ export class EvidenceService {
   private readonly storage: Storage;
   private readonly bucketName: string;
 
-  constructor(private readonly prisma: PrismaService, config: ConfigService, storage?: Storage) {
+  constructor(private readonly prisma: PrismaService, config: ConfigService, @Optional() storage?: Storage) {
     this.storage = storage ?? new Storage();
     this.bucketName = config.get<string>('EVIDENCE_BUCKET') ?? '';
   }

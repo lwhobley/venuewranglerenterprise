@@ -8,6 +8,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:cryptography/cryptography.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import '../config/api_configuration.dart';
+import '../features/issues/secure_evidence_store.dart';
 
 const oidcRedirectUri = 'com.venuewrangler.enterprise:/oauth2redirect';
 
@@ -68,6 +69,10 @@ class AuthSession {
     required this.accessToken,
     required this.expiresAt,
     this.offlineReadOnly = false,
+    this.supportVenueId,
+    this.supportVenueName,
+    this.supportOrganizationName,
+    this.supportExpiresAt,
   });
 
   final String organizationSlug;
@@ -75,6 +80,35 @@ class AuthSession {
   final String accessToken;
   final DateTime expiresAt;
   final bool offlineReadOnly;
+  final String? supportVenueId;
+  final String? supportVenueName;
+  final String? supportOrganizationName;
+  final DateTime? supportExpiresAt;
+
+  bool get supportCandidate {
+    try {
+      final parts = accessToken.split('.');
+      if (parts.length != 3) return false;
+      final claims = jsonDecode(
+          utf8.decode(base64Url.decode(base64Url.normalize(parts[1])))) as Map;
+      return (claims['capabilities'] as List? ?? const [])
+          .contains('support:access');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  bool get verifiedTestFixture {
+    try {
+      final parts = accessToken.split('.');
+      if (parts.length != 3 || providerId != 'development') return false;
+      final claims = jsonDecode(
+          utf8.decode(base64Url.decode(base64Url.normalize(parts[1])))) as Map;
+      return claims['test_fixture_verified'] == true;
+    } catch (_) {
+      return false;
+    }
+  }
 }
 
 class AuthRepository {
@@ -89,6 +123,21 @@ class AuthRepository {
   bool _offlineReadOnly = false;
   bool _signingOut = false;
   int _sessionGeneration = 0;
+  String? _supportAccessToken;
+  String? _supportScope;
+
+  String? get supportAccessToken => _supportAccessToken;
+  bool get supportActive => _supportAccessToken != null;
+
+  void attachSupportHeader(Dio dio) {
+    dio.interceptors.add(InterceptorsWrapper(onRequest: (options, handler) {
+      final access = _supportAccessToken;
+      if (access != null && options.path.startsWith('/api/')) {
+        options.headers['X-Support-Access'] = access;
+      }
+      handler.next(options);
+    }));
+  }
 
   bool get offlineReadOnly => _offlineReadOnly;
 
@@ -104,13 +153,14 @@ class AuthRepository {
   static const _pushEnabledKey = 'venue.push.enabled';
 
   Future<String?> offlineCacheScope() async {
+    if (supportActive) return _supportScope;
     final organization = await _storage.read(key: _organizationKey);
     final provider = await _storage.read(key: _providerKey);
     final issuer = await _storage.read(key: _issuerKey);
     final accessToken = await _storage.read(key: _accessTokenKey);
     if (organization == null ||
         provider == null ||
-        issuer == null ||
+        (issuer == null && provider != 'development') ||
         accessToken == null) {
       return null;
     }
@@ -125,7 +175,7 @@ class AuthRepository {
       final scope = {
         'organization': organization,
         'provider': provider,
-        'issuer': issuer,
+        'issuer': issuer ?? 'local-development',
         'subject': subject,
         'tenant': claims['tenant_id'],
         'capabilities': claims['capabilities'],
@@ -168,6 +218,39 @@ class AuthRepository {
       ),
     );
     return _saveTokens(organizationSlug, provider, result);
+  }
+
+  Future<AuthSession> signInDevelopment(String email, String password) async {
+    if (!ApiConfiguration.isLocalDevelopment) {
+      throw StateError('Development login requires a local debug build.');
+    }
+    final response = await _dio.post<Map<String, dynamic>>(
+      '/api/v1/auth/development-login',
+      data: {'email': email.trim(), 'password': password},
+    );
+    final result = response.data ?? const <String, dynamic>{};
+    final token = result['accessToken'];
+    final expiresAt = DateTime.tryParse(result['expiresAt'] as String? ?? '');
+    if (token is! String ||
+        expiresAt == null ||
+        result['organizationSlug'] != 'venue-test-lab' ||
+        result['verificationStatus'] != 'verified-test-fixture') {
+      throw const FormatException('The verified test login response is incomplete.');
+    }
+    await _storage.write(key: _organizationKey, value: 'venue-test-lab');
+    await _storage.write(key: _providerKey, value: 'development');
+    await _storage.write(key: _accessTokenKey, value: token);
+    await _storage.write(key: _expiresAtKey, value: expiresAt.toUtc().toIso8601String());
+    for (final key in [_issuerKey, _clientIdKey, _refreshTokenKey, _idTokenKey]) {
+      await _storage.delete(key: key);
+    }
+    _offlineReadOnly = false;
+    return AuthSession(
+      organizationSlug: 'venue-test-lab',
+      providerId: 'development',
+      accessToken: token,
+      expiresAt: expiresAt.toUtc(),
+    );
   }
 
   Future<AuthSession?> restore() async {
@@ -269,7 +352,112 @@ class AuthRepository {
     return session.accessToken;
   }
 
+  Future<List<Map<String, dynamic>>> supportVenues() async {
+    final token = await validAccessToken();
+    if (token == null) {
+      throw StateError('Sign in before opening support access.');
+    }
+    final response = await _dio.get<List<dynamic>>('/api/v1/support/venues',
+        options: Options(headers: {'Authorization': 'Bearer $token'}));
+    return (response.data ?? const [])
+        .map((item) => Map<String, dynamic>.from(item as Map))
+        .toList(growable: false);
+  }
+
+  Future<AuthSession> enterSupport(
+      AuthSession session, String venueId, String reason) async {
+    if (_supportAccessToken != null) {
+      throw StateError('Exit the current support venue first.');
+    }
+    final token = await validAccessToken();
+    if (token == null) {
+      throw StateError('Sign in before opening support access.');
+    }
+    final response = await _dio.post<Map<String, dynamic>>(
+        '/api/v1/support/access',
+        data: {'venueId': venueId, 'reason': reason},
+        options: Options(headers: {'Authorization': 'Bearer $token'}));
+    final data = response.data ?? const <String, dynamic>{};
+    final accessToken = data['accessToken'];
+    final expiresAt = DateTime.tryParse(data['expiresAt'] as String? ?? '');
+    if (accessToken is! String ||
+        expiresAt == null ||
+        data['venueId'] != venueId) {
+      throw const FormatException('The support access response is incomplete.');
+    }
+    _supportAccessToken = accessToken;
+    final scopeHash = await Sha256().hash(utf8.encode(accessToken));
+    _supportScope =
+        'support.${scopeHash.bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join()}';
+    return AuthSession(
+      organizationSlug: session.organizationSlug,
+      providerId: session.providerId,
+      accessToken: session.accessToken,
+      expiresAt: session.expiresAt,
+      supportVenueId: venueId,
+      supportVenueName: data['venueName'] as String?,
+      supportOrganizationName: data['organizationName'] as String?,
+      supportExpiresAt: expiresAt.toUtc(),
+    );
+  }
+
+  Future<AuthSession?> exitSupport() async {
+    final access = _supportAccessToken;
+    final scope = _supportScope;
+    _supportAccessToken = null;
+    _supportScope = null;
+    if (access != null) {
+      final token = await validAccessToken();
+      if (token != null) {
+        try {
+          await _dio.post<void>('/api/v1/support/access/exit',
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'X-Support-Access': access,
+              }));
+        } catch (_) {
+          // The local session ends immediately; the server lease expires in 15 minutes.
+        }
+      }
+    }
+    if (scope != null) {
+      try {
+        await _clearSupportArtifacts(scope);
+      } catch (_) {
+        // Local cleanup cannot prolong a support session.
+      }
+    }
+    return restore();
+  }
+
+  Future<void> _clearSupportArtifacts(String scope) async {
+    final rows = await _storage.readAll();
+    final evidenceStore = SecureEvidenceStore(_storage);
+    for (final row in rows.entries) {
+      if (row.key.startsWith('venue.issue.outbox.')) {
+        try {
+          final command = jsonDecode(row.value) as Map<String, dynamic>;
+          if (command['sessionScope'] != scope) continue;
+          for (final raw in command['evidence'] as List? ?? const []) {
+            try {
+              await evidenceStore.delete(LocalIssueEvidence.fromJson(
+                  Map<String, dynamic>.from(raw as Map)));
+            } catch (_) {
+              // The support session still ends if a local evidence file is missing.
+            }
+          }
+          await _storage.delete(key: row.key);
+        } catch (_) {
+          // A corrupt local report cannot keep support access active.
+        }
+      } else if (row.key.contains(scope)) {
+        await _storage.delete(key: row.key);
+      }
+    }
+  }
+
   Future<void> signOut() async {
+    if (supportActive) await exitSupport();
     _sessionGeneration++;
     _signingOut = true;
     try {
@@ -344,6 +532,8 @@ class AuthRepository {
 
   Future<void> clear() async {
     _offlineReadOnly = false;
+    _supportAccessToken = null;
+    _supportScope = null;
     for (final key in [
       _organizationKey,
       _providerKey,
@@ -448,11 +638,37 @@ class AuthSessionController extends StateNotifier<AuthSnapshot> {
     }
   }
 
+  Future<void> signInDevelopment(String email, String password) async {
+    final generation = ++_generation;
+    state = const AuthSnapshot.loading();
+    try {
+      final session = await _repository.signInDevelopment(email, password);
+      if (generation == _generation) state = AuthSnapshot(session: session);
+    } catch (_) {
+      if (generation == _generation) state = const AuthSnapshot();
+      rethrow;
+    }
+  }
+
   Future<void> signOut() async {
     final generation = ++_generation;
     state = const AuthSnapshot.loading();
     await _repository.signOut();
     if (generation == _generation) state = const AuthSnapshot();
+  }
+
+  Future<void> enterSupport(String venueId, String reason) async {
+    final session = state.session;
+    if (session == null) {
+      throw StateError('Sign in before opening support access.');
+    }
+    final entered = await _repository.enterSupport(session, venueId, reason);
+    state = AuthSnapshot(session: entered);
+  }
+
+  Future<void> exitSupport() async {
+    final session = await _repository.exitSupport();
+    state = AuthSnapshot(session: session);
   }
 }
 

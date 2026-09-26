@@ -95,7 +95,7 @@ export class StaffingService {
     this.assertBulkInput(dto);
     const fingerprint = createHash('sha256').update(JSON.stringify({ action: 'staff-shift.bulk', actor: identity.subject, eventId, input: dto })).digest('hex');
     const prior = await this.prisma.withTenant(identity, async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`command:${identity.tenantId}:${key}`}, 0))`;
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`command:${identity.tenantId}:${key}`}, 0))`;
       const receipt = await tx.commandReceipt.findUnique({ where: { organizationId_key: { organizationId: identity.tenantId, key } } });
       if (receipt) {
         if (receipt.fingerprint !== fingerprint) throw new ConflictException('This Idempotency-Key was already used for a different command.');
@@ -122,7 +122,7 @@ export class StaffingService {
     }
     const response = { action: dto.action, results, applied: results.filter((item) => item.status === 'APPLIED').length, failed: results.filter((item) => item.status === 'FAILED').length };
     await this.prisma.withTenant(identity, async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`command:${identity.tenantId}:${key}`}, 0))`;
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`command:${identity.tenantId}:${key}`}, 0))`;
       await tx.commandReceipt.update({ where: { organizationId_key: { organizationId: identity.tenantId, key } }, data: { response: response as Prisma.InputJsonValue } });
     });
     return response;
@@ -1047,7 +1047,7 @@ export class StaffingService {
   private async command<T>(identity: Identity, key: string, action: string, input: unknown, work: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
     const fingerprint = createHash('sha256').update(JSON.stringify({ action, actor: identity.subject, input })).digest('hex');
     return this.prisma.withTenant(identity, async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`command:${identity.tenantId}:${key}`}, 0))`;
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`command:${identity.tenantId}:${key}`}, 0))`;
       const receipt = await tx.commandReceipt.findUnique({ where: { organizationId_key: { organizationId: identity.tenantId, key } } });
       if (receipt) {
         if (receipt.fingerprint !== fingerprint) throw new ConflictException('This Idempotency-Key was already used for a different command.');

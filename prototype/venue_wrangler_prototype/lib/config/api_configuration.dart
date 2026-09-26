@@ -24,6 +24,12 @@ class ApiConfiguration {
           .replaceFirst(RegExp(r'/+$'), '');
 
   static String? get organizationHint => _managed.organizationHint;
+  static bool get isLocalDevelopment {
+    final uri = Uri.tryParse(baseUrl);
+    return kDebugMode &&
+        uri != null &&
+        (uri.host == 'localhost' || uri.host == '10.0.2.2');
+  }
   static bool get allowCameraEvidence => _managed.allowCameraEvidence;
   static bool get allowLocationEvidence => _managed.allowLocationEvidence;
   static Duration get offlineCacheMaxAge =>

@@ -26,6 +26,14 @@ Issue photos are encrypted on the device while queued, then uploaded directly to
 
 ## Identity-provider app registration
 
+### Technical support operators
+
+Create a dedicated support organization and configure its Okta or Entra issuer in `SSO_PROVIDERS_JSON`. Grant `support:access` only to named support staff in that IdP, and set `SUPPORT_OPERATORS_JSON` on the API to an array of exact `{ "issuer": "https://<support-issuer>", "subject": "<token-sub>" }` entries. Both the signed token claim and this server-side allowlist are required. An empty array disables support access. Keep the allowlist in the deployment secret manager, not in source control.
+
+After sign-in, a support operator searches the list of venues in configured SSO tenants, selects one, and enters a ticket number and reason. The API issues a 15-minute venue session. Its token is held only in app memory and is sent alongside the operator's verified bearer token; the API rechecks both on every request. The session grants venue operational and venue administration capabilities for that venue, with event and location scope derived from the database. It does not grant `tenant:admin` or access to another venue. Exit revokes the session. API requests during the session are recorded in an append-only tenant-scoped activity table with method and path; normal domain audit records continue to apply to changes. Support sessions require connectivity and do not retain offline customer records after exit.
+
+Apply the support access migration before enabling operators. Set and review the allowlist through the normal secret deployment process, require the support IdP's MFA policy, and remove a subject from the allowlist to revoke its ability to open or use support sessions. A customer IdP deployment must issue the `support:access` capability in the protected API access token; an ID token or unverified app role is insufficient. Validate the venue picker, expiry, exit, and audit records against staging tenants before production use.
+
 Register a **public native/mobile application** separately in Okta and/or Entra for each configured authorization server. Use the redirect URI:
 
 `com.venuewrangler.enterprise:/oauth2redirect`

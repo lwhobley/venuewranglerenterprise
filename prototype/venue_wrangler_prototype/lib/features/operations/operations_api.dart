@@ -19,7 +19,9 @@ class _OfflineAccessTokenUnavailable extends StateError {
 
 class OperationsApi {
   OperationsApi(this._auth, this._storage, {Dio? dio})
-      : _dio = dio ?? Dio(BaseOptions(baseUrl: ApiConfiguration.baseUrl));
+      : _dio = dio ?? Dio(BaseOptions(baseUrl: ApiConfiguration.baseUrl)) {
+    _auth.attachSupportHeader(_dio);
+  }
   final AuthRepository _auth;
   final FlutterSecureStorage _storage;
   final Dio _dio;
@@ -32,6 +34,7 @@ class OperationsApi {
       _offlineCacheHits['issues.$eventId'];
 
   Future<T> _cachedGet<T>(String cacheKey, Future<T> Function() load) async {
+    if (_auth.supportActive) return load();
     final maxCacheAge = ApiConfiguration.offlineCacheMaxAge;
     final scope = await _auth.offlineCacheScope();
     if (scope == null) return load();
@@ -295,8 +298,8 @@ class OperationsApi {
           .map((row) => Map<String, dynamic>.from(row))
           .toList();
 
-  Future<void> replayIntegrationDeadLetter(String letterId) async => _request(
-      (token) => _dio.post<void>(
+  Future<void> replayIntegrationDeadLetter(String letterId) async =>
+      _request((token) => _dio.post<void>(
           '/api/v1/integrations/dead-letters/$letterId/replay',
           options: Options(headers: {'Authorization': 'Bearer $token'})));
 
@@ -460,6 +463,7 @@ class OperationsApi {
       return false;
     } on DioException catch (error) {
       if (error.response != null) rethrow;
+      if (_auth.supportActive) rethrow;
       final scope = await _auth.offlineCacheScope();
       if (scope == null) rethrow;
       await _storage.write(
@@ -1158,6 +1162,9 @@ class OperationsApi {
 
   Future<void> saveHospitalityDraft(
       String eventId, Map<String, Object?> draft) async {
+    if (_auth.supportActive) {
+      throw StateError('Technical support sessions cannot save offline drafts.');
+    }
     final scope = await _auth.offlineCacheScope();
     if (scope == null) {
       throw StateError('Sign in again to save a scoped offline draft.');
@@ -1222,6 +1229,9 @@ class OperationsApi {
 
   Future<void> savePendingHospitalityHandoff(
       String eventId, String orderId, Map<String, Object?> receipt) async {
+    if (_auth.supportActive) {
+      throw StateError('Technical support sessions cannot queue handoffs offline.');
+    }
     final scope = await _auth.offlineCacheScope();
     if (scope == null) {
       throw StateError('Sign in again to save this handoff securely.');
@@ -1467,6 +1477,10 @@ class OperationsApi {
 
   Future<void> enqueueOfflineAttendance(
       String eventId, String shiftId, String action) async {
+    if (_auth.supportActive) {
+      throw StateError(
+          'Technical support sessions require an online connection.');
+    }
     final scope = await _auth.offlineCacheScope();
     if (scope == null) {
       throw StateError('Sign in again before recording attendance offline.');

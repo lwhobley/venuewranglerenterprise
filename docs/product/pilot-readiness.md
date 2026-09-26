@@ -1,5 +1,7 @@
 # Pilot readiness: implemented product slice and remaining dependencies
 
+Technical support access is implemented as a named, SSO-authenticated operator workflow: a configured support operator selects a venue and records a reason before entering a 15-minute, venue-scoped operational session. It needs the support IdP, server allowlist, database migration, and staging verification described in [enterprise SSO setup](../security/enterprise-sso-setup.md). This code does not establish a staffed support service or customer approval to access production data.
+
 This checklist separates code in the repository from controls that require a customer environment, independent assessment, or service operations. A successful compile does not mean the product is production-certified or that a customer's SSO works.
 
 ## Repository work completed in this slice

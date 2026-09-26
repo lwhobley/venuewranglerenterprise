@@ -14,6 +14,8 @@ class SignInPage extends ConsumerStatefulWidget {
 
 class _SignInPageState extends ConsumerState<SignInPage> {
   final _organization = TextEditingController();
+  final _testEmail = TextEditingController(text: 'tester@venuewrangler.invalid');
+  final _testPassword = TextEditingController();
   List<AuthProviderOption>? _providers;
   bool _loading = false;
   String? _error;
@@ -27,6 +29,8 @@ class _SignInPageState extends ConsumerState<SignInPage> {
   @override
   void dispose() {
     _organization.dispose();
+    _testEmail.dispose();
+    _testPassword.dispose();
     super.dispose();
   }
 
@@ -76,6 +80,27 @@ class _SignInPageState extends ConsumerState<SignInPage> {
             'Sign-in didn’t complete. Try again or contact your organization administrator.');
       }
     } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _signInDevelopment() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      await ref.read(authSessionProvider.notifier).signInDevelopment(
+            _testEmail.text,
+            _testPassword.text,
+          );
+    } catch (_) {
+      if (mounted) {
+        setState(() => _error =
+            'Test login failed. Check the local API and development password.');
+      }
+    } finally {
+      _testPassword.clear();
       if (mounted) setState(() => _loading = false);
     }
   }
@@ -150,6 +175,34 @@ class _SignInPageState extends ConsumerState<SignInPage> {
                       Text(
                           'Federated sign-in is currently configured for the iOS and Android apps.',
                           style: Theme.of(context).textTheme.bodySmall),
+                  ],
+                  if (ApiConfiguration.isLocalDevelopment) ...[
+                    const SizedBox(height: 28),
+                    const Divider(),
+                    const SizedBox(height: 12),
+                    Text('Local test organization',
+                        style: Theme.of(context).textTheme.titleMedium),
+                    const SizedBox(height: 8),
+                    const Text('Venue Test Lab · fixture verified when you sign in'),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _testEmail,
+                      keyboardType: TextInputType.emailAddress,
+                      decoration: const InputDecoration(
+                          labelText: 'Test email', border: OutlineInputBorder()),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _testPassword,
+                      obscureText: true,
+                      onSubmitted: (_) => _signInDevelopment(),
+                      decoration: const InputDecoration(
+                          labelText: 'Test password', border: OutlineInputBorder()),
+                    ),
+                    const SizedBox(height: 12),
+                    FilledButton(
+                        onPressed: _loading ? null : _signInDevelopment,
+                        child: const Text('Sign in to test organization')),
                   ],
                   if (_error != null) ...[
                     const SizedBox(height: 16),

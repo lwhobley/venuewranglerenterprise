@@ -39,6 +39,13 @@ export function validateDeployConfig(environment) {
       errors.push(`Production secret version must be a pinned positive integer: ${name}`);
     }
   }
+  const supportSecret = environment.SUPPORT_OPERATORS_JSON_SECRET?.trim();
+  const supportVersion = environment.SUPPORT_OPERATORS_JSON_SECRET_VERSION?.trim();
+  if (Boolean(supportSecret) !== Boolean(supportVersion)) {
+    errors.push('Set both SUPPORT_OPERATORS_JSON_SECRET and SUPPORT_OPERATORS_JSON_SECRET_VERSION, or neither.');
+  } else if (supportVersion && !/^[1-9][0-9]*$/.test(supportVersion)) {
+    errors.push('Production secret version must be a pinned positive integer: SUPPORT_OPERATORS_JSON_SECRET_VERSION');
+  }
   return errors;
 }
 

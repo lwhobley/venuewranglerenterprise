@@ -182,7 +182,7 @@ export class IntegrationService {
   }
 
   private async lockIdentifier(tx: Prisma.TransactionClient, tenantId: string, source: string, kind: string, externalId: string) {
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`integration-identifier:${tenantId}:${source}:${kind}:${externalId}`}, 0))`;
+    await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`integration-identifier:${tenantId}:${source}:${kind}:${externalId}`}, 0))`;
   }
 
   async transforms(identity: Identity) {
@@ -197,7 +197,7 @@ export class IntegrationService {
     if (!this.providers.some((provider) => provider.id === dto.source && provider.tenantId === identity.tenantId)) throw new BadRequestException('The source is not configured for this tenant.');
     const definition = validateIntegrationTransform(dto.definition);
     return this.prisma.withTenant(identity, async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`integration-transform:${identity.tenantId}:${dto.source}`}, 0))`;
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`integration-transform:${identity.tenantId}:${dto.source}`}, 0))`;
       const latest = await tx.integrationTransformVersion.findFirst({ where: { organizationId: identity.tenantId, source: dto.source }, orderBy: { version: 'desc' } });
       if (latest && JSON.stringify(latest.definition) === JSON.stringify(definition)) return latest;
       return tx.integrationTransformVersion.create({ data: { organizationId: identity.tenantId, source: dto.source, version: (latest?.version ?? 0) + 1, definition: definition as unknown as Prisma.InputJsonValue, createdBy: identity.subject } });

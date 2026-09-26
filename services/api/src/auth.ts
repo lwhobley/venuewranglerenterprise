@@ -4,9 +4,10 @@ import { Request } from 'express';
 import { createRemoteJWKSet, decodeJwt, jwtVerify, type JWTVerifyGetKey } from 'jose';
 import { AuthProvidersService, type SsoProviderConfig } from './auth-providers';
 import { PrismaService } from './prisma.service';
+import { SupportAccessService } from './support-access.service';
 
-export type Capability = 'issue:report' | 'issue:read' | 'issue:evidence' | 'issue:triage' | 'issue:escalate' | 'issue:resolve' | 'issue:verify' | 'issue:close' | 'operations:read' | 'operations:write' | 'event:closeout' | 'vendor:staffing' | 'hospitality:order' | 'hospitality:fulfill' | 'notification:read' | 'venue:admin' | 'tenant:admin';
-const capabilities = new Set<Capability>(['issue:report', 'issue:read', 'issue:evidence', 'issue:triage', 'issue:escalate', 'issue:resolve', 'issue:verify', 'issue:close', 'operations:read', 'operations:write', 'event:closeout', 'vendor:staffing', 'hospitality:order', 'hospitality:fulfill', 'notification:read', 'venue:admin', 'tenant:admin']);
+export type Capability = 'issue:report' | 'issue:read' | 'issue:evidence' | 'issue:triage' | 'issue:escalate' | 'issue:resolve' | 'issue:verify' | 'issue:close' | 'operations:read' | 'operations:write' | 'event:closeout' | 'vendor:staffing' | 'hospitality:order' | 'hospitality:fulfill' | 'notification:read' | 'venue:admin' | 'tenant:admin' | 'support:access';
+const capabilities = new Set<Capability>(['issue:report', 'issue:read', 'issue:evidence', 'issue:triage', 'issue:escalate', 'issue:resolve', 'issue:verify', 'issue:close', 'operations:read', 'operations:write', 'event:closeout', 'vendor:staffing', 'hospitality:order', 'hospitality:fulfill', 'notification:read', 'venue:admin', 'tenant:admin', 'support:access']);
 const uuidClaimPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export interface Identity {
@@ -20,6 +21,7 @@ export interface Identity {
   eventIds: string[];
   locationIds: string[];
   assignableUserIds: string[];
+  supportAccessSessionId?: string;
 }
 
 declare module 'express-serve-static-core' {
@@ -30,7 +32,7 @@ declare module 'express-serve-static-core' {
 export class JwtIdentityGuard implements CanActivate {
   private readonly jwks = new Map<string, Promise<JWTVerifyGetKey>>();
 
-  constructor(private readonly config: ConfigService, private readonly providers: AuthProvidersService, private readonly prisma: PrismaService) {}
+  constructor(private readonly config: ConfigService, private readonly providers: AuthProvidersService, private readonly prisma: PrismaService, private readonly support: SupportAccessService) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request>();
@@ -72,6 +74,11 @@ export class JwtIdentityGuard implements CanActivate {
       select: { active: true },
     }));
     if (provisionedUser?.active === false) throw new UnauthorizedException('This account is deactivated. Contact your identity administrator.');
+    const supportAccess = request.headers['x-support-access'];
+    if (supportAccess !== undefined) {
+      if (typeof supportAccess !== 'string' || supportAccess.length > 200) throw new UnauthorizedException('Support access is invalid.');
+      request.identity = await this.support.resolve(request.identity, supportAccess, request.method, request.path);
+    }
     return true;
   }
 

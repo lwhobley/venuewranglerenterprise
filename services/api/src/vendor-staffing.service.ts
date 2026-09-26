@@ -37,7 +37,7 @@ export class VendorStaffingService {
     const input = { eventId, demandId: dto.demandId, vendorSubject: dto.vendorSubject, requestedHeadcount: dto.requestedHeadcount, responseDueAt: responseDueAt.toISOString(), instructions: dto.instructions?.trim() ?? '' };
     const fingerprint = createHash('sha256').update(JSON.stringify({ action: 'vendor-staffing.create', actor: identity.subject, input })).digest('hex');
     const result = await this.prisma.withTenant(identity, async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`command:${identity.tenantId}:${key}`}, 0))`;
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`command:${identity.tenantId}:${key}`}, 0))`;
       const prior = await tx.commandReceipt.findUnique({ where: { organizationId_key: { organizationId: identity.tenantId, key } } });
       if (prior) { if (prior.fingerprint !== fingerprint) throw new ConflictException('This Idempotency-Key was already used for a different command.'); return { request: prior.response, notification: null }; }
       const demand = await tx.staffingDemand.findFirst({ where: { id: dto.demandId, eventId, organizationId: identity.tenantId } });
@@ -45,7 +45,7 @@ export class VendorStaffingService {
       assertScope(identity, 'operations:write', eventId, demand.venueId, demand.locationId ?? undefined);
       const vendor = await tx.person.findFirst({ where: { organizationId: identity.tenantId, externalSubject: dto.vendorSubject, active: true }, select: { externalSubject: true } });
       if (!vendor) throw new NotFoundException('The selected vendor must be an active person in this organization.');
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`vendor-demand:${identity.tenantId}:${dto.demandId}`}, 0))`;
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`vendor-demand:${identity.tenantId}:${dto.demandId}`}, 0))`;
       const [shifts, outstanding] = await Promise.all([
         tx.staffShift.count({ where: { organizationId: identity.tenantId, eventId, venueId: demand.venueId, ...(demand.locationId ? { locationId: demand.locationId } : {}), role: demand.role, state: { in: ['DRAFT', 'PUBLISHED'] }, startsAt: { lte: demand.startsAt }, endsAt: { gte: demand.endsAt } } }),
         tx.staffingVendorRequest.findMany({ where: { organizationId: identity.tenantId, demandId: demand.id, state: { in: ['SENT', 'ACKNOWLEDGED', 'PARTIALLY_COMMITTED', 'COMMITTED'] } }, select: { state: true, requestedHeadcount: true, committedHeadcount: true } }),
@@ -79,7 +79,7 @@ export class VendorStaffingService {
       if (!current) throw new NotFoundException('Vendor staffing request not found.');
       if (current.vendorSubject !== identity.subject) throw new ForbiddenException('This request is assigned to another vendor account.');
       if (!identity.venueIds.includes(current.venueId) || (current.locationId && !identity.locationIds.includes(current.locationId))) throw new ForbiddenException('This request is outside your assigned scope.');
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`vendor-demand:${identity.tenantId}:${current.demandId}`}, 0))`;
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`vendor-demand:${identity.tenantId}:${current.demandId}`}, 0))`;
       const allowedSourceStates = current.state === 'PARTIALLY_COMMITTED'
         ? ['PARTIALLY_COMMITTED']
         : ['SENT', 'ACKNOWLEDGED'];
@@ -152,7 +152,7 @@ export class VendorStaffingService {
   private async command<T>(identity: Identity, key: string, action: string, input: unknown, work: (tx: Prisma.TransactionClient) => Promise<T>) {
     const fingerprint = createHash('sha256').update(JSON.stringify({ action, actor: identity.subject, input })).digest('hex');
     return this.prisma.withTenant(identity, async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`command:${identity.tenantId}:${key}`}, 0))`;
+      await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`command:${identity.tenantId}:${key}`}, 0))`;
       const prior = await tx.commandReceipt.findUnique({ where: { organizationId_key: { organizationId: identity.tenantId, key } } });
       if (prior) { if (prior.fingerprint !== fingerprint) throw new ConflictException('This Idempotency-Key was already used for a different command.'); return { value: prior.response as T, replayed: true }; }
       const response = await work(tx);

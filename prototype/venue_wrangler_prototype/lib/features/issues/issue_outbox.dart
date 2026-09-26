@@ -289,17 +289,23 @@ final issueOutboxProvider = Provider<IssueOutbox>(
     (ref) => SecureIssueOutbox(ref.watch(_secureStorageProvider)));
 final connectivityMonitorProvider = Provider<ConnectivityMonitor>(
     (ref) => PluginConnectivityMonitor(Connectivity()));
-final issueApiProvider = Provider<IssueApi>((ref) => DioIssueApi(
-      Dio(BaseOptions(baseUrl: ApiConfiguration.baseUrl)),
-      ref.watch(authRepositoryProvider),
-    ));
+final issueApiProvider = Provider<IssueApi>((ref) {
+  final auth = ref.watch(authRepositoryProvider);
+  final dio = Dio(BaseOptions(baseUrl: ApiConfiguration.baseUrl));
+  auth.attachSupportHeader(dio);
+  return DioIssueApi(dio, auth);
+});
 final secureEvidenceStoreProvider =
     Provider((ref) => SecureEvidenceStore(ref.watch(_secureStorageProvider)));
 final issueSyncProvider =
     StateNotifierProvider<IssueSyncController, List<PendingIssueReport>>((ref) {
   ref.watch(authSessionProvider.select((value) => value.session?.accessToken));
+  ref.watch(
+      authSessionProvider.select((value) => value.session?.supportVenueId));
   final controller = IssueSyncController(ref.watch(issueOutboxProvider),
       ref.watch(issueApiProvider), ref.watch(secureEvidenceStoreProvider));
+  controller.supportActive =
+      () => ref.read(authRepositoryProvider).supportActive;
   unawaited(controller.restore());
   controller.watchConnectivity(ref.watch(connectivityMonitorProvider));
   return controller;
@@ -317,6 +323,7 @@ class IssueSyncController extends StateNotifier<List<PendingIssueReport>> {
   StreamSubscription<bool>? _connectivitySubscription;
   Future<void>? _syncInFlight;
   bool _wasOnline = false;
+  bool Function() supportActive = () => false;
 
   Future<void> restore() async {
     final scope = await _api.currentScope();
@@ -343,6 +350,10 @@ class IssueSyncController extends StateNotifier<List<PendingIssueReport>> {
   }
 
   Future<void> submit(PendingIssueReport command) async {
+    if (supportActive() && !_wasOnline) {
+      throw StateError(
+          'Technical support sessions require an online connection to report issues.');
+    }
     final scope = await _api.currentScope();
     if (scope == null) {
       throw StateError('Sign in before saving an issue report.');
