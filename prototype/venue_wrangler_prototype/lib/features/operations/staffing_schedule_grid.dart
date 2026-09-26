@@ -2,6 +2,31 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'operations_api.dart';
 
+Set<String> overlappingShiftIds(List<Map<String, dynamic>> shifts) {
+  final ids = <String>{};
+  for (var i = 0; i < shifts.length; i++) {
+    for (var j = i + 1; j < shifts.length; j++) {
+      if (_assignedShiftsOverlap(shifts[i], shifts[j])) {
+        ids.add(shifts[i]['id'] as String);
+        ids.add(shifts[j]['id'] as String);
+      }
+    }
+  }
+  return ids;
+}
+
+bool _assignedShiftsOverlap(Map<String, dynamic> left, Map<String, dynamic> right) {
+  if (left['state'] == 'CANCELLED' || right['state'] == 'CANCELLED') return false;
+  final subject = left['assignedSubject'];
+  if (subject == null || subject != right['assignedSubject']) return false;
+  final leftStart = DateTime.tryParse(left['startsAt'] as String? ?? '');
+  final leftEnd = DateTime.tryParse(left['endsAt'] as String? ?? '');
+  final rightStart = DateTime.tryParse(right['startsAt'] as String? ?? '');
+  final rightEnd = DateTime.tryParse(right['endsAt'] as String? ?? '');
+  if (leftStart == null || leftEnd == null || rightStart == null || rightEnd == null) return false;
+  return leftStart.isBefore(rightEnd) && rightStart.isBefore(leftEnd);
+}
+
 class StaffingScheduleGrid extends StatefulWidget {
   const StaffingScheduleGrid(
       {super.key,
@@ -344,8 +369,8 @@ class _StaffingScheduleGridState extends State<StaffingScheduleGrid> {
                                         DataCell(Text(_personName(
                                             shift['assignedSubject']
                                                 as String?))),
-                                        DataCell(Text(
-                                            '${shift['state'] ?? 'DRAFT'}${shift['response'] == 'DECLINED' ? ' · declined' : ''}${shift['attendance'] != 'NOT_STARTED' ? ' · started' : ''}')),
+                                         DataCell(Text(
+                                             '${shift['state'] ?? 'DRAFT'}${shift['response'] == 'DECLINED' ? ' · declined' : ''}${shift['attendance'] != 'NOT_STARTED' ? ' · started' : ''}${overlappingShiftIds(widget.shifts).contains(id) ? ' · overlap' : ''}')),
                                       ]);
                                     }).toList(),
                                   )))),

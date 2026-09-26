@@ -35,6 +35,15 @@ void main() {
     await tester.pump();
     expect(find.text('1 selected · Actions'), findsOneWidget);
   });
+
+  test('marks overlapping assigned shifts and ignores cancelled or open slots', () {
+    expect(overlappingShiftIds(const [
+      {'id': 'a', 'assignedSubject': 'worker-1', 'state': 'PUBLISHED', 'startsAt': '2027-01-01T18:00:00.000Z', 'endsAt': '2027-01-01T22:00:00.000Z'},
+      {'id': 'b', 'assignedSubject': 'worker-1', 'state': 'DRAFT', 'startsAt': '2027-01-01T21:00:00.000Z', 'endsAt': '2027-01-02T01:00:00.000Z'},
+      {'id': 'c', 'assignedSubject': 'worker-1', 'state': 'CANCELLED', 'startsAt': '2027-01-01T18:00:00.000Z', 'endsAt': '2027-01-01T22:00:00.000Z'},
+      {'id': 'd', 'assignedSubject': null, 'state': 'PUBLISHED', 'startsAt': '2027-01-01T18:00:00.000Z', 'endsAt': '2027-01-01T22:00:00.000Z'},
+    ]), {'a', 'b'});
+  });
 }
 
 class _UnusedApi implements OperationsApi {
