@@ -19,6 +19,12 @@ Store `INTEGRATION_PROVIDERS_JSON` in Google Secret Manager and pin the version 
 
 Use a different random secret for every integration. Rotate by creating a new pinned Secret Manager version and coordinating the sender before disabling the old credential. `id` is recorded as the event source. An integration ID maps to one tenant and cannot choose a tenant in the request.
 
+An optional `pollUrl` can be set for a source that exposes HTTPS pages shaped as `{ "items": [...], "nextCursor": "..." }`. The API sends the configured source secret as a bearer credential, requests at most 50 items per page, and saves a cursor and source status. Set `pollMinIntervalSeconds` to control the minimum polling interval (15 to 3600 seconds). Configure and rotate this credential with the source operator; this generic protocol does not implement any vendor-specific authentication flow. A tenant administrator starts a bounded poll with `POST /api/v1/integrations/sources/:sourceId/poll` and reviews status with `GET /api/v1/integrations/sources`.
+
+If a saved transform exists for the source, both signed `POST /api/v1/integrations/raw` requests and polled items pass through that transform before validation. `POST /api/v1/integrations/transforms/preview` checks a raw sample without writing it; `POST /api/v1/integrations/transforms` saves a new immutable version. A transform selects scalar values from safe dot-separated paths or literals for `externalId`, `eventType`, `occurredAt`, an event identifier, and named payload fields. Sources without a transform must send the canonical event shape below. Tenant administrators can review failed items with `GET /api/v1/integrations/sources/:sourceId/dead-letters` and request replay with `POST /api/v1/integrations/dead-letters/:letterId/replay` after correcting mapping or source data.
+
+`GET` and `PUT /api/v1/integrations/ownership` let a tenant administrator assign one source to each supported operational field domain. A write from another source to an owned domain is rejected. Configure ownership before enabling two systems that may send the same type of data.
+
 ## Configure external identifiers
 
 A tenant administrator can register source-specific venue, event, and location identifiers with `PUT /api/v1/integrations/identifiers` using a bearer token. The source must already be configured for that tenant. Example:

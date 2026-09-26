@@ -255,7 +255,15 @@ export class IntegrationService {
     const provider = this.requireTenantSource(identity, letter.source);
     const raw = Buffer.from(JSON.stringify(letter.payload));
     try {
-      const result = await this.record(provider, raw, this.envelope(letter.payload));
+      let envelope: ReturnType<IntegrationService['envelope']>;
+      try {
+        envelope = this.envelope(letter.payload);
+      } catch (originalError) {
+        const transform = await this.prisma.withTenant(identity, (tx) => tx.integrationTransformVersion.findFirst({ where: { organizationId: identity.tenantId, source: letter.source }, orderBy: { version: 'desc' } }));
+        if (!transform) throw originalError;
+        envelope = this.envelope(transformIntegrationRecord(validateIntegrationTransform(transform.definition), letter.payload));
+      }
+      const result = await this.record(provider, raw, envelope);
       await this.prisma.withTenant(identity, (tx) => tx.integrationDeadLetter.update({ where: { id: letter.id }, data: { state: 'REPLAYED', error: 'Replayed.' } }));
       return { replayed: true, eventId: result.event.eventId };
     } catch (error) {
@@ -271,6 +279,8 @@ export class IntegrationService {
     const now = new Date();
     const checkpoint = await this.prisma.withTenant(identity, (tx) => tx.integrationSourceCheckpoint.findUnique({ where: { organizationId_source: { organizationId: identity.tenantId, source } } }));
     if (checkpoint?.nextPollAt && checkpoint.nextPollAt > now) throw new ConflictException('This source is inside its polling interval.');
+    const savedTransform = await this.prisma.withTenant(identity, (tx) => tx.integrationTransformVersion.findFirst({ where: { organizationId: identity.tenantId, source }, orderBy: { version: 'desc' } }));
+    const transform = savedTransform ? validateIntegrationTransform(savedTransform.definition) : null;
     let cursor = checkpoint?.cursor ?? '';
     let pages = 0;
     let accepted = 0;
@@ -292,11 +302,13 @@ export class IntegrationService {
         for (const item of items) {
           const raw = Buffer.from(JSON.stringify(item));
           if (raw.length > 65536) throw new BadRequestException('A polled item exceeds 65536 bytes.');
+          let normalized: unknown = item;
           try {
-            await this.record(provider, raw, this.envelope(item));
+            if (transform) normalized = transformIntegrationRecord(transform, item);
+            await this.record(provider, raw, this.envelope(normalized));
             accepted += 1;
           } catch (error) {
-            await this.rememberFailure(provider, item, error);
+            await this.rememberFailure(provider, normalized, error);
             throw error;
           }
         }
