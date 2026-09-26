@@ -32,7 +32,7 @@ A tenant administrator can register source-specific venue, event, and location i
 }
 ```
 
-Use `kind` values `VENUE`, `EVENT`, or `LOCATION`. `GET /api/v1/integrations/identifiers` lists the tenant's mappings. Each mapping is scoped to its tenant and source; the API validates that the internal target belongs to the tenant. Registering the same mapping again is safe. To prevent silent rerouting of incoming data, a different target for an existing external identifier returns a conflict. Correcting a mistaken mapping requires an explicit administrative migration; no generic remap endpoint is exposed.
+Use `kind` values `VENUE`, `EVENT`, or `LOCATION`. `GET /api/v1/integrations/identifiers` lists the tenant's mappings. Each mapping is scoped to its tenant and source; the API validates that the internal target belongs to the tenant. Registering the same mapping again is safe. To prevent silent rerouting, a different target for an existing external identifier returns a conflict. A tenant administrator can preview impact and correct a mapping through `GET /api/v1/integrations/identifiers/:mappingId/impact` and `PUT /api/v1/integrations/identifiers/:mappingId/correct`. That correction is audited and is not a silent remap.
 
 ## Request signature
 

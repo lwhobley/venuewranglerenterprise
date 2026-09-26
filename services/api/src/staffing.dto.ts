@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { ArrayMaxSize, ArrayMinSize, ArrayUnique, IsArray, IsDateString, IsIn, IsInt, IsOptional, IsString, IsUUID, Length, Matches, Max, Min, ValidateIf } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, ArrayUnique, IsArray, IsBoolean, IsDateString, IsIn, IsInt, IsObject, IsOptional, IsString, IsUUID, Length, Matches, Max, Min, ValidateIf } from 'class-validator';
 
 export class CreateStaffShiftDto {
   @ApiProperty() @IsUUID() venueId!: string;
@@ -76,4 +76,19 @@ export class UpdateStaffingDemandDto {
   @ApiPropertyOptional({ minimum: 1, maximum: 500 }) @IsOptional() @IsInt() @Min(1) @Max(500) requiredHeadcount?: number;
   @ApiPropertyOptional({ type: [String] }) @IsOptional() @IsArray() @ArrayMaxSize(20) @ArrayUnique() @IsString({ each: true }) @Matches(/^[A-Za-z0-9][A-Za-z0-9._-]{1,39}$/, { each: true }) requiredQualificationCodes?: string[];
   @ApiProperty({ minLength: 3, maxLength: 500 }) @IsString() @Length(3, 500) reason!: string;
+}
+
+export class CreateScheduleSavedViewDto {
+  @IsString() @Length(2, 80) name!: string;
+  @IsBoolean() shared!: boolean;
+  @IsObject() filters!: Record<string, unknown>;
+}
+
+export class BulkShiftActionDto {
+  @IsIn(['PUBLISH', 'CANCEL', 'ASSIGN', 'MOVE']) action!: 'PUBLISH' | 'CANCEL' | 'ASSIGN' | 'MOVE';
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(50) @ArrayUnique() @IsUUID('all', { each: true }) shiftIds!: string[];
+  @IsOptional() @IsString() @Length(1, 240) assignedSubject?: string;
+  @IsOptional() @IsDateString() startsAt?: string;
+  @IsOptional() @IsDateString() endsAt?: string;
+  @ValidateIf((_object, value) => value !== undefined && value !== null) @IsUUID() locationId?: string | null;
 }

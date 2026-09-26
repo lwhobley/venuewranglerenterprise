@@ -1,4 +1,4 @@
-import { IsIn, IsString, IsUUID, Length, Matches } from 'class-validator';
+import { IsIn, IsInt, IsObject, IsString, IsUUID, Length, Matches, Min } from 'class-validator';
 
 export class PutIntegrationIdentifierDto {
   @IsString()
@@ -14,4 +14,16 @@ export class PutIntegrationIdentifierDto {
 
   @IsUUID()
   internalId!: string;
+}
+
+export class CorrectIntegrationIdentifierDto {
+  @IsUUID() expectedInternalId!: string;
+  @IsUUID() newInternalId!: string;
+  @IsString() @Length(3, 500) reason!: string;
+  @IsInt() @Min(0) observedCount!: number;
+}
+
+export class SaveIntegrationTransformDto {
+  @IsString() @Matches(/^[a-z0-9][a-z0-9-]{1,62}$/) source!: string;
+  @IsObject() definition!: Record<string, unknown>;
 }

@@ -149,6 +149,14 @@ model Organization {
   attachments                  IssueAttachment[]
   integrationEvents            ExternalIntegrationEvent[]
   integrationIdentifiers       IntegrationIdentifier[]
+  integrationIdentifierAudits  IntegrationIdentifierAudit[]
+  integrationTransforms        IntegrationTransformVersion[]
+  integrationCheckpoints       IntegrationSourceCheckpoint[]
+  integrationDeadLetters       IntegrationDeadLetter[]
+  venueDepartments             VenueDepartment[]
+  venueServiceAreas            VenueServiceArea[]
+  venueTemplates               VenueTemplate[]
+  scheduleViews                ScheduleSavedView[]
   pushDevices                  PushDevice[]
   setupAuditEvents             TenantSetupAuditEvent[]
   staffShifts                  StaffShift[]
@@ -192,6 +200,9 @@ model Venue {
   vendorStaffingRequests      StaffingVendorRequest[]
   hospitalityMenuItems        HospitalityMenuItem[]
   hospitalityMenuRecipeLines  HospitalityMenuRecipeLine[]
+  departments                 VenueDepartment[]
+  serviceAreas                VenueServiceArea[]
+  scheduleViews               ScheduleSavedView[]
 
   @@unique([id, organizationId])
   @@index([organizationId])
@@ -355,7 +366,9 @@ model Location {
   organizationId         String                  @map("organization_id") @db.Uuid
   venueId                String                  @map("venue_id") @db.Uuid
   name                   String
+  serviceAreaId          String?                 @map("service_area_id") @db.Uuid
   venue                  Venue                   @relation(fields: [venueId], references: [id])
+  serviceArea            VenueServiceArea?       @relation(fields: [serviceAreaId, venueId, organizationId], references: [id, venueId, organizationId])
   issues                 Issue[]
   tasks                  OperationalTask[]
   staffShifts            StaffShift[]
@@ -367,6 +380,73 @@ model Location {
   @@unique([id, venueId, organizationId])
   @@index([organizationId, venueId])
   @@map("locations")
+}
+
+model VenueDepartment {
+  id             String             @id @default(uuid()) @db.Uuid
+  organizationId String             @map("organization_id") @db.Uuid
+  venueId        String             @map("venue_id") @db.Uuid
+  code           String
+  name           String
+  createdAt      DateTime           @default(now()) @map("created_at")
+  organization   Organization       @relation(fields: [organizationId], references: [id])
+  venue          Venue              @relation(fields: [venueId], references: [id])
+  serviceAreas   VenueServiceArea[]
+
+  @@unique([organizationId, venueId, code])
+  @@unique([id, venueId, organizationId])
+  @@map("venue_departments")
+}
+
+model VenueServiceArea {
+  id             String           @id @default(uuid()) @db.Uuid
+  organizationId String           @map("organization_id") @db.Uuid
+  venueId        String           @map("venue_id") @db.Uuid
+  departmentId   String?          @map("department_id") @db.Uuid
+  code           String
+  name           String
+  createdAt      DateTime         @default(now()) @map("created_at")
+  organization   Organization     @relation(fields: [organizationId], references: [id])
+  venue          Venue            @relation(fields: [venueId], references: [id])
+  department     VenueDepartment? @relation(fields: [departmentId, venueId, organizationId], references: [id, venueId, organizationId])
+  locations      Location[]
+
+  @@unique([organizationId, venueId, code])
+  @@unique([id, venueId, organizationId])
+  @@map("venue_service_areas")
+}
+
+model VenueTemplate {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  code           String
+  name           String
+  version        Int
+  structure      Json         @db.JsonB
+  createdBy      String       @map("created_by")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  organization   Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([organizationId, code, version])
+  @@index([organizationId, code, version(sort: Desc)])
+  @@map("venue_templates")
+}
+
+model ScheduleSavedView {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  venueId        String       @map("venue_id") @db.Uuid
+  ownerSubject   String       @map("owner_subject")
+  name           String
+  shared         Boolean      @default(false)
+  filters        Json         @db.JsonB
+  createdAt      DateTime     @default(now()) @map("created_at")
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  venue          Venue        @relation(fields: [venueId], references: [id])
+
+  @@unique([organizationId, venueId, ownerSubject, name])
+  @@index([organizationId, venueId, shared])
+  @@map("schedule_saved_views")
 }
 
 model Person {
@@ -1029,10 +1109,81 @@ model IntegrationIdentifier {
   createdAt      DateTime     @default(now()) @map("created_at")
   updatedAt      DateTime     @updatedAt @map("updated_at")
   organization   Organization @relation(fields: [organizationId], references: [id])
+  auditEvents    IntegrationIdentifierAudit[]
 
   @@unique([organizationId, source, kind, externalId])
+  @@unique([id, organizationId])
   @@index([organizationId, source, kind, internalId])
   @@map("integration_identifiers")
+}
+
+model IntegrationIdentifierAudit {
+  id             String                @id @default(uuid()) @db.Uuid
+  organizationId String                @map("organization_id") @db.Uuid
+  mappingId      String                @map("mapping_id") @db.Uuid
+  actorId        String                @map("actor_id")
+  action         String
+  beforeTargetId String                @map("before_target_id") @db.Uuid
+  afterTargetId  String                @map("after_target_id") @db.Uuid
+  reason         String
+  observedCount  Int                   @map("observed_count")
+  createdAt      DateTime              @default(now()) @map("created_at")
+  organization   Organization          @relation(fields: [organizationId], references: [id])
+  mapping        IntegrationIdentifier @relation(fields: [mappingId, organizationId], references: [id, organizationId])
+
+  @@index([organizationId, mappingId, createdAt])
+  @@map("integration_identifier_audit")
+}
+
+model IntegrationTransformVersion {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  source         String
+  version        Int
+  definition     Json         @db.JsonB
+  createdBy      String       @map("created_by")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  organization   Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([organizationId, source, version])
+  @@index([organizationId, source, version(sort: Desc)])
+  @@map("integration_transform_versions")
+}
+
+model IntegrationSourceCheckpoint {
+  id                   String       @id @default(uuid()) @db.Uuid
+  organizationId       String       @map("organization_id") @db.Uuid
+  source               String
+  cursor               String       @default("")
+  lastStatus           String       @default("NEVER") @map("last_status")
+  lastError            String       @default("") @map("last_error")
+  consecutiveFailures  Int          @default(0) @map("consecutive_failures")
+  lastPolledAt         DateTime?    @map("last_polled_at")
+  nextPollAt           DateTime?    @map("next_poll_at")
+  updatedAt            DateTime     @updatedAt @map("updated_at")
+  organization         Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([organizationId, source])
+  @@map("integration_source_checkpoints")
+}
+
+model IntegrationDeadLetter {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  source         String
+  externalId     String       @map("external_id")
+  payload        Json         @db.JsonB
+  error          String
+  attempts       Int          @default(1)
+  state          String       @default("OPEN")
+  nextAttemptAt  DateTime     @map("next_attempt_at")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+  organization   Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([organizationId, source, externalId])
+  @@index([organizationId, source, state, nextAttemptAt])
+  @@map("integration_dead_letters")
 }
 
 model PushDevice {

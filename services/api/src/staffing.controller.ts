@@ -1,9 +1,9 @@
-import { BadRequestException, Body, Controller, Get, Headers, Param, ParseUUIDPipe, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Headers, Param, ParseUUIDPipe, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiQuery, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { JwtIdentityGuard } from './auth';
 import { StaffingService } from './staffing.service';
-import { CreateStaffingDemandDto, CreateStaffShiftDto, OfflineAttendanceClaimDto, RequestShiftAvailabilityDto, RespondToAvailabilityCheckDto, RespondToShiftDto, ReviewAttendanceClaimDto, StaffAttendanceCorrectionDto, StartStaffBreakDto, UpdateStaffingDemandDto, UpdateStaffShiftDto } from './staffing.dto';
+import { BulkShiftActionDto, CreateScheduleSavedViewDto, CreateStaffingDemandDto, CreateStaffShiftDto, OfflineAttendanceClaimDto, RequestShiftAvailabilityDto, RespondToAvailabilityCheckDto, RespondToShiftDto, ReviewAttendanceClaimDto, StaffAttendanceCorrectionDto, StartStaffBreakDto, UpdateStaffingDemandDto, UpdateStaffShiftDto } from './staffing.dto';
 
 @Controller('v1')
 @UseGuards(JwtIdentityGuard)
@@ -11,6 +11,12 @@ import { CreateStaffingDemandDto, CreateStaffShiftDto, OfflineAttendanceClaimDto
 @ApiBearerAuth()
 export class StaffingController {
   constructor(private readonly staffing: StaffingService) {}
+
+  @Get('events/:eventId/schedule-views') savedViews(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string) { return this.staffing.savedViews(req.identity, eventId); }
+  @Post('events/:eventId/schedule-views') createSavedView(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Body() dto: CreateScheduleSavedViewDto, @Headers('idempotency-key') key: string) { return this.staffing.createSavedView(req.identity, eventId, dto, this.key(key)); }
+  @Delete('events/:eventId/schedule-views/:viewId') deleteSavedView(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Param('viewId', new ParseUUIDPipe()) viewId: string, @Headers('idempotency-key') key: string) { return this.staffing.deleteSavedView(req.identity, eventId, viewId, this.key(key)); }
+  @Post('events/:eventId/shifts/bulk/preview') previewBulk(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Body() dto: BulkShiftActionDto) { return this.staffing.previewBulk(req.identity, eventId, dto); }
+  @Post('events/:eventId/shifts/bulk') bulkAction(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Body() dto: BulkShiftActionDto, @Headers('idempotency-key') key: string) { return this.staffing.bulkAction(req.identity, eventId, dto, this.key(key)); }
 
   @Get('events/:eventId/shifts') list(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string) {
     return this.staffing.list(req.identity, eventId);

@@ -5,24 +5,19 @@ This list tracks repository work needed before a customer pilot. Code completed 
 ## 1. Finish tenant and venue administration
 
 - Verify the new `venue:admin` authorization matrix against assigned and unassigned venues, including replayed idempotency keys and bootstrap visibility. Confirm IdP claim mapping with a customer tenant. The API and Flutter changes are local only.
-- Add reusable venue templates and a versioned apply flow for common locations, departments, service areas, and event defaults. Applying a template must preview changes and avoid overwriting live event data.
-- Model service areas and departments as tenant- and venue-scoped records, then use them consistently in staffing demand, issues, stock, hospitality, and permissions.
-- Add a guided onboarding flow that validates venue time zone, service areas, location structure, IdP scopes, and at least one sample event before activation.
+- Venue departments, service areas, location assignment, onboarding checklist, and versioned templates with preview and additive apply are implemented locally. They still need migration replay, CI, and a customer IdP claim check.
 
 ## 2. Build a source-agnostic aggregation platform
 
 - Keep one normalized, signed ingestion contract for all external systems. The existing endpoint handles event records and task snapshots; the new source-specific venue, event, and location identifier mappings are local and unverified against a database.
 - Add a tenant admin configuration screen for sources, mapping review, and dry-run sample payload validation. Store credentials only in the approved secret store; expose only credential status and rotation metadata to the app.
-- Build connector workers that can receive webhooks or poll vendor APIs, then transform each source into the normalized contract. Support pagination, cursor checkpoints, rate limits, signature validation, retry with backoff, dead-letter review, replay, and source health reporting.
-- Version field mappings and ownership rules per source. Define which system owns labor, POS, ticketing, inventory, and event fields, and reject ambiguous or incompatible changes before they reach operational records.
-- Add controlled identifier correction with an audit trail and impact preview. An existing external identifier is intentionally write-once today to prevent silent rerouting.
+- Generic webhook ingestion remains the signed `/integrations/events` and `/integrations/raw` endpoints. A configured HTTPS poll URL can be pulled by a tenant administrator, with a stored cursor, a minimum interval, page limits, rate-limit deferral, and dead-letter review/replay. This does not connect a named vendor until that vendor's API specification, credential, sample payload, and acceptance case exist.
+- Versioned field transforms and audited identifier correction with impact preview are implemented locally. Ownership rules for labor, POS, ticketing, and inventory still need a customer decision before a live adapter writes those fields.
 - Implement customer-specific adapters only after obtaining API specifications, credentials, sample data, allowed data fields, and acceptance cases. A generic ingestion API alone cannot connect to every vendor protocol.
 
 ## 3. Complete planning and staffing at desktop scale
 
-- Build an API-backed schedule grid spanning venue, event, day, role, area, and worker, with keyboard access and conflict indicators.
-- Persist named saved views per user and shared views per venue; enforce tenant and venue scope server-side.
-- Add bulk publish, cancel, assign, and move actions with per-item results, conflict previews, idempotency, audit, and partial-failure recovery.
+- The desktop schedule grid, saved views, and bulk publish/cancel/assign/move actions are implemented locally. A repeated bulk key now conflicts if the payload changes and replays the stored result when it matches. Keyboard access, customer acceptance, and CI for the new migrations are still open.
 - Decide with the pilot venue whether automatic assignment or optimization is required. Keep suggestions reviewable and recheck all labor rules at write time.
 
 ## 4. Prove the release and customer environment

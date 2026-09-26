@@ -129,4 +129,15 @@ describe('IntegrationService operational task mapping', () => {
       .rejects.toThrow('The task location must belong to the mapped venue event.');
     expect(tx.operationalTask.create).not.toHaveBeenCalled();
   });
+
+  it('defers polling inside the source interval and does not call the remote page', async () => {
+    const checkpoint = { findUnique: vi.fn().mockResolvedValue({ cursor: 'page-1', nextPollAt: new Date(Date.now() + 60_000), consecutiveFailures: 0 }), upsert: vi.fn() };
+    const tx = { integrationSourceCheckpoint: checkpoint, integrationDeadLetter: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn(), count: vi.fn() } };
+    const prisma = { withTenant: vi.fn((_identity, callback) => callback(tx)) } as unknown as PrismaService;
+    const config = { get: vi.fn(() => JSON.stringify([{ id: 'arena-labor', organizationSlug: 'harbor-city', tenantId, secret, pollUrl: 'https://poll.example/feed' }])) } as unknown as ConfigService;
+    const integration = new IntegrationService(config, prisma);
+    const fetcher = vi.fn();
+    await expect(integration.poll({ subject: 'admin', tenantId, organizationSlug: 'harbor-city', capabilities: ['tenant:admin'], venueIds: [], eventIds: [], locationIds: [], assignableUserIds: [] }, 'arena-labor', fetcher)).rejects.toThrow('polling interval');
+    expect(fetcher).not.toHaveBeenCalled();
+  });
 });

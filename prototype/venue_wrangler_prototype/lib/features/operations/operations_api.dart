@@ -50,7 +50,8 @@ class OperationsApi {
           utf8.encode(encoded).length <= _maxCacheBytes) {
         await _storage.write(key: storageKey, value: encoded);
         if (scope != await _auth.offlineCacheScope()) {
-          throw StateError('The signed-in account changed during this request.');
+          throw StateError(
+              'The signed-in account changed during this request.');
         }
       }
       return value;
@@ -253,6 +254,112 @@ class OperationsApi {
         ));
     return response.data ?? const [];
   }
+
+  Future<List<Map<String, dynamic>>> integrationSources() async =>
+      (await _request((token) => _dio.get<List<dynamic>>(
+                '/api/v1/integrations/sources',
+                options: Options(headers: {'Authorization': 'Bearer $token'}),
+              )))
+          .data!
+          .whereType<Map>()
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList();
+
+  Future<void> pollIntegrationSource(String sourceId) async => _request(
+      (token) => _dio.post<void>('/api/v1/integrations/sources/$sourceId/poll',
+          options: Options(headers: {'Authorization': 'Bearer $token'})));
+
+  Future<List<Map<String, dynamic>>> integrationDeadLetters(
+          String sourceId) async =>
+      (await _request((token) => _dio.get<List<dynamic>>(
+                '/api/v1/integrations/sources/$sourceId/dead-letters',
+                options: Options(headers: {'Authorization': 'Bearer $token'}),
+              )))
+          .data!
+          .whereType<Map>()
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList();
+
+  Future<void> replayIntegrationDeadLetter(String letterId) async => _request(
+      (token) => _dio.post<void>(
+          '/api/v1/integrations/dead-letters/$letterId/replay',
+          options: Options(headers: {'Authorization': 'Bearer $token'})));
+
+  Future<List<Map<String, dynamic>>> integrationTransforms() async =>
+      (await _request((token) => _dio.get<List<dynamic>>(
+                '/api/v1/integrations/transforms',
+                options: Options(headers: {'Authorization': 'Bearer $token'}),
+              )))
+          .data!
+          .whereType<Map>()
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList();
+
+  Future<void> saveIntegrationTransform(
+      String source, Map<String, dynamic> definition) async {
+    await _request((token) => _dio.post<void>(
+          '/api/v1/integrations/transforms',
+          data: {'source': source, 'definition': definition},
+          options: Options(headers: {'Authorization': 'Bearer $token'}),
+        ));
+  }
+
+  Future<Map<String, dynamic>> previewRawIntegration(String source,
+          Map<String, dynamic> definition, Map<String, dynamic> record) async =>
+      (await _request((token) => _dio.post<Map<String, dynamic>>(
+                '/api/v1/integrations/transforms/preview',
+                data: {
+                  'source': source,
+                  'definition': definition,
+                  'record': record
+                },
+                options: Options(headers: {'Authorization': 'Bearer $token'}),
+              )))
+          .data!;
+
+  Future<List<Map<String, dynamic>>> integrationIdentifiers() async =>
+      (await _request((token) => _dio.get<List<dynamic>>(
+                '/api/v1/integrations/identifiers',
+                options: Options(headers: {'Authorization': 'Bearer $token'}),
+              )))
+          .data!
+          .whereType<Map>()
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList();
+
+  Future<void> putIntegrationIdentifier(Map<String, String> mapping) async {
+    await _request((token) => _dio.put<void>(
+          '/api/v1/integrations/identifiers',
+          data: mapping,
+          options: Options(headers: {'Authorization': 'Bearer $token'}),
+        ));
+  }
+
+  Future<Map<String, dynamic>> integrationIdentifierImpact(
+          String mappingId) async =>
+      (await _request((token) => _dio.get<Map<String, dynamic>>(
+                '/api/v1/integrations/identifiers/$mappingId/impact',
+                options: Options(headers: {'Authorization': 'Bearer $token'}),
+              )))
+          .data!;
+
+  Future<void> correctIntegrationIdentifier(
+      String mappingId, Map<String, Object?> correction) async {
+    await _request((token) => _dio.put<void>(
+          '/api/v1/integrations/identifiers/$mappingId/correct',
+          data: correction,
+          options: Options(headers: {'Authorization': 'Bearer $token'}),
+        ));
+  }
+
+  Future<Map<String, dynamic>> previewIntegrationEvent(
+          String source, Map<String, dynamic> event) async =>
+      (await _request((token) => _dio.post<Map<String, dynamic>>(
+                '/api/v1/integrations/preview',
+                data: {'source': source, 'event': event},
+                options: Options(headers: {'Authorization': 'Bearer $token'}),
+              )))
+          .data!;
 
   Future<Map<String, dynamic>> eventCloseout(String eventId) async {
     final response = await _cachedGet<Map<String, dynamic>>(
@@ -632,6 +739,75 @@ class OperationsApi {
                     'Authorization': 'Bearer $token',
                     'Idempotency-Key': key,
                   })));
+  Future<List<Map<String, dynamic>>> scheduleViews(String eventId) async =>
+      (await _request((token) => _dio.get<List<dynamic>>(
+                '/api/v1/events/$eventId/schedule-views',
+                options: Options(headers: {'Authorization': 'Bearer $token'}),
+              )))
+          .data!
+          .whereType<Map>()
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList();
+
+  Future<void> createScheduleView(String eventId, String name, bool shared,
+          Map<String, Object?> filters) async =>
+      _command<void>(
+          {
+            'action': 'schedule-view.create',
+            'eventId': eventId,
+            'name': name,
+            'shared': shared,
+            'filters': filters
+          },
+          (token, key) => _dio.post<void>(
+                '/api/v1/events/$eventId/schedule-views',
+                data: {'name': name, 'shared': shared, 'filters': filters},
+                options: Options(headers: {
+                  'Authorization': 'Bearer $token',
+                  'Idempotency-Key': key
+                }),
+              ));
+
+  Future<void> deleteScheduleView(String eventId, String viewId) async =>
+      _command<void>(
+          {
+            'action': 'schedule-view.delete',
+            'eventId': eventId,
+            'viewId': viewId
+          },
+          (token, key) => _dio.delete<void>(
+                '/api/v1/events/$eventId/schedule-views/$viewId',
+                options: Options(headers: {
+                  'Authorization': 'Bearer $token',
+                  'Idempotency-Key': key
+                }),
+              ));
+
+  Future<List<Map<String, dynamic>>> previewBulkShifts(
+          String eventId, Map<String, Object?> input) async =>
+      (await _request((token) => _dio.post<List<dynamic>>(
+                '/api/v1/events/$eventId/shifts/bulk/preview',
+                data: input,
+                options: Options(headers: {'Authorization': 'Bearer $token'}),
+              )))
+          .data!
+          .whereType<Map>()
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList();
+
+  Future<Map<String, dynamic>> bulkShifts(
+          String eventId, Map<String, Object?> input) async =>
+      _command<Map<String, dynamic>>(
+          {'action': 'staff-shift.bulk', 'eventId': eventId, 'input': input},
+          (token, key) async => (await _dio.post<Map<String, dynamic>>(
+                '/api/v1/events/$eventId/shifts/bulk',
+                data: input,
+                options: Options(headers: {
+                  'Authorization': 'Bearer $token',
+                  'Idempotency-Key': key
+                }),
+              ))
+                  .data!);
   Future<List<Map<String, dynamic>>> inventoryCounts(String eventId) async =>
       (await _request((token) => _dio.get<List<dynamic>>(
                 '/api/v1/events/$eventId/inventory/counts',
@@ -1428,6 +1604,143 @@ class OperationsApi {
                 options: Options(headers: {'Authorization': 'Bearer $token'}),
               )))
           .data!;
+  Future<Map<String, dynamic>> venueStructure(String venueId) async =>
+      (await _request((token) => _dio.get<Map<String, dynamic>>(
+                '/api/v1/admin/venues/$venueId/structure',
+                options: Options(headers: {'Authorization': 'Bearer $token'}),
+              )))
+          .data!;
+  Future<Map<String, dynamic>> venueOnboarding(String venueId) async =>
+      (await _request((token) => _dio.get<Map<String, dynamic>>(
+                '/api/v1/admin/venues/$venueId/onboarding',
+                options: Options(headers: {'Authorization': 'Bearer $token'}),
+              )))
+          .data!;
+
+  Future<Map<String, dynamic>> previewVenueEvent(
+          String venueId, String startsAtLocal) async =>
+      (await _request((token) => _dio.post<Map<String, dynamic>>(
+                '/api/v1/admin/venues/$venueId/event-preview',
+                data: {'startsAtLocal': startsAtLocal},
+                options: Options(headers: {'Authorization': 'Bearer $token'}),
+              )))
+          .data!;
+
+  Future<void> createVenueDepartment(
+          String venueId, String code, String name) async =>
+      _command<void>(
+          {
+            'action': 'venue-department.create',
+            'venueId': venueId,
+            'code': code,
+            'name': name
+          },
+          (token, key) => _dio.post<void>(
+                '/api/v1/admin/venues/$venueId/departments',
+                data: {'code': code, 'name': name},
+                options: Options(headers: {
+                  'Authorization': 'Bearer $token',
+                  'Idempotency-Key': key
+                }),
+              ));
+
+  Future<void> createVenueServiceArea(String venueId, String code, String name,
+          String? departmentId) async =>
+      _command<void>(
+          {
+            'action': 'venue-service-area.create',
+            'venueId': venueId,
+            'code': code,
+            'name': name,
+            'departmentId': departmentId
+          },
+          (token, key) => _dio.post<void>(
+                '/api/v1/admin/venues/$venueId/service-areas',
+                data: {
+                  'code': code,
+                  'name': name,
+                  if (departmentId != null) 'departmentId': departmentId
+                },
+                options: Options(headers: {
+                  'Authorization': 'Bearer $token',
+                  'Idempotency-Key': key
+                }),
+              ));
+
+  Future<void> setLocationServiceArea(
+          String locationId, String? serviceAreaId) async =>
+      _command<void>(
+          {
+            'action': 'location.service-area.set',
+            'locationId': locationId,
+            'serviceAreaId': serviceAreaId
+          },
+          (token, key) => _dio.put<void>(
+                '/api/v1/admin/locations/$locationId/service-area',
+                data: {'serviceAreaId': serviceAreaId},
+                options: Options(headers: {
+                  'Authorization': 'Bearer $token',
+                  'Idempotency-Key': key
+                }),
+              ));
+  Future<List<Map<String, dynamic>>> venueTemplates() async =>
+      (await _request((token) => _dio.get<List<dynamic>>(
+                '/api/v1/admin/venue-templates',
+                options: Options(headers: {'Authorization': 'Bearer $token'}),
+              )))
+          .data!
+          .whereType<Map>()
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList();
+
+  Future<void> captureVenueTemplate(String sourceVenueId, String code,
+          String name, String? defaultEventStartLocal) async =>
+      _command<void>(
+          {
+            'action': 'venue-template.capture',
+            'sourceVenueId': sourceVenueId,
+            'code': code,
+            'name': name,
+            'defaultEventStartLocal': defaultEventStartLocal
+          },
+          (token, key) => _dio.post<void>(
+                '/api/v1/admin/venue-templates',
+                data: {
+                  'sourceVenueId': sourceVenueId,
+                  'code': code,
+                  'name': name,
+                  if (defaultEventStartLocal != null)
+                    'defaultEventStartLocal': defaultEventStartLocal
+                },
+                options: Options(headers: {
+                  'Authorization': 'Bearer $token',
+                  'Idempotency-Key': key
+                }),
+              ));
+
+  Future<Map<String, dynamic>> previewVenueTemplate(
+          String templateId, String venueId) async =>
+      (await _request((token) => _dio.get<Map<String, dynamic>>(
+                '/api/v1/admin/venue-templates/$templateId/preview/$venueId',
+                options: Options(headers: {'Authorization': 'Bearer $token'}),
+              )))
+          .data!;
+
+  Future<void> applyVenueTemplate(String templateId, String venueId) async =>
+      _command<void>(
+          {
+            'action': 'venue-template.apply',
+            'templateId': templateId,
+            'venueId': venueId
+          },
+          (token, key) => _dio.post<void>(
+                '/api/v1/admin/venue-templates/$templateId/apply/$venueId',
+                options: Options(headers: {
+                  'Authorization': 'Bearer $token',
+                  'Idempotency-Key': key
+                }),
+              ));
+
   Future<void> updateVenueLifecycle(String venueId, String action) async =>
       _command<void>(
           {'action': 'venue.lifecycle.$action', 'venueId': venueId},
@@ -1495,7 +1808,8 @@ class OperationsApi {
                   'Idempotency-Key': key,
                 }),
               ));
-  Future<void> createEvent(String venueId, String name, String startsAtLocal) async =>
+  Future<void> createEvent(
+          String venueId, String name, String startsAtLocal) async =>
       _command<void>(
           {
             'action': 'event.create',

@@ -3,10 +3,17 @@ import { formatVenueLocal, isAbsoluteInstant, venueLocalToUtc } from './venue-ti
 import { Prisma } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { assertScope, assertTenantAdmin, assertVenueAdmin, Identity } from './auth';
-import { CreateEventDto, CreateLocationDto, CreateOperationalTaskDto, CreateVenueDto, UpdateEventDto, UpdateLocationDto, UpdateOperationalTaskDto, UpdateVenueDto, UpsertPersonDto } from './operations.dto';
+import { CaptureVenueTemplateDto, CreateEventDto, CreateLocationDto, CreateOperationalTaskDto, CreateVenueDepartmentDto, CreateVenueServiceAreaDto, CreateVenueDto, PreviewVenueEventDto, SetLocationServiceAreaDto, UpdateEventDto, UpdateLocationDto, UpdateOperationalTaskDto, UpdateVenueDto, UpsertPersonDto } from './operations.dto';
 import { PrismaService } from './prisma.service';
 import { GrantPersonQualificationDto } from './qualification.dto';
 import { UpdateStaffingPolicyDto } from './staffing-policy.dto';
+
+interface VenueTemplateStructure {
+  departments: Array<{ code: string; name: string }>;
+  serviceAreas: Array<{ code: string; name: string; departmentCode: string | null }>;
+  locations: Array<{ name: string; serviceAreaCode: string | null }>;
+  defaultEventStartLocal: string | null;
+}
 
 @Injectable()
 export class OperationsService {
@@ -59,9 +66,10 @@ export class OperationsService {
       const venues = await tx.venue.findMany({ where: admin ? { organizationId: identity.tenantId } : { id: { in: identity.venueIds }, organizationId: identity.tenantId }, orderBy: { name: 'asc' } });
       const events = (await tx.event.findMany({ where: admin ? { organizationId: identity.tenantId } : { ...(venueAdmin ? {} : { id: { in: identity.eventIds } }), venueId: { in: identity.venueIds }, organizationId: identity.tenantId }, include: { closeout: { select: { state: true } } }, orderBy: { startsAt: 'asc' } })).map((event) => this.presentEvent(event, venues.find((venue) => venue.id === event.venueId)?.timeZone));
       const locations = await tx.location.findMany({ where: admin ? { organizationId: identity.tenantId } : { ...(venueAdmin ? {} : { id: { in: identity.locationIds } }), venueId: { in: identity.venueIds }, organizationId: identity.tenantId }, orderBy: { name: 'asc' } });
+      const serviceAreas = await tx.venueServiceArea.findMany({ where: admin ? { organizationId: identity.tenantId } : { organizationId: identity.tenantId, venueId: { in: identity.venueIds } }, orderBy: { name: 'asc' }, select: { id: true, venueId: true, departmentId: true, name: true, code: true } });
       const people = await tx.person.findMany({ where: { organizationId: identity.tenantId, ...(!admin ? { active: true, externalSubject: { in: identity.assignableUserIds } } : {}) }, include: { qualifications: { where: { revokedAt: null }, select: { id: true, code: true, name: true, expiresAt: true, revokedAt: true, ...(admin ? { evidenceStatus: true, evidenceFileName: true, evidenceContentType: true, evidenceSizeBytes: true, evidenceUploadedAt: true, evidenceReviewedAt: true, evidenceReviewReason: true } : {}) }, orderBy: [{ code: 'asc' }] } }, orderBy: { displayName: 'asc' } });
       const directory = people.map(({ provisioningSource, ...person }) => admin ? { ...person, provisioningSource } : person);
-      return { organization: { id: org.id, slug: org.slug, name: org.name }, identity: { subject: identity.subject, capabilities: identity.capabilities, assignableUserIds: identity.assignableUserIds }, venues, events, locations, people: directory };
+      return { organization: { id: org.id, slug: org.slug, name: org.name }, identity: { subject: identity.subject, capabilities: identity.capabilities, assignableUserIds: identity.assignableUserIds }, venues, events, locations, serviceAreas, people: directory };
     });
   }
 
@@ -205,6 +213,202 @@ export class OperationsService {
       await tx.tenantSetupAuditEvent.create({ data: { organizationId: identity.tenantId, actorId: identity.subject, action: 'updated', resourceType: 'location', resourceId: locationId, changedFields } });
       return updated;
     });
+  }
+
+  async venueStructure(identity: Identity, venueId: string) {
+    assertVenueAdmin(identity, venueId);
+    return this.prisma.withTenant(identity, async (tx) => {
+      const venue = await tx.venue.findFirst({ where: { id: venueId, organizationId: identity.tenantId }, select: { id: true, name: true } });
+      if (!venue) throw new NotFoundException('Venue not found in this organization.');
+      const [departments, serviceAreas, locations] = await Promise.all([
+        tx.venueDepartment.findMany({ where: { organizationId: identity.tenantId, venueId }, orderBy: { name: 'asc' } }),
+        tx.venueServiceArea.findMany({ where: { organizationId: identity.tenantId, venueId }, orderBy: { name: 'asc' } }),
+        tx.location.findMany({ where: { organizationId: identity.tenantId, venueId }, orderBy: { name: 'asc' }, select: { id: true, name: true, serviceAreaId: true } }),
+      ]);
+      return { venue, departments, serviceAreas, locations };
+    });
+  }
+
+  async venueOnboarding(identity: Identity, venueId: string) {
+    assertVenueAdmin(identity, venueId);
+    return this.prisma.withTenant(identity, async (tx) => {
+      const venue = await tx.venue.findFirst({ where: { id: venueId, organizationId: identity.tenantId }, include: { _count: { select: { locations: true, events: true, departments: true, serviceAreas: true } } } });
+      if (!venue) throw new NotFoundException('Venue not found in this organization.');
+      const assignedLocations = await tx.location.count({ where: { organizationId: identity.tenantId, venueId, serviceAreaId: { not: null } } });
+      const checks = [
+        { key: 'time_zone', label: 'Valid venue time zone', passed: this.isValidTimeZone(venue.timeZone), requiredForActivation: true },
+        { key: 'location', label: 'At least one operational location', passed: venue._count.locations > 0, requiredForActivation: true },
+        { key: 'department', label: 'Departments configured', passed: venue._count.departments > 0, requiredForActivation: false },
+        { key: 'service_area', label: 'Service areas configured', passed: venue._count.serviceAreas > 0, requiredForActivation: false },
+        { key: 'location_assignment', label: 'Locations assigned to service areas', passed: venue._count.locations > 0 && assignedLocations === venue._count.locations, requiredForActivation: false },
+        { key: 'identity_scope', label: 'This account has venue scope in its signed claims', passed: identity.capabilities.includes('tenant:admin') || identity.venueIds.includes(venueId), requiredForActivation: false },
+        { key: 'sample_event', label: 'A first event exists after activation', passed: venue._count.events > 0, requiredForActivation: false },
+      ];
+      return { venueId, lifecycleState: venue.lifecycleState, counts: { ...venue._count, assignedLocations }, checks, activationReady: checks.filter((item) => item.requiredForActivation).every((item) => item.passed) };
+    });
+  }
+
+  async previewVenueEvent(identity: Identity, venueId: string, dto: PreviewVenueEventDto) {
+    assertVenueAdmin(identity, venueId);
+    return this.prisma.withTenant(identity, async (tx) => {
+      const venue = await tx.venue.findFirst({ where: { id: venueId, organizationId: identity.tenantId }, select: { timeZone: true } });
+      if (!venue) throw new NotFoundException('Venue not found in this organization.');
+      const startsAt = this.resolveEventStart(dto, venue.timeZone ?? '');
+      return { venueId, startsAtLocal: dto.startsAtLocal, timeZone: venue.timeZone, startsAt: startsAt.toISOString(), writesPerformed: false };
+    });
+  }
+
+  async createVenueDepartment(identity: Identity, venueId: string, dto: CreateVenueDepartmentDto, key: string) {
+    assertVenueAdmin(identity, venueId);
+    const input = { venueId, code: dto.code.trim().toUpperCase(), name: dto.name.trim() };
+    return this.command(identity, key, 'venue-department.create', input, async (tx) => {
+      if (!await tx.venue.findFirst({ where: { id: venueId, organizationId: identity.tenantId } })) throw new NotFoundException('Venue not found in this organization.');
+      if (await tx.venueDepartment.findFirst({ where: { organizationId: identity.tenantId, venueId, code: input.code } })) throw new ConflictException('This department code already exists in the venue.');
+      const department = await tx.venueDepartment.create({ data: { organizationId: identity.tenantId, ...input } });
+      await tx.tenantSetupAuditEvent.create({ data: { organizationId: identity.tenantId, actorId: identity.subject, action: 'created', resourceType: 'department', resourceId: department.id, changedFields: ['code', 'name', 'venue_id'] } });
+      return department;
+    });
+  }
+
+  async createVenueServiceArea(identity: Identity, venueId: string, dto: CreateVenueServiceAreaDto, key: string) {
+    assertVenueAdmin(identity, venueId);
+    const input = { venueId, code: dto.code.trim().toUpperCase(), name: dto.name.trim(), departmentId: dto.departmentId ?? null };
+    return this.command(identity, key, 'venue-service-area.create', input, async (tx) => {
+      if (!await tx.venue.findFirst({ where: { id: venueId, organizationId: identity.tenantId } })) throw new NotFoundException('Venue not found in this organization.');
+      if (input.departmentId && !await tx.venueDepartment.findFirst({ where: { id: input.departmentId, venueId, organizationId: identity.tenantId } })) throw new BadRequestException('Department must belong to the selected venue.');
+      if (await tx.venueServiceArea.findFirst({ where: { organizationId: identity.tenantId, venueId, code: input.code } })) throw new ConflictException('This service area code already exists in the venue.');
+      const area = await tx.venueServiceArea.create({ data: { organizationId: identity.tenantId, ...input } });
+      await tx.tenantSetupAuditEvent.create({ data: { organizationId: identity.tenantId, actorId: identity.subject, action: 'created', resourceType: 'service_area', resourceId: area.id, changedFields: ['code', 'name', 'department_id', 'venue_id'] } });
+      return area;
+    });
+  }
+
+  async setLocationServiceArea(identity: Identity, locationId: string, dto: SetLocationServiceAreaDto, key: string) {
+    const location = await this.prisma.withTenant(identity, (tx) => tx.location.findFirst({ where: { id: locationId, organizationId: identity.tenantId }, select: { venueId: true } }));
+    if (!location) throw new NotFoundException('Location not found in this organization.');
+    assertVenueAdmin(identity, location.venueId);
+    const input = { locationId, serviceAreaId: dto.serviceAreaId ?? null };
+    return this.command(identity, key, 'location.service-area.set', input, async (tx) => {
+      const current = await tx.location.findFirst({ where: { id: locationId, organizationId: identity.tenantId } });
+      if (!current) throw new NotFoundException('Location not found in this organization.');
+      assertVenueAdmin(identity, current.venueId);
+      if (input.serviceAreaId && !await tx.venueServiceArea.findFirst({ where: { id: input.serviceAreaId, venueId: current.venueId, organizationId: identity.tenantId } })) throw new BadRequestException('Service area must belong to the location venue.');
+      if (current.serviceAreaId === input.serviceAreaId) return current;
+      const updated = await tx.location.update({ where: { id: locationId }, data: { serviceAreaId: input.serviceAreaId } });
+      await tx.tenantSetupAuditEvent.create({ data: { organizationId: identity.tenantId, actorId: identity.subject, action: 'updated', resourceType: 'location', resourceId: locationId, changedFields: ['service_area_id'] } });
+      return updated;
+    });
+  }
+
+  async venueTemplates(identity: Identity) {
+    if (!identity.capabilities.includes('tenant:admin') && !identity.capabilities.includes('venue:admin')) throw new ForbiddenException('Venue administrator access is required.');
+    return this.prisma.withTenant(identity, (tx) => tx.venueTemplate.findMany({
+      where: { organizationId: identity.tenantId },
+      orderBy: [{ code: 'asc' }, { version: 'desc' }],
+      select: { id: true, code: true, name: true, version: true, createdAt: true, createdBy: true },
+      take: 200,
+    }));
+  }
+
+  async captureVenueTemplate(identity: Identity, dto: CaptureVenueTemplateDto, key: string) {
+    assertTenantAdmin(identity);
+    const input = { sourceVenueId: dto.sourceVenueId, code: dto.code.trim().toUpperCase(), name: dto.name.trim(), defaultEventStartLocal: dto.defaultEventStartLocal ?? null };
+    return this.command(identity, key, 'venue-template.capture', input, async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`venue-template:${identity.tenantId}:${input.code}`}, 0))`;
+      const venue = await tx.venue.findFirst({ where: { id: input.sourceVenueId, organizationId: identity.tenantId } });
+      if (!venue) throw new NotFoundException('Source venue not found in this organization.');
+      const [departments, areas, locations, latest] = await Promise.all([
+        tx.venueDepartment.findMany({ where: { organizationId: identity.tenantId, venueId: venue.id }, orderBy: { code: 'asc' } }),
+        tx.venueServiceArea.findMany({ where: { organizationId: identity.tenantId, venueId: venue.id }, orderBy: { code: 'asc' } }),
+        tx.location.findMany({ where: { organizationId: identity.tenantId, venueId: venue.id }, orderBy: { name: 'asc' } }),
+        tx.venueTemplate.findFirst({ where: { organizationId: identity.tenantId, code: input.code }, orderBy: { version: 'desc' } }),
+      ]);
+      const names = locations.map((item) => item.name.trim().toLocaleLowerCase());
+      if (locations.length === 0) throw new ConflictException('Add at least one location before capturing a venue template.');
+      if (new Set(names).size !== names.length) throw new ConflictException('This venue has duplicate location names. Resolve them before capturing a template.');
+      const structure: VenueTemplateStructure = {
+        departments: departments.map((item) => ({ code: item.code, name: item.name })),
+        serviceAreas: areas.map((item) => ({ code: item.code, name: item.name, departmentCode: departments.find((department) => department.id === item.departmentId)?.code ?? null })),
+        locations: locations.map((item) => ({ name: item.name, serviceAreaCode: areas.find((area) => area.id === item.serviceAreaId)?.code ?? null })),
+        defaultEventStartLocal: input.defaultEventStartLocal,
+      };
+      const template = await tx.venueTemplate.create({ data: { organizationId: identity.tenantId, code: input.code, name: input.name, version: (latest?.version ?? 0) + 1, structure: structure as unknown as Prisma.InputJsonValue, createdBy: identity.subject } });
+      await tx.tenantSetupAuditEvent.create({ data: { organizationId: identity.tenantId, actorId: identity.subject, action: 'created', resourceType: 'venue_template', resourceId: template.id, changedFields: ['code', 'version', 'structure'] } });
+      return { id: template.id, code: template.code, name: template.name, version: template.version, createdAt: template.createdAt };
+    });
+  }
+
+  async previewVenueTemplate(identity: Identity, templateId: string, venueId: string) {
+    assertVenueAdmin(identity, venueId);
+    return this.prisma.withTenant(identity, (tx) => this.venueTemplatePlan(tx, identity, templateId, venueId));
+  }
+
+  async applyVenueTemplate(identity: Identity, templateId: string, venueId: string, key: string) {
+    assertVenueAdmin(identity, venueId);
+    return this.command(identity, key, 'venue-template.apply', { templateId, venueId }, async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`venue-template-apply:${identity.tenantId}:${venueId}`}, 0))`;
+      const plan = await this.venueTemplatePlan(tx, identity, templateId, venueId);
+      if (plan.conflicts.length > 0) throw new ConflictException(`Resolve template conflicts before applying: ${plan.conflicts.join('; ')}`);
+      const departmentIds = new Map(plan.currentDepartments.map((item) => [item.code, item.id]));
+      for (const item of plan.addDepartments) {
+        const created = await tx.venueDepartment.create({ data: { organizationId: identity.tenantId, venueId, code: item.code, name: item.name } });
+        departmentIds.set(item.code, created.id);
+        await tx.tenantSetupAuditEvent.create({ data: { organizationId: identity.tenantId, actorId: identity.subject, action: 'created', resourceType: 'department', resourceId: created.id, changedFields: ['code', 'name', 'venue_id'] } });
+      }
+      const areaIds = new Map(plan.currentAreas.map((item) => [item.code, item.id]));
+      for (const item of plan.addServiceAreas) {
+        const created = await tx.venueServiceArea.create({ data: { organizationId: identity.tenantId, venueId, code: item.code, name: item.name, departmentId: item.departmentCode ? departmentIds.get(item.departmentCode) : null } });
+        areaIds.set(item.code, created.id);
+        await tx.tenantSetupAuditEvent.create({ data: { organizationId: identity.tenantId, actorId: identity.subject, action: 'created', resourceType: 'service_area', resourceId: created.id, changedFields: ['code', 'name', 'department_id', 'venue_id'] } });
+      }
+      for (const item of plan.addLocations) {
+        const created = await tx.location.create({ data: { organizationId: identity.tenantId, venueId, name: item.name, serviceAreaId: item.serviceAreaCode ? areaIds.get(item.serviceAreaCode) : null } });
+        await tx.tenantSetupAuditEvent.create({ data: { organizationId: identity.tenantId, actorId: identity.subject, action: 'created', resourceType: 'location', resourceId: created.id, changedFields: ['name', 'venue_id', 'service_area_id'] } });
+      }
+      return { venueId, templateId, version: plan.version, departmentsCreated: plan.addDepartments.length, serviceAreasCreated: plan.addServiceAreas.length, locationsCreated: plan.addLocations.length, defaultEventStartLocal: plan.defaultEventStartLocal };
+    });
+  }
+
+  private async venueTemplatePlan(tx: Prisma.TransactionClient, identity: Identity, templateId: string, venueId: string) {
+    const [template, venue, currentDepartments, currentAreas, currentLocations] = await Promise.all([
+      tx.venueTemplate.findFirst({ where: { id: templateId, organizationId: identity.tenantId } }),
+      tx.venue.findFirst({ where: { id: venueId, organizationId: identity.tenantId }, select: { id: true } }),
+      tx.venueDepartment.findMany({ where: { organizationId: identity.tenantId, venueId } }),
+      tx.venueServiceArea.findMany({ where: { organizationId: identity.tenantId, venueId } }),
+      tx.location.findMany({ where: { organizationId: identity.tenantId, venueId } }),
+    ]);
+    if (!template || !venue) throw new NotFoundException('Template or target venue not found in this organization.');
+    const structure = this.parseVenueTemplate(template.structure);
+    const conflicts: string[] = [];
+    const departmentByCode = new Map(currentDepartments.map((item) => [item.code, item]));
+    const areaByCode = new Map(currentAreas.map((item) => [item.code, item]));
+    const locationByName = new Map(currentLocations.map((item) => [item.name.trim().toLocaleLowerCase(), item]));
+    const addDepartments = structure.departments.filter((item) => !departmentByCode.has(item.code));
+    const addServiceAreas = structure.serviceAreas.filter((item) => !areaByCode.has(item.code));
+    const addLocations = structure.locations.filter((item) => !locationByName.has(item.name.trim().toLocaleLowerCase()));
+    for (const item of structure.departments) {
+      const current = departmentByCode.get(item.code);
+      if (current && current.name !== item.name) conflicts.push(`Department ${item.code} has a different name`);
+    }
+    for (const item of structure.serviceAreas) {
+      const current = areaByCode.get(item.code);
+      if (!current) continue;
+      const departmentCode = currentDepartments.find((department) => department.id === current.departmentId)?.code ?? null;
+      if (current.name !== item.name || departmentCode !== item.departmentCode) conflicts.push(`Service area ${item.code} differs`);
+    }
+    for (const item of structure.locations) {
+      const current = locationByName.get(item.name.trim().toLocaleLowerCase());
+      if (!current) continue;
+      const areaCode = currentAreas.find((area) => area.id === current.serviceAreaId)?.code ?? null;
+      if (areaCode !== item.serviceAreaCode) conflicts.push(`Location ${item.name} belongs to a different area`);
+    }
+    return { templateId, venueId, version: template.version, defaultEventStartLocal: structure.defaultEventStartLocal, addDepartments, addServiceAreas, addLocations, conflicts, currentDepartments, currentAreas };
+  }
+
+  private parseVenueTemplate(raw: Prisma.JsonValue): VenueTemplateStructure {
+    const value = raw as unknown as VenueTemplateStructure;
+    if (!value || !Array.isArray(value.departments) || !Array.isArray(value.serviceAreas) || !Array.isArray(value.locations)) throw new ConflictException('The template structure is invalid.');
+    return value;
   }
 
   async createEvent(identity: Identity, dto: CreateEventDto, key: string) {

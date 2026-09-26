@@ -1,8 +1,8 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma, StaffShiftResponse } from '@prisma/client';
 import { createHash } from 'node:crypto';
-import { assertCapability, assertScope, type Identity } from './auth';
-import { CreateStaffingDemandDto, CreateStaffShiftDto, OfflineAttendanceClaimDto, RequestShiftAvailabilityDto, RespondToAvailabilityCheckDto, RespondToShiftDto, ReviewAttendanceClaimDto, StaffAttendanceCorrectionDto, UpdateStaffingDemandDto, UpdateStaffShiftDto } from './staffing.dto';
+import { assertCapability, assertScope, assertVenueAdmin, type Identity } from './auth';
+import { BulkShiftActionDto, CreateScheduleSavedViewDto, CreateStaffingDemandDto, CreateStaffShiftDto, OfflineAttendanceClaimDto, RequestShiftAvailabilityDto, RespondToAvailabilityCheckDto, RespondToShiftDto, ReviewAttendanceClaimDto, StaffAttendanceCorrectionDto, UpdateStaffingDemandDto, UpdateStaffShiftDto } from './staffing.dto';
 import { PrismaService } from './prisma.service';
 import { PushNotificationsService } from './push-notifications.service';
 
@@ -10,6 +10,130 @@ import { PushNotificationsService } from './push-notifications.service';
 export class StaffingService {
   private readonly logger = new Logger(StaffingService.name);
   constructor(private readonly prisma: PrismaService, private readonly push: PushNotificationsService) {}
+
+  async savedViews(identity: Identity, eventId: string) {
+    assertScope(identity, 'operations:read', eventId);
+    return this.prisma.withTenant(identity, async (tx) => {
+      const event = await tx.event.findFirst({ where: { id: eventId, organizationId: identity.tenantId }, select: { venueId: true } });
+      if (!event) throw new NotFoundException('Event not found.');
+      assertScope(identity, 'operations:read', eventId, event.venueId);
+      const manager = identity.capabilities.includes('operations:write') || identity.capabilities.includes('venue:admin') || identity.capabilities.includes('tenant:admin');
+      const views = await tx.scheduleSavedView.findMany({ where: { organizationId: identity.tenantId, venueId: event.venueId, OR: [{ ownerSubject: identity.subject }, ...(manager ? [{ shared: true }] : [])] }, orderBy: [{ shared: 'desc' }, { name: 'asc' }], take: 100 });
+      return views.filter((view) => {
+        const filters = view.filters as Record<string, unknown>;
+        const worker = filters.workerSubject;
+        return worker === undefined || worker === identity.subject || identity.assignableUserIds.includes(worker as string);
+      });
+    });
+  }
+
+  async createSavedView(identity: Identity, eventId: string, dto: CreateScheduleSavedViewDto, key: string) {
+    assertScope(identity, 'operations:read', eventId);
+    const event = await this.prisma.withTenant(identity, (tx) => tx.event.findFirst({ where: { id: eventId, organizationId: identity.tenantId }, select: { venueId: true } }));
+    if (!event) throw new NotFoundException('Event not found.');
+    assertScope(identity, 'operations:read', eventId, event.venueId);
+    if (dto.shared) assertVenueAdmin(identity, event.venueId);
+    const filters = this.scheduleViewFilters(identity, dto.filters);
+    if (filters.serviceAreaId && !await this.prisma.withTenant(identity, (tx) => tx.venueServiceArea.findFirst({ where: { id: filters.serviceAreaId, venueId: event.venueId, organizationId: identity.tenantId }, select: { id: true } }))) throw new BadRequestException('The service area is not in this venue.');
+    const input = { eventId, venueId: event.venueId, name: dto.name.trim(), shared: dto.shared, filters };
+    return this.command(identity, key, 'schedule-view.create', input, async (tx) => {
+      if (dto.shared) assertVenueAdmin(identity, event.venueId);
+      if (await tx.scheduleSavedView.findFirst({ where: { organizationId: identity.tenantId, venueId: event.venueId, ownerSubject: identity.subject, name: input.name } })) throw new ConflictException('You already have a saved view with this name at this venue.');
+      return tx.scheduleSavedView.create({ data: { organizationId: identity.tenantId, venueId: event.venueId, ownerSubject: identity.subject, name: input.name, shared: dto.shared, filters: filters as Prisma.InputJsonValue } });
+    });
+  }
+
+  async deleteSavedView(identity: Identity, eventId: string, viewId: string, key: string) {
+    assertScope(identity, 'operations:read', eventId);
+    const current = await this.prisma.withTenant(identity, (tx) => tx.scheduleSavedView.findFirst({ where: { id: viewId, organizationId: identity.tenantId }, select: { ownerSubject: true, shared: true, venueId: true } }));
+    if (!current) throw new NotFoundException('Saved view not found.');
+    if (current.ownerSubject !== identity.subject) throw new ForbiddenException('Only the view owner can remove it.');
+    if (current.shared) assertVenueAdmin(identity, current.venueId);
+    return this.command(identity, key, 'schedule-view.delete', { eventId, viewId }, async (tx) => {
+      const event = await tx.event.findFirst({ where: { id: eventId, organizationId: identity.tenantId, venueId: current.venueId }, select: { id: true } });
+      if (!event) throw new NotFoundException('Saved view is not in the selected event venue.');
+      const view = await tx.scheduleSavedView.findFirst({ where: { id: viewId, organizationId: identity.tenantId, ownerSubject: identity.subject } });
+      if (!view) throw new NotFoundException('Saved view not found.');
+      await tx.scheduleSavedView.delete({ where: { id: viewId } });
+      return { deleted: true, id: viewId };
+    });
+  }
+
+  private scheduleViewFilters(identity: Identity, raw: Record<string, unknown>) {
+    const allowed = new Set(['role', 'serviceAreaId', 'workerSubject', 'from', 'to']);
+    if (Object.keys(raw).some((key) => !allowed.has(key))) throw new BadRequestException('Saved view contains unsupported filters.');
+    const { role, serviceAreaId, workerSubject, from, to } = raw;
+    if (role !== undefined && (typeof role !== 'string' || role.trim().length < 2 || role.trim().length > 120)) throw new BadRequestException('Role filter must be 2 to 120 characters.');
+    if (serviceAreaId !== undefined && (typeof serviceAreaId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(serviceAreaId))) throw new BadRequestException('Service area filter must be a UUID.');
+    if (workerSubject !== undefined && (typeof workerSubject !== 'string' || workerSubject.length < 1 || workerSubject.length > 240 || (workerSubject !== identity.subject && !identity.assignableUserIds.includes(workerSubject)))) throw new ForbiddenException('Worker filter is outside your assignment scope.');
+    if ((from !== undefined && (typeof from !== 'string' || !Number.isFinite(Date.parse(from)))) || (to !== undefined && (typeof to !== 'string' || !Number.isFinite(Date.parse(to))))) throw new BadRequestException('Date filters must be ISO timestamps.');
+    if (from && to && new Date(to as string) <= new Date(from as string)) throw new BadRequestException('The view end must be after its start.');
+    return { ...(role ? { role: role.trim() } : {}), ...(serviceAreaId ? { serviceAreaId } : {}), ...(workerSubject ? { workerSubject } : {}), ...(from ? { from } : {}), ...(to ? { to } : {}) };
+  }
+
+  async previewBulk(identity: Identity, eventId: string, dto: BulkShiftActionDto) {
+    assertScope(identity, 'operations:write', eventId);
+    this.assertBulkInput(dto);
+    return this.prisma.withTenant(identity, async (tx) => {
+      const rows = await tx.staffShift.findMany({ where: { organizationId: identity.tenantId, eventId, id: { in: dto.shiftIds } }, select: { id: true, venueId: true, locationId: true, state: true, attendance: true, startsAt: true, endsAt: true, role: true, assignedSubject: true } });
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      return dto.shiftIds.map((id) => {
+        const row = byId.get(id);
+        if (!row || (!identity.capabilities.includes('tenant:admin') && (!identity.venueIds.includes(row.venueId) || (row.locationId && !identity.locationIds.includes(row.locationId))))) return { shiftId: id, ready: false, reason: 'Shift is unavailable in your scope.' };
+        const reason = dto.action === 'PUBLISH' && row.state !== 'DRAFT' ? 'Only draft shifts can be published.'
+          : dto.action === 'CANCEL' && (row.state !== 'PUBLISHED' || row.attendance !== 'NOT_STARTED') ? 'Only unstarted published shifts can be cancelled.'
+          : (dto.action === 'ASSIGN' || dto.action === 'MOVE') && (row.state === 'CANCELLED' || row.attendance !== 'NOT_STARTED') ? 'Cancelled or started shifts cannot be edited.'
+          : dto.action === 'ASSIGN' && row.assignedSubject === dto.assignedSubject ? 'This worker is already assigned.'
+          : null;
+        return { shiftId: id, ready: reason === null, reason, role: row.role, startsAt: row.startsAt, endsAt: row.endsAt };
+      });
+    });
+  }
+
+  async bulkAction(identity: Identity, eventId: string, dto: BulkShiftActionDto, key: string) {
+    assertScope(identity, 'operations:write', eventId);
+    this.assertBulkInput(dto);
+    const fingerprint = createHash('sha256').update(JSON.stringify({ action: 'staff-shift.bulk', actor: identity.subject, eventId, input: dto })).digest('hex');
+    const prior = await this.prisma.withTenant(identity, async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`command:${identity.tenantId}:${key}`}, 0))`;
+      const receipt = await tx.commandReceipt.findUnique({ where: { organizationId_key: { organizationId: identity.tenantId, key } } });
+      if (receipt) {
+        if (receipt.fingerprint !== fingerprint) throw new ConflictException('This Idempotency-Key was already used for a different command.');
+        const stored = receipt.response as { status?: string };
+        if (stored.status === 'IN_PROGRESS') return null;
+        return receipt.response;
+      }
+      await tx.commandReceipt.create({ data: { organizationId: identity.tenantId, key, fingerprint, action: 'staff-shift.bulk', response: { status: 'IN_PROGRESS', action: dto.action } } });
+      return null;
+    });
+    if (prior) return prior;
+    const results = [];
+    for (const shiftId of dto.shiftIds) {
+      const itemKey = createHash('sha256').update(`${key}:${shiftId}`).digest('hex');
+      try {
+        const shift = dto.action === 'PUBLISH' ? await this.publish(identity, eventId, shiftId, itemKey)
+          : dto.action === 'CANCEL' ? await this.cancel(identity, eventId, shiftId, itemKey)
+          : dto.action === 'ASSIGN' ? await this.update(identity, eventId, shiftId, { assignedSubject: dto.assignedSubject }, itemKey)
+          : await this.update(identity, eventId, shiftId, { startsAt: dto.startsAt, endsAt: dto.endsAt, locationId: dto.locationId }, itemKey);
+        results.push({ shiftId, status: 'APPLIED', state: shift.state });
+      } catch (error) {
+        results.push({ shiftId, status: 'FAILED', reason: error instanceof ForbiddenException || error instanceof NotFoundException ? 'Shift is unavailable in your scope.' : error instanceof Error ? error.message : 'Shift action failed.' });
+      }
+    }
+    const response = { action: dto.action, results, applied: results.filter((item) => item.status === 'APPLIED').length, failed: results.filter((item) => item.status === 'FAILED').length };
+    await this.prisma.withTenant(identity, async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`command:${identity.tenantId}:${key}`}, 0))`;
+      await tx.commandReceipt.update({ where: { organizationId_key: { organizationId: identity.tenantId, key } }, data: { response: response as Prisma.InputJsonValue } });
+    });
+    return response;
+  }
+
+  private assertBulkInput(dto: BulkShiftActionDto) {
+    if (dto.action === 'ASSIGN' && !dto.assignedSubject) throw new BadRequestException('Assign requires a worker subject.');
+    if (dto.action === 'MOVE' && dto.startsAt === undefined && dto.endsAt === undefined && dto.locationId === undefined) throw new BadRequestException('Move requires a changed time or location.');
+    if (dto.action !== 'ASSIGN' && dto.assignedSubject !== undefined) throw new BadRequestException('Worker subject is only valid for assign.');
+    if (dto.action !== 'MOVE' && (dto.startsAt !== undefined || dto.endsAt !== undefined || dto.locationId !== undefined)) throw new BadRequestException('Time and location changes are only valid for move.');
+  }
 
   async list(identity: Identity, eventId: string) {
     assertScope(identity, 'operations:read', eventId);

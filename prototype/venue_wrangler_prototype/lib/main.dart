@@ -15,6 +15,9 @@ import 'features/hospitality/hospitality_page.dart';
 import 'features/issues/issue_outbox.dart';
 import 'features/issues/secure_evidence_store.dart';
 import 'features/operations/operations_api.dart';
+import 'features/operations/integration_admin_page.dart';
+import 'features/operations/venue_structure_page.dart';
+import 'features/operations/staffing_schedule_grid.dart';
 import 'features/operations/venue_wall_time.dart';
 import 'features/operations/workspace_command_palette.dart';
 import 'features/notifications/push_notifications.dart';
@@ -271,6 +274,8 @@ final _liveTabProvider = StateProvider<int>((_) => 0);
 final _pendingIssueNavigationProvider = StateProvider<String?>((_) => null);
 final _staffingViewProvider =
     StateProvider.autoDispose.family<String, String>((ref, _) => 'ALL');
+final _staffingGridProvider =
+    StateProvider.autoDispose.family<bool, String>((ref, _) => true);
 
 List<String> liveTabsForCapabilities(Set<String> capabilities) => [
       'Today',
@@ -403,6 +408,10 @@ class _LiveOperationsHome extends ConsumerWidget {
         .whereType<Map>()
         .map((e) => Map<String, dynamic>.from(e))
         .toList();
+    final serviceAreas = (data['serviceAreas'] as List? ?? const [])
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
     final selectedId = ref.watch(_selectedLiveEventProvider);
     final matchingEvents = events.where((e) => e['id'] == selectedId);
     final event = matchingEvents.isNotEmpty
@@ -483,8 +492,10 @@ class _LiveOperationsHome extends ConsumerWidget {
                 'Staffing' => _LiveStaffingPage(
                     event: event,
                     canWrite: caps.contains('operations:write'),
+                    canShare: isAdmin || isVenueAdmin,
                     subject: identity['subject'] as String? ?? '',
                     locations: locations,
+                    serviceAreas: serviceAreas,
                     people: (data['people'] as List? ?? const [])
                         .whereType<Map>()
                         .map((e) => Map<String, dynamic>.from(e))
@@ -3076,14 +3087,18 @@ class _LiveStaffingPage extends ConsumerWidget {
   const _LiveStaffingPage({
     required this.event,
     required this.canWrite,
+    required this.canShare,
     required this.subject,
     required this.locations,
+    required this.serviceAreas,
     required this.people,
   });
   final Map<String, dynamic> event;
   final bool canWrite;
+  final bool canShare;
   final String subject;
   final List<Map<String, dynamic>> locations;
+  final List<Map<String, dynamic>> serviceAreas;
   final List<Map<String, dynamic>> people;
 
   @override
@@ -3117,6 +3132,9 @@ class _LiveStaffingPage extends ConsumerWidget {
             final mineCount = filterStaffingShifts(shifts,
                     view: 'MINE', subject: subject, canWrite: canWrite)
                 .length;
+            final desktop = MediaQuery.sizeOf(context).width >= 1024;
+            final showGrid =
+                desktop && ref.watch(_staffingGridProvider(eventId));
             return Column(children: [
               const _MyUnavailabilityPanel(),
               const _MyAvailabilityChecksPanel(),
@@ -3149,7 +3167,27 @@ class _LiveStaffingPage extends ConsumerWidget {
                           DateTime.now(),
                   locations: locations,
                 ),
-              if (shifts.isNotEmpty)
+              if (desktop)
+                Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                  SegmentedButton<bool>(
+                      segments: const [
+                        ButtonSegment(
+                            value: true,
+                            icon: Icon(Icons.grid_view_outlined),
+                            label: Text('Grid')),
+                        ButtonSegment(
+                            value: false,
+                            icon: Icon(Icons.view_list_outlined),
+                            label: Text('Details')),
+                      ],
+                      selected: {
+                        showGrid
+                      },
+                      onSelectionChanged: (value) => ref
+                          .read(_staffingGridProvider(eventId).notifier)
+                          .state = value.first),
+                ]),
+              if (!showGrid && shifts.isNotEmpty)
                 _StaffingQuickViews(
                   selected: selectedView,
                   allCount: shifts.length,
@@ -3160,451 +3198,472 @@ class _LiveStaffingPage extends ConsumerWidget {
                       .read(_staffingViewProvider(eventId).notifier)
                       .state = view,
                 ),
-              Expanded(
-                  child: shifts.isEmpty
-                      ? const Center(
-                          child:
-                              Text('No shifts are scheduled for this event.'))
-                      : visibleShifts.isEmpty
-                          ? Center(
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  const Text('No shifts in this view.'),
-                                  TextButton(
-                                    onPressed: () => ref
-                                        .read(_staffingViewProvider(eventId)
-                                            .notifier)
-                                        .state = 'ALL',
-                                    child: const Text('Show all shifts'),
-                                  ),
-                                ],
-                              ),
-                            )
-                          : ListView.separated(
-                              itemCount: visibleShifts.length,
-                              separatorBuilder: (_, __) =>
-                                  const SizedBox(height: 4),
-                              itemBuilder: (context, index) {
-                                final shift = visibleShifts[index];
-                                final assignedToMe =
-                                    shift['assignedSubject'] == subject;
-                                final state =
-                                    shift['state'] as String? ?? 'DRAFT';
-                                final response =
-                                    shift['response'] as String? ?? 'PENDING';
-                                final attendance =
-                                    shift['attendance'] as String? ??
-                                        'NOT_STARTED';
-                                final queuedForShift = queuedAttendance
-                                    .where((item) =>
-                                        item['eventId'] == eventId &&
-                                        item['shiftId'] == shift['id'])
-                                    .toList();
-                                final pendingClaims =
-                                    (shift['attendanceClaims'] as List? ??
-                                            const [])
-                                        .whereType<Map>()
-                                        .map((item) =>
-                                            Map<String, dynamic>.from(item))
-                                        .toList();
-                                final hasPendingCheckIn = queuedForShift.any(
-                                        (item) =>
-                                            item['action'] == 'CHECK_IN') ||
-                                    pendingClaims.any(
-                                        (item) => item['action'] == 'CHECK_IN');
-                                final hasPendingCheckOut = queuedForShift.any(
-                                        (item) =>
-                                            item['action'] == 'CHECK_OUT') ||
-                                    pendingClaims.any((item) =>
-                                        item['action'] == 'CHECK_OUT');
-                                final breaks = (shift['breaks'] as List? ??
-                                        const [])
-                                    .whereType<Map>()
-                                    .map(
-                                        (row) => Map<String, dynamic>.from(row))
-                                    .toList();
-                                Map<String, dynamic>? activeBreak;
-                                for (final record in breaks) {
-                                  if (record['endedAt'] == null) {
-                                    activeBreak = record;
-                                    break;
+              if (showGrid)
+                Expanded(
+                    child: StaffingScheduleGrid(
+                  api: ref.read(operationsApiProvider),
+                  eventId: eventId,
+                  shifts: shifts,
+                  locations: locations,
+                  serviceAreas: serviceAreas
+                      .where((item) => item['venueId'] == event['venueId'])
+                      .toList(),
+                  people: people,
+                  canWrite: canWrite,
+                  canShare: canShare,
+                  onChanged: () => ref.invalidate(eventShiftsProvider(eventId)),
+                )),
+              if (!showGrid)
+                Expanded(
+                    child: shifts.isEmpty
+                        ? const Center(
+                            child:
+                                Text('No shifts are scheduled for this event.'))
+                        : visibleShifts.isEmpty
+                            ? Center(
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Text('No shifts in this view.'),
+                                    TextButton(
+                                      onPressed: () => ref
+                                          .read(_staffingViewProvider(eventId)
+                                              .notifier)
+                                          .state = 'ALL',
+                                      child: const Text('Show all shifts'),
+                                    ),
+                                  ],
+                                ),
+                              )
+                            : ListView.separated(
+                                itemCount: visibleShifts.length,
+                                separatorBuilder: (_, __) =>
+                                    const SizedBox(height: 4),
+                                itemBuilder: (context, index) {
+                                  final shift = visibleShifts[index];
+                                  final assignedToMe =
+                                      shift['assignedSubject'] == subject;
+                                  final state =
+                                      shift['state'] as String? ?? 'DRAFT';
+                                  final response =
+                                      shift['response'] as String? ?? 'PENDING';
+                                  final attendance =
+                                      shift['attendance'] as String? ??
+                                          'NOT_STARTED';
+                                  final queuedForShift = queuedAttendance
+                                      .where((item) =>
+                                          item['eventId'] == eventId &&
+                                          item['shiftId'] == shift['id'])
+                                      .toList();
+                                  final pendingClaims =
+                                      (shift['attendanceClaims'] as List? ??
+                                              const [])
+                                          .whereType<Map>()
+                                          .map((item) =>
+                                              Map<String, dynamic>.from(item))
+                                          .toList();
+                                  final hasPendingCheckIn = queuedForShift.any(
+                                          (item) =>
+                                              item['action'] == 'CHECK_IN') ||
+                                      pendingClaims.any((item) =>
+                                          item['action'] == 'CHECK_IN');
+                                  final hasPendingCheckOut = queuedForShift.any(
+                                          (item) =>
+                                              item['action'] == 'CHECK_OUT') ||
+                                      pendingClaims.any((item) =>
+                                          item['action'] == 'CHECK_OUT');
+                                  final breaks =
+                                      (shift['breaks'] as List? ?? const [])
+                                          .whereType<Map>()
+                                          .map((row) =>
+                                              Map<String, dynamic>.from(row))
+                                          .toList();
+                                  Map<String, dynamic>? activeBreak;
+                                  for (final record in breaks) {
+                                    if (record['endedAt'] == null) {
+                                      activeBreak = record;
+                                      break;
+                                    }
                                   }
-                                }
-                                final startsAt = DateTime.tryParse(
-                                        shift['startsAt'] as String? ?? '')
-                                    ?.toLocal();
-                                final endsAt = DateTime.tryParse(
-                                        shift['endsAt'] as String? ?? '')
-                                    ?.toLocal();
-                                final locationId =
-                                    shift['locationId'] as String?;
-                                final location = locations
-                                    .where((row) => row['id'] == locationId);
-                                final locationName = location.isEmpty
-                                    ? 'All areas'
-                                    : location.first['name'] as String? ??
-                                        'Area';
-                                final assigned = people.where((row) =>
-                                    row['externalSubject'] ==
-                                    shift['assignedSubject']);
-                                final assignedName = assignedToMe
-                                    ? 'You'
-                                    : assigned.isEmpty
-                                        ? 'Open shift'
-                                        : assigned.first['displayName']
-                                                as String? ??
-                                            'Assigned worker';
-                                final requiredQualifications =
-                                    (shift['requiredQualificationCodes']
-                                                as List? ??
-                                            const [])
-                                        .cast<String>();
-                                final currentResponse =
-                                    shift['responseRevision'] ==
-                                        shift['revision'];
-                                final breakSummary = breaks.map((record) {
-                                  final kind = record['kind'] == 'MEAL'
-                                      ? 'Meal'
-                                      : 'Rest';
-                                  final started = DateTime.tryParse(
-                                          record['startedAt'] as String? ?? '')
+                                  final startsAt = DateTime.tryParse(
+                                          shift['startsAt'] as String? ?? '')
                                       ?.toLocal();
-                                  final ended = DateTime.tryParse(
-                                          record['endedAt'] as String? ?? '')
+                                  final endsAt = DateTime.tryParse(
+                                          shift['endsAt'] as String? ?? '')
                                       ?.toLocal();
-                                  return '$kind break ${_clockLabel(started)}–${ended == null ? 'active' : _clockLabel(ended)}';
-                                }).join(' · ');
-                                return Card(
-                                  child: Padding(
-                                    padding:
-                                        const EdgeInsets.symmetric(vertical: 6),
-                                    child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          ListTile(
-                                            leading: const CircleAvatar(
-                                                child:
-                                                    Icon(Icons.badge_outlined)),
-                                            title: Text(
-                                                shift['role'] as String? ??
-                                                    'Shift',
-                                                style: const TextStyle(
-                                                    fontWeight:
-                                                        FontWeight.w800)),
-                                            subtitle: Text(
-                                                '$assignedName · $locationName\n${_shiftTimeLabel(startsAt, endsAt)}\n$state · $response · $attendance${attendance == 'NOT_STARTED' ? '' : '\n${_attendanceTimeLabel(shift)}'}${breakSummary.isEmpty ? '' : '\n$breakSummary'}${requiredQualifications.isEmpty ? '' : '\nRequires: ${requiredQualifications.join(', ')}'}'),
-                                            isThreeLine: true,
-                                          ),
-                                          if (shift['instructions'] is String &&
-                                              (shift['instructions'] as String)
-                                                  .isNotEmpty)
-                                            Padding(
+                                  final locationId =
+                                      shift['locationId'] as String?;
+                                  final location = locations
+                                      .where((row) => row['id'] == locationId);
+                                  final locationName = location.isEmpty
+                                      ? 'All areas'
+                                      : location.first['name'] as String? ??
+                                          'Area';
+                                  final assigned = people.where((row) =>
+                                      row['externalSubject'] ==
+                                      shift['assignedSubject']);
+                                  final assignedName = assignedToMe
+                                      ? 'You'
+                                      : assigned.isEmpty
+                                          ? 'Open shift'
+                                          : assigned.first['displayName']
+                                                  as String? ??
+                                              'Assigned worker';
+                                  final requiredQualifications =
+                                      (shift['requiredQualificationCodes']
+                                                  as List? ??
+                                              const [])
+                                          .cast<String>();
+                                  final currentResponse =
+                                      shift['responseRevision'] ==
+                                          shift['revision'];
+                                  final breakSummary = breaks.map((record) {
+                                    final kind = record['kind'] == 'MEAL'
+                                        ? 'Meal'
+                                        : 'Rest';
+                                    final started = DateTime.tryParse(
+                                            record['startedAt'] as String? ??
+                                                '')
+                                        ?.toLocal();
+                                    final ended = DateTime.tryParse(
+                                            record['endedAt'] as String? ?? '')
+                                        ?.toLocal();
+                                    return '$kind break ${_clockLabel(started)}–${ended == null ? 'active' : _clockLabel(ended)}';
+                                  }).join(' · ');
+                                  return Card(
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                          vertical: 6),
+                                      child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            ListTile(
+                                              leading: const CircleAvatar(
+                                                  child: Icon(
+                                                      Icons.badge_outlined)),
+                                              title: Text(
+                                                  shift['role'] as String? ??
+                                                      'Shift',
+                                                  style: const TextStyle(
+                                                      fontWeight:
+                                                          FontWeight.w800)),
+                                              subtitle: Text(
+                                                  '$assignedName · $locationName\n${_shiftTimeLabel(startsAt, endsAt)}\n$state · $response · $attendance${attendance == 'NOT_STARTED' ? '' : '\n${_attendanceTimeLabel(shift)}'}${breakSummary.isEmpty ? '' : '\n$breakSummary'}${requiredQualifications.isEmpty ? '' : '\nRequires: ${requiredQualifications.join(', ')}'}'),
+                                              isThreeLine: true,
+                                            ),
+                                            if (shift['instructions']
+                                                    is String &&
+                                                (shift['instructions']
+                                                        as String)
+                                                    .isNotEmpty)
+                                              Padding(
+                                                  padding:
+                                                      const EdgeInsets.fromLTRB(
+                                                          16, 0, 16, 8),
+                                                  child: Text(
+                                                      shift['instructions']
+                                                          as String)),
+                                            for (final queued in queuedForShift)
+                                              Padding(
                                                 padding:
                                                     const EdgeInsets.fromLTRB(
                                                         16, 0, 16, 8),
                                                 child: Text(
-                                                    shift['instructions']
-                                                        as String)),
-                                          for (final queued in queuedForShift)
-                                            Padding(
-                                              padding:
-                                                  const EdgeInsets.fromLTRB(
-                                                      16, 0, 16, 8),
-                                              child: Text(
-                                                  'Pending sync · ${queued['action'] == 'CHECK_IN' ? 'check-in' : 'check-out'} at ${_clockLabel(DateTime.tryParse(queued['recordedAt'] as String? ?? '')?.toLocal())}. Device time is unverified until supervisor review.',
-                                                  style: const TextStyle(
-                                                      color: _brass,
-                                                      fontWeight:
-                                                          FontWeight.w700)),
-                                            ),
-                                          for (final claim
-                                              in pendingClaims) ...[
-                                            Padding(
-                                              padding:
-                                                  const EdgeInsets.fromLTRB(
-                                                      16, 0, 16, 4),
-                                              child: Text(
-                                                  'Offline ${claim['action'] == 'CHECK_IN' ? 'check-in' : 'check-out'} · ${_clockLabel(DateTime.tryParse(claim['recordedAt'] as String? ?? '')?.toLocal())} · UNVERIFIED',
-                                                  style: const TextStyle(
-                                                      color: _brass,
-                                                      fontWeight:
-                                                          FontWeight.w800)),
-                                            ),
-                                            if (canWrite)
+                                                    'Pending sync · ${queued['action'] == 'CHECK_IN' ? 'check-in' : 'check-out'} at ${_clockLabel(DateTime.tryParse(queued['recordedAt'] as String? ?? '')?.toLocal())}. Device time is unverified until supervisor review.',
+                                                    style: const TextStyle(
+                                                        color: _brass,
+                                                        fontWeight:
+                                                            FontWeight.w700)),
+                                              ),
+                                            for (final claim
+                                                in pendingClaims) ...[
                                               Padding(
                                                 padding:
                                                     const EdgeInsets.fromLTRB(
-                                                        12, 0, 12, 8),
-                                                child:
-                                                    Wrap(spacing: 8, children: [
-                                                  FilledButton.tonal(
-                                                      onPressed: () =>
-                                                          _reviewAttendanceClaim(
-                                                              context,
-                                                              ref,
-                                                              eventId,
-                                                              claim['id']
-                                                                  as String,
-                                                              'ACCEPTED'),
-                                                      child: const Text(
-                                                          'Accept time')),
-                                                  TextButton(
-                                                      onPressed: () =>
-                                                          _reviewAttendanceClaim(
-                                                              context,
-                                                              ref,
-                                                              eventId,
-                                                              claim['id']
-                                                                  as String,
-                                                              'REJECTED'),
-                                                      child:
-                                                          const Text('Reject')),
-                                                ]),
+                                                        16, 0, 16, 4),
+                                                child: Text(
+                                                    'Offline ${claim['action'] == 'CHECK_IN' ? 'check-in' : 'check-out'} · ${_clockLabel(DateTime.tryParse(claim['recordedAt'] as String? ?? '')?.toLocal())} · UNVERIFIED',
+                                                    style: const TextStyle(
+                                                        color: _brass,
+                                                        fontWeight:
+                                                            FontWeight.w800)),
                                               ),
-                                          ],
-                                          Padding(
-                                            padding: const EdgeInsets.fromLTRB(
-                                                12, 0, 12, 8),
-                                            child: Wrap(
-                                                spacing: 8,
-                                                runSpacing: 4,
-                                                children: [
-                                                  if (canWrite &&
-                                                      state == 'DRAFT')
-                                                    OutlinedButton(
-                                                        onPressed: () =>
-                                                            _runShiftCommand(
-                                                                context,
-                                                                ref,
-                                                                eventId,
-                                                                shift['id']
-                                                                    as String,
-                                                                'publish'),
-                                                        child: const Text(
-                                                            'Publish')),
-                                                  if (canWrite &&
-                                                      state == 'DRAFT' &&
-                                                      attendance ==
-                                                          'NOT_STARTED')
-                                                    OutlinedButton.icon(
-                                                        onPressed: () =>
-                                                            _suggestShiftAssignee(
-                                                                context,
-                                                                ref,
-                                                                eventId,
-                                                                shift),
-                                                        icon: const Icon(Icons
-                                                            .auto_awesome_outlined),
-                                                        label: const Text(
-                                                            'Suggest staff')),
-                                                  if (canWrite &&
-                                                      state == 'DRAFT' &&
-                                                      attendance ==
-                                                          'NOT_STARTED')
-                                                    TextButton.icon(
-                                                        onPressed: () =>
-                                                            _showAvailabilityChecks(
-                                                                context,
-                                                                ref,
-                                                                eventId,
-                                                                shift['id']
-                                                                    as String),
-                                                        icon: const Icon(Icons
-                                                            .how_to_reg_outlined),
-                                                        label: const Text(
-                                                            'Availability responses')),
-                                                  if (canWrite &&
-                                                      state == 'PUBLISHED' &&
-                                                      attendance ==
-                                                          'NOT_STARTED')
-                                                    TextButton(
-                                                        onPressed: () =>
-                                                            _runShiftCommand(
-                                                                context,
-                                                                ref,
-                                                                eventId,
-                                                                shift['id']
-                                                                    as String,
-                                                                'cancel'),
-                                                        child: const Text(
-                                                            'Cancel shift')),
-                                                  if (canWrite &&
-                                                      attendance !=
-                                                          'NOT_STARTED')
-                                                    OutlinedButton(
-                                                        onPressed: () =>
-                                                            _correctAttendance(
-                                                                context,
-                                                                ref,
-                                                                eventId,
-                                                                shift),
-                                                        child: const Text(
-                                                            'Correct attendance')),
-                                                  if (shift['assignedSubject'] ==
-                                                          null &&
-                                                      state == 'PUBLISHED')
-                                                    FilledButton(
-                                                        onPressed: () =>
-                                                            _runShiftCommand(
-                                                                context,
-                                                                ref,
-                                                                eventId,
-                                                                shift['id']
-                                                                    as String,
-                                                                'claim'),
-                                                        child: const Text(
-                                                            'Claim shift')),
-                                                  if (assignedToMe &&
-                                                      state == 'PUBLISHED' &&
-                                                      response ==
-                                                          'PENDING') ...[
-                                                    FilledButton(
-                                                        onPressed: () =>
-                                                            _respondToShift(
-                                                                context,
-                                                                ref,
-                                                                eventId,
-                                                                shift['id']
-                                                                    as String,
-                                                                'ACKNOWLEDGED'),
-                                                        child: const Text(
-                                                            'Acknowledge')),
-                                                    TextButton(
-                                                        onPressed: () =>
-                                                            _respondToShift(
-                                                                context,
-                                                                ref,
-                                                                eventId,
-                                                                shift['id']
-                                                                    as String,
-                                                                'DECLINED'),
-                                                        child: const Text(
-                                                            'Decline')),
-                                                  ],
-                                                  if (assignedToMe &&
-                                                      state == 'PUBLISHED' &&
-                                                      response ==
-                                                          'ACKNOWLEDGED' &&
-                                                      !currentResponse)
-                                                    FilledButton(
-                                                        onPressed: () =>
-                                                            _respondToShift(
-                                                                context,
-                                                                ref,
-                                                                eventId,
-                                                                shift['id']
-                                                                    as String,
-                                                                'ACKNOWLEDGED'),
-                                                        child: const Text(
-                                                            'Review changes')),
-                                                  if (assignedToMe &&
-                                                      state == 'PUBLISHED' &&
-                                                      response ==
-                                                          'ACKNOWLEDGED' &&
-                                                      currentResponse &&
-                                                      attendance ==
-                                                          'NOT_STARTED')
-                                                    if (hasPendingCheckIn &&
-                                                        hasPendingCheckOut)
-                                                      const Text(
-                                                          'Check-out time is waiting for sync and supervisor review.')
-                                                    else if (hasPendingCheckIn)
+                                              if (canWrite)
+                                                Padding(
+                                                  padding:
+                                                      const EdgeInsets.fromLTRB(
+                                                          12, 0, 12, 8),
+                                                  child: Wrap(
+                                                      spacing: 8,
+                                                      children: [
+                                                        FilledButton.tonal(
+                                                            onPressed: () =>
+                                                                _reviewAttendanceClaim(
+                                                                    context,
+                                                                    ref,
+                                                                    eventId,
+                                                                    claim['id']
+                                                                        as String,
+                                                                    'ACCEPTED'),
+                                                            child: const Text(
+                                                                'Accept time')),
+                                                        TextButton(
+                                                            onPressed: () =>
+                                                                _reviewAttendanceClaim(
+                                                                    context,
+                                                                    ref,
+                                                                    eventId,
+                                                                    claim['id']
+                                                                        as String,
+                                                                    'REJECTED'),
+                                                            child: const Text(
+                                                                'Reject')),
+                                                      ]),
+                                                ),
+                                            ],
+                                            Padding(
+                                              padding:
+                                                  const EdgeInsets.fromLTRB(
+                                                      12, 0, 12, 8),
+                                              child: Wrap(
+                                                  spacing: 8,
+                                                  runSpacing: 4,
+                                                  children: [
+                                                    if (canWrite &&
+                                                        state == 'DRAFT')
                                                       OutlinedButton(
                                                           onPressed: () =>
-                                                              _recordShiftAttendance(
+                                                              _runShiftCommand(
                                                                   context,
                                                                   ref,
                                                                   eventId,
                                                                   shift['id']
                                                                       as String,
-                                                                  'CHECK_OUT',
-                                                                  queueForReview:
-                                                                      true),
+                                                                  'publish'),
                                                           child: const Text(
-                                                              'Queue check-out time'))
-                                                    else
+                                                              'Publish')),
+                                                    if (canWrite &&
+                                                        state == 'DRAFT' &&
+                                                        attendance ==
+                                                            'NOT_STARTED')
+                                                      OutlinedButton.icon(
+                                                          onPressed: () =>
+                                                              _suggestShiftAssignee(
+                                                                  context,
+                                                                  ref,
+                                                                  eventId,
+                                                                  shift),
+                                                          icon: const Icon(Icons
+                                                              .auto_awesome_outlined),
+                                                          label: const Text(
+                                                              'Suggest staff')),
+                                                    if (canWrite &&
+                                                        state == 'DRAFT' &&
+                                                        attendance ==
+                                                            'NOT_STARTED')
+                                                      TextButton.icon(
+                                                          onPressed: () =>
+                                                              _showAvailabilityChecks(
+                                                                  context,
+                                                                  ref,
+                                                                  eventId,
+                                                                  shift['id']
+                                                                      as String),
+                                                          icon: const Icon(Icons
+                                                              .how_to_reg_outlined),
+                                                          label: const Text(
+                                                              'Availability responses')),
+                                                    if (canWrite &&
+                                                        state == 'PUBLISHED' &&
+                                                        attendance ==
+                                                            'NOT_STARTED')
+                                                      TextButton(
+                                                          onPressed: () =>
+                                                              _runShiftCommand(
+                                                                  context,
+                                                                  ref,
+                                                                  eventId,
+                                                                  shift['id']
+                                                                      as String,
+                                                                  'cancel'),
+                                                          child: const Text(
+                                                              'Cancel shift')),
+                                                    if (canWrite &&
+                                                        attendance !=
+                                                            'NOT_STARTED')
+                                                      OutlinedButton(
+                                                          onPressed: () =>
+                                                              _correctAttendance(
+                                                                  context,
+                                                                  ref,
+                                                                  eventId,
+                                                                  shift),
+                                                          child: const Text(
+                                                              'Correct attendance')),
+                                                    if (shift['assignedSubject'] ==
+                                                            null &&
+                                                        state == 'PUBLISHED')
                                                       FilledButton(
                                                           onPressed: () =>
-                                                              _recordShiftAttendance(
-                                                                  context,
-                                                                  ref,
-                                                                  eventId,
-                                                                  shift['id']
-                                                                      as String,
-                                                                  'CHECK_IN'),
-                                                          child: const Text(
-                                                              'Check in')),
-                                                  if (assignedToMe &&
-                                                      attendance ==
-                                                          'CHECKED_IN')
-                                                    if (hasPendingCheckOut)
-                                                      const Text(
-                                                          'Check-out time is awaiting supervisor review.')
-                                                    else if (activeBreak !=
-                                                        null)
-                                                      FilledButton.tonal(
-                                                          onPressed: () =>
                                                               _runShiftCommand(
                                                                   context,
                                                                   ref,
                                                                   eventId,
                                                                   shift['id']
                                                                       as String,
-                                                                  'break/end'),
+                                                                  'claim'),
                                                           child: const Text(
-                                                              'End break'))
-                                                    else ...[
-                                                      OutlinedButton(
-                                                          onPressed: () =>
-                                                              _runShiftCommand(
-                                                                  context,
-                                                                  ref,
-                                                                  eventId,
-                                                                  shift['id']
-                                                                      as String,
-                                                                  'break/start',
-                                                                  data: {
-                                                                    'kind':
-                                                                        'REST'
-                                                                  }),
-                                                          child: const Text(
-                                                              'Start rest break')),
-                                                      OutlinedButton(
-                                                          onPressed: () =>
-                                                              _runShiftCommand(
-                                                                  context,
-                                                                  ref,
-                                                                  eventId,
-                                                                  shift['id']
-                                                                      as String,
-                                                                  'break/start',
-                                                                  data: {
-                                                                    'kind':
-                                                                        'MEAL'
-                                                                  }),
-                                                          child: const Text(
-                                                              'Start meal break')),
+                                                              'Claim shift')),
+                                                    if (assignedToMe &&
+                                                        state == 'PUBLISHED' &&
+                                                        response ==
+                                                            'PENDING') ...[
                                                       FilledButton(
                                                           onPressed: () =>
-                                                              _recordShiftAttendance(
+                                                              _respondToShift(
                                                                   context,
                                                                   ref,
                                                                   eventId,
                                                                   shift['id']
                                                                       as String,
-                                                                  'CHECK_OUT'),
+                                                                  'ACKNOWLEDGED'),
                                                           child: const Text(
-                                                              'Check out')),
+                                                              'Acknowledge')),
+                                                      TextButton(
+                                                          onPressed: () =>
+                                                              _respondToShift(
+                                                                  context,
+                                                                  ref,
+                                                                  eventId,
+                                                                  shift['id']
+                                                                      as String,
+                                                                  'DECLINED'),
+                                                          child: const Text(
+                                                              'Decline')),
                                                     ],
-                                                ]),
-                                          ),
-                                        ]),
-                                  ),
-                                );
-                              },
-                            )),
+                                                    if (assignedToMe &&
+                                                        state == 'PUBLISHED' &&
+                                                        response ==
+                                                            'ACKNOWLEDGED' &&
+                                                        !currentResponse)
+                                                      FilledButton(
+                                                          onPressed: () =>
+                                                              _respondToShift(
+                                                                  context,
+                                                                  ref,
+                                                                  eventId,
+                                                                  shift['id']
+                                                                      as String,
+                                                                  'ACKNOWLEDGED'),
+                                                          child: const Text(
+                                                              'Review changes')),
+                                                    if (assignedToMe &&
+                                                        state == 'PUBLISHED' &&
+                                                        response ==
+                                                            'ACKNOWLEDGED' &&
+                                                        currentResponse &&
+                                                        attendance ==
+                                                            'NOT_STARTED')
+                                                      if (hasPendingCheckIn &&
+                                                          hasPendingCheckOut)
+                                                        const Text(
+                                                            'Check-out time is waiting for sync and supervisor review.')
+                                                      else if (hasPendingCheckIn)
+                                                        OutlinedButton(
+                                                            onPressed: () =>
+                                                                _recordShiftAttendance(
+                                                                    context,
+                                                                    ref,
+                                                                    eventId,
+                                                                    shift['id']
+                                                                        as String,
+                                                                    'CHECK_OUT',
+                                                                    queueForReview:
+                                                                        true),
+                                                            child: const Text(
+                                                                'Queue check-out time'))
+                                                      else
+                                                        FilledButton(
+                                                            onPressed: () =>
+                                                                _recordShiftAttendance(
+                                                                    context,
+                                                                    ref,
+                                                                    eventId,
+                                                                    shift['id']
+                                                                        as String,
+                                                                    'CHECK_IN'),
+                                                            child: const Text(
+                                                                'Check in')),
+                                                    if (assignedToMe &&
+                                                        attendance ==
+                                                            'CHECKED_IN')
+                                                      if (hasPendingCheckOut)
+                                                        const Text(
+                                                            'Check-out time is awaiting supervisor review.')
+                                                      else if (activeBreak !=
+                                                          null)
+                                                        FilledButton.tonal(
+                                                            onPressed: () =>
+                                                                _runShiftCommand(
+                                                                    context,
+                                                                    ref,
+                                                                    eventId,
+                                                                    shift['id']
+                                                                        as String,
+                                                                    'break/end'),
+                                                            child: const Text(
+                                                                'End break'))
+                                                      else ...[
+                                                        OutlinedButton(
+                                                            onPressed: () =>
+                                                                _runShiftCommand(
+                                                                    context,
+                                                                    ref,
+                                                                    eventId,
+                                                                    shift['id']
+                                                                        as String,
+                                                                    'break/start',
+                                                                    data: {
+                                                                      'kind':
+                                                                          'REST'
+                                                                    }),
+                                                            child: const Text(
+                                                                'Start rest break')),
+                                                        OutlinedButton(
+                                                            onPressed: () =>
+                                                                _runShiftCommand(
+                                                                    context,
+                                                                    ref,
+                                                                    eventId,
+                                                                    shift['id']
+                                                                        as String,
+                                                                    'break/start',
+                                                                    data: {
+                                                                      'kind':
+                                                                          'MEAL'
+                                                                    }),
+                                                            child: const Text(
+                                                                'Start meal break')),
+                                                        FilledButton(
+                                                            onPressed: () =>
+                                                                _recordShiftAttendance(
+                                                                    context,
+                                                                    ref,
+                                                                    eventId,
+                                                                    shift['id']
+                                                                        as String,
+                                                                    'CHECK_OUT'),
+                                                            child: const Text(
+                                                                'Check out')),
+                                                      ],
+                                                  ]),
+                                            ),
+                                          ]),
+                                    ),
+                                  );
+                                },
+                              )),
             ]);
           },
         );
@@ -5221,6 +5280,18 @@ class _TenantSetupPage extends StatelessWidget {
                       label: Text(state == 'ACTIVE'
                           ? 'Review / suspend'
                           : 'Review readiness'))),
+            Align(
+                alignment: AlignmentDirectional.centerEnd,
+                child: TextButton.icon(
+                    onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                            builder: (_) => VenueStructurePage(
+                                api: api,
+                                venueId: v['id'] as String,
+                                venueName: v['name'] as String? ?? 'Venue',
+                                isTenantAdmin: isTenantAdmin))),
+                    icon: const Icon(Icons.account_tree_outlined),
+                    label: const Text('Departments and areas'))),
           ]));
         }),
         if (locations.isNotEmpty) ...[
@@ -5303,7 +5374,18 @@ class _TenantSetupPage extends StatelessWidget {
             OutlinedButton.icon(
                 onPressed: () => _configureRestPolicy(context),
                 icon: const Icon(Icons.schedule_outlined),
-                label: const Text('Staffing rest policy'))
+                label: const Text('Staffing rest policy')),
+          if (isTenantAdmin)
+            OutlinedButton.icon(
+                onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                        builder: (_) => IntegrationAdminPage(
+                            api: api,
+                            venues: venues,
+                            events: events,
+                            locations: locations))),
+                icon: const Icon(Icons.hub_outlined),
+                label: const Text('External systems'))
         ]),
         if (isTenantAdmin) ...[
           const SizedBox(height: 24),
