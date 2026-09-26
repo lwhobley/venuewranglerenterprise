@@ -1,11 +1,13 @@
-import { IsBoolean, IsDateString, IsEmail, IsEnum, IsNumber, IsOptional, IsString, IsUUID, Length, Max, Min } from 'class-validator';
+import { IsBoolean, IsDateString, IsEmail, IsEnum, IsIn, IsNumber, IsOptional, IsString, IsUUID, Length, Max, Min } from 'class-validator';
 import { OperationalTaskKind, OperationalTaskState } from '@prisma/client';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
-export class CreateVenueDto { @ApiProperty() @IsString() @Length(2, 120) name!: string; }
+export class CreateVenueDto { @ApiProperty() @IsString() @Length(2, 120) name!: string; @ApiProperty({ example: 'America/Chicago' }) @IsString() @Length(1, 64) timeZone!: string; }
+export class UpdateOrganizationDto { @ApiProperty() @IsString() @Length(2, 160) name!: string; }
 export class CreateLocationDto { @ApiProperty() @IsUUID() venueId!: string; @ApiProperty() @IsString() @Length(2, 120) name!: string; }
 export class CreateEventDto { @ApiProperty() @IsUUID() venueId!: string; @ApiProperty() @IsString() @Length(2, 160) name!: string; @ApiProperty() @IsDateString() startsAt!: string; }
-export class UpdateVenueDto { @ApiPropertyOptional() @IsOptional() @IsString() @Length(2, 120) name?: string; }
+export class UpdateVenueDto { @ApiPropertyOptional() @IsOptional() @IsString() @Length(2, 120) name?: string; @ApiPropertyOptional({ example: 'America/Chicago' }) @IsOptional() @IsString() @Length(1, 64) timeZone?: string; }
+export class UpdateVenueLifecycleDto { @ApiProperty({ enum: ['activate', 'suspend'] }) @IsIn(['activate', 'suspend']) action!: 'activate' | 'suspend'; }
 export class UpdateLocationDto { @ApiPropertyOptional() @IsOptional() @IsString() @Length(2, 120) name?: string; }
 export class UpdateEventDto { @ApiPropertyOptional() @IsOptional() @IsString() @Length(2, 160) name?: string; @ApiPropertyOptional() @IsOptional() @IsDateString() startsAt?: string; }
 export class UpsertPersonDto { @ApiProperty() @IsString() @Length(1, 240) externalSubject!: string; @ApiProperty() @IsEmail() email!: string; @ApiProperty() @IsString() @Length(1, 160) displayName!: string; }

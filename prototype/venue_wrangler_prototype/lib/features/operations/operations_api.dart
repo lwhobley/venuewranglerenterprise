@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
@@ -9,6 +10,12 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:uuid/uuid.dart';
 import '../../auth/auth.dart';
 import '../../config/api_configuration.dart';
+import '../issues/secure_evidence_store.dart';
+
+class _OfflineAccessTokenUnavailable extends StateError {
+  _OfflineAccessTokenUnavailable()
+      : super('Connect to your identity provider before using the API.');
+}
 
 class OperationsApi {
   OperationsApi(this._auth, this._storage, {Dio? dio})
@@ -16,9 +23,13 @@ class OperationsApi {
   final AuthRepository _auth;
   final FlutterSecureStorage _storage;
   final Dio _dio;
+  final Map<String, DateTime> _offlineCacheHits = {};
 
   static const _cachePrefix = 'venue.operations.cache.';
   static const _maxCacheBytes = 256 * 1024;
+
+  DateTime? offlineIssueSnapshotAt(String eventId) =>
+      _offlineCacheHits['issues.$eventId'];
 
   Future<T> _cachedGet<T>(String cacheKey, Future<T> Function() load) async {
     final maxCacheAge = ApiConfiguration.offlineCacheMaxAge;
@@ -27,6 +38,10 @@ class OperationsApi {
     final storageKey = '$_cachePrefix$scope.$cacheKey';
     try {
       final value = await load();
+      if (scope != await _auth.offlineCacheScope()) {
+        throw StateError('The signed-in account changed during this request.');
+      }
+      _offlineCacheHits.remove(cacheKey);
       final encoded = jsonEncode({
         'cachedAt': DateTime.now().toUtc().toIso8601String(),
         'value': value
@@ -34,11 +49,23 @@ class OperationsApi {
       if (maxCacheAge > Duration.zero &&
           utf8.encode(encoded).length <= _maxCacheBytes) {
         await _storage.write(key: storageKey, value: encoded);
+        if (scope != await _auth.offlineCacheScope()) {
+          throw StateError('The signed-in account changed during this request.');
+        }
       }
       return value;
     } catch (error) {
-      if (error is! DioException || error.response != null) rethrow;
+      if (error is! _OfflineAccessTokenUnavailable &&
+          (error is! DioException || !isOfflineNetworkFailure(error))) {
+        rethrow;
+      }
+      if (scope != await _auth.offlineCacheScope()) {
+        throw StateError('The signed-in account changed during this request.');
+      }
       final encoded = await _storage.read(key: storageKey);
+      if (scope != await _auth.offlineCacheScope()) {
+        throw StateError('The signed-in account changed during this request.');
+      }
       if (encoded != null) {
         final snapshot = jsonDecode(encoded) as Map<String, dynamic>;
         final cachedAt =
@@ -50,9 +77,11 @@ class OperationsApi {
             age != null &&
             age >= Duration.zero &&
             age <= maxCacheAge) {
+          _offlineCacheHits[cacheKey] = cachedAt!;
           return snapshot['value'] as T;
         }
       }
+      _offlineCacheHits.remove(cacheKey);
       rethrow;
     }
   }
@@ -60,12 +89,16 @@ class OperationsApi {
   Future<Response<T>> _request<T>(
       Future<Response<T>> Function(String token) call) async {
     final token = await _auth.validAccessToken();
-    if (token == null) throw StateError('Sign in again to continue.');
+    if (token == null) {
+      if (_auth.offlineReadOnly) throw _OfflineAccessTokenUnavailable();
+      throw StateError('Sign in again to continue.');
+    }
     return call(token);
   }
 
   Future<T> _command<T>(Map<String, Object?> command,
-      Future<T> Function(String token, String idempotencyKey) send) async {
+      Future<T> Function(String token, String idempotencyKey) send,
+      {String? idempotencyKeyOverride}) async {
     final token = await _auth.validAccessToken();
     if (token == null) throw StateError('Sign in again to continue.');
     final scope = await _auth.offlineCacheScope();
@@ -75,8 +108,8 @@ class OperationsApi {
         .join();
     final storageKey =
         scope == null ? null : 'venue.operations.command.$scope.$commandHash';
-    String? idempotencyKey;
-    if (storageKey != null) {
+    String? idempotencyKey = idempotencyKeyOverride;
+    if (idempotencyKey == null && storageKey != null) {
       try {
         idempotencyKey = await _storage.read(key: storageKey);
       } catch (_) {
@@ -84,7 +117,7 @@ class OperationsApi {
       }
     }
     idempotencyKey ??= const Uuid().v4();
-    if (storageKey != null) {
+    if (idempotencyKeyOverride == null && storageKey != null) {
       try {
         await _storage.write(key: storageKey, value: idempotencyKey);
       } catch (_) {
@@ -92,7 +125,7 @@ class OperationsApi {
       }
     }
     final result = await send(token, idempotencyKey);
-    if (storageKey != null) {
+    if (idempotencyKeyOverride == null && storageKey != null) {
       try {
         await _storage.delete(key: storageKey);
       } catch (_) {
@@ -213,6 +246,14 @@ class OperationsApi {
                       Options(headers: {'Authorization': 'Bearer $token'}))))
               .data ??
           const []);
+  Future<List<dynamic>> integrationEvents(String eventId) async {
+    final response = await _request((token) => _dio.get<List<dynamic>>(
+          '/api/v1/integrations/events/$eventId',
+          options: Options(headers: {'Authorization': 'Bearer $token'}),
+        ));
+    return response.data ?? const [];
+  }
+
   Future<Map<String, dynamic>> eventCloseout(String eventId) async {
     final response = await _cachedGet<Map<String, dynamic>>(
       'closeout.$eventId',
@@ -705,7 +746,8 @@ class OperationsApi {
               .whereType<Map>()
               .map((row) => Map<String, dynamic>.from(row))
               .toList()));
-  Future<List<Map<String, dynamic>>> stockPurchaseOrders(String eventId) async =>
+  Future<List<Map<String, dynamic>>> stockPurchaseOrders(
+          String eventId) async =>
       (await _request((token) => _dio.get<List<dynamic>>(
                 '/api/v1/events/$eventId/inventory/purchase-orders',
                 options: Options(headers: {'Authorization': 'Bearer $token'}),
@@ -715,8 +757,12 @@ class OperationsApi {
           .map((row) => Map<String, dynamic>.from(row))
           .toList();
   Future<void> createStockPurchaseOrder(
-          String eventId, String venueId, String? locationId, String supplierName,
-          String? supplierReference, String? note,
+          String eventId,
+          String venueId,
+          String? locationId,
+          String supplierName,
+          String? supplierReference,
+          String? note,
           List<Map<String, Object?>> lines) async =>
       _command<void>(
           {
@@ -735,7 +781,8 @@ class OperationsApi {
                 'venueId': venueId,
                 if (locationId != null) 'locationId': locationId,
                 'supplierName': supplierName,
-                if (supplierReference != null) 'supplierReference': supplierReference,
+                if (supplierReference != null)
+                  'supplierReference': supplierReference,
                 if (note != null) 'note': note,
                 'lines': lines
               },
@@ -743,8 +790,11 @@ class OperationsApi {
                 'Authorization': 'Bearer $token',
                 'Idempotency-Key': key
               })));
-  Future<void> stockPurchaseOrderAction(String eventId, String orderId, String action,
-          {List<Map<String, Object?>>? lines, String? note, String? reason}) async =>
+  Future<void> stockPurchaseOrderAction(
+          String eventId, String orderId, String action,
+          {List<Map<String, Object?>>? lines,
+          String? note,
+          String? reason}) async =>
       _command<void>(
           {
             'action': 'stock-purchase-order.$action',
@@ -966,6 +1016,93 @@ class OperationsApi {
     await deleteHospitalityDraft(eventId, draft['draftId'] as String);
   }
 
+  Future<List<Map<String, dynamic>>> pendingHospitalityHandoffs(
+      String eventId) async {
+    final scope = await _auth.offlineCacheScope();
+    if (scope == null) return const [];
+    final raw = await _storage.read(key: 'venue.hospitality.handoffs.$scope');
+    if (raw == null) return const [];
+    return (jsonDecode(raw) as List)
+        .whereType<Map>()
+        .map((row) => Map<String, dynamic>.from(row))
+        .where((row) => row['eventId'] == eventId)
+        .toList();
+  }
+
+  Future<void> savePendingHospitalityHandoff(
+      String eventId, String orderId, Map<String, Object?> receipt) async {
+    final scope = await _auth.offlineCacheScope();
+    if (scope == null) {
+      throw StateError('Sign in again to save this handoff securely.');
+    }
+    final storageKey = 'venue.hospitality.handoffs.$scope';
+    final raw = await _storage.read(key: storageKey);
+    final handoffs = raw == null
+        ? <Map<String, dynamic>>[]
+        : (jsonDecode(raw) as List)
+            .whereType<Map>()
+            .map((row) => Map<String, dynamic>.from(row))
+            .toList();
+    if (handoffs
+        .any((row) => row['eventId'] == eventId && row['orderId'] == orderId)) {
+      throw StateError(
+          'A handoff for this order is already pending. Sync the saved receipt before capturing another.');
+    }
+    handoffs.add({
+      'handoffId': const Uuid().v4(),
+      'idempotencyKey': const Uuid().v4(),
+      'eventId': eventId,
+      'orderId': orderId,
+      'savedAt': DateTime.now().toUtc().toIso8601String(),
+      'receipt': receipt,
+    });
+    await _storage.write(key: storageKey, value: jsonEncode(handoffs));
+  }
+
+  Future<void> saveHospitalityHandoffPhotoEvidenceId(
+      String eventId, String handoffId, String evidenceId) async {
+    final scope = await _auth.offlineCacheScope();
+    if (scope == null) {
+      throw StateError('Sign in again to continue syncing this handoff.');
+    }
+    final storageKey = 'venue.hospitality.handoffs.$scope';
+    final raw = await _storage.read(key: storageKey);
+    if (raw == null) {
+      throw StateError('The pending handoff could not be found.');
+    }
+    final handoffs = (jsonDecode(raw) as List)
+        .whereType<Map>()
+        .map((row) => Map<String, dynamic>.from(row))
+        .toList();
+    final index = handoffs.indexWhere(
+        (row) => row['eventId'] == eventId && row['handoffId'] == handoffId);
+    if (index < 0) {
+      throw StateError('The pending handoff could not be found.');
+    }
+    handoffs[index]['photoEvidenceId'] = evidenceId;
+    await _storage.write(key: storageKey, value: jsonEncode(handoffs));
+  }
+
+  Future<void> deletePendingHospitalityHandoff(
+      String eventId, String handoffId) async {
+    final scope = await _auth.offlineCacheScope();
+    if (scope == null) return;
+    final storageKey = 'venue.hospitality.handoffs.$scope';
+    final raw = await _storage.read(key: storageKey);
+    if (raw == null) return;
+    final handoffs = (jsonDecode(raw) as List)
+        .whereType<Map>()
+        .map((row) => Map<String, dynamic>.from(row))
+        .where(
+            (row) => row['eventId'] != eventId || row['handoffId'] != handoffId)
+        .toList();
+    if (handoffs.isEmpty) {
+      await _storage.delete(key: storageKey);
+    } else {
+      await _storage.write(key: storageKey, value: jsonEncode(handoffs));
+    }
+  }
+
   Future<void> createHospitalityOrder(
           String eventId, Map<String, Object?> order) async =>
       _command<void>(
@@ -984,7 +1121,9 @@ class OperationsApi {
           String? receivedByName,
           String? receiptNote,
           bool? receiverAcknowledged,
-          String? receiverSignature}) async =>
+          String? receiverSignature,
+          String? receiverPhotoEvidenceId,
+          String? idempotencyKeyOverride}) async =>
       _command<void>(
           {
             'action': 'hospitality.order.$action',
@@ -995,7 +1134,8 @@ class OperationsApi {
             'receivedByName': receivedByName,
             'receiptNote': receiptNote,
             'receiverAcknowledged': receiverAcknowledged,
-            'receiverSignature': receiverSignature
+            'receiverSignature': receiverSignature,
+            'receiverPhotoEvidenceId': receiverPhotoEvidenceId
           },
           (token, key) => _dio.post<void>(
               '/api/v1/events/$eventId/hospitality/orders/$orderId/actions',
@@ -1008,12 +1148,55 @@ class OperationsApi {
                 if (receiverAcknowledged != null)
                   'receiverAcknowledged': receiverAcknowledged,
                 if (receiverSignature != null)
-                  'receiverSignature': receiverSignature
+                  'receiverSignature': receiverSignature,
+                if (receiverPhotoEvidenceId != null)
+                  'receiverPhotoEvidenceId': receiverPhotoEvidenceId
               },
               options: Options(headers: {
                 'Authorization': 'Bearer $token',
                 'Idempotency-Key': key
-              })));
+              })),
+          idempotencyKeyOverride: idempotencyKeyOverride);
+  Future<String> uploadHospitalityReceiptPhoto(String eventId, String orderId,
+      LocalIssueEvidence evidence, List<int> cleartext) async {
+    final response = await _request((token) => _dio.post<Map<String, dynamic>>(
+          '/api/v1/events/$eventId/hospitality/orders/$orderId/receipt-evidence',
+          data: {
+            'clientId': evidence.clientId,
+            'fileName': evidence.fileName,
+            'contentType': evidence.contentType,
+            'sizeBytes': evidence.sizeBytes,
+            'sha256': evidence.sha256,
+          },
+          options: Options(headers: {'Authorization': 'Bearer $token'}),
+        ));
+    final body = response.data!;
+    final uploadUrl = body['uploadUrl'] as String?;
+    if (uploadUrl != null) {
+      final fields = Map<String, dynamic>.from(body['uploadFields'] as Map);
+      final form = FormData.fromMap({
+        ...fields,
+        'file': MultipartFile.fromBytes(Uint8List.fromList(cleartext),
+            filename: evidence.fileName,
+            contentType: DioMediaType.parse(evidence.contentType)),
+      });
+      await Dio().post<void>(uploadUrl,
+          data: form, options: Options(contentType: 'multipart/form-data'));
+    }
+    final evidenceId = (body['evidence'] as Map)['id'] as String;
+    await _request((token) => _dio.post<Map<String, dynamic>>(
+          '/api/v1/events/$eventId/hospitality/orders/$orderId/receipt-evidence/$evidenceId/complete',
+          options: Options(headers: {'Authorization': 'Bearer $token'}),
+        ));
+    return evidenceId;
+  }
+
+  Future<String> hospitalityReceiptPhotoUrl(
+          String eventId, String orderId, String evidenceId) async =>
+      (await _request((token) => _dio.get<Map<String, dynamic>>(
+              '/api/v1/events/$eventId/hospitality/orders/$orderId/receipt-evidence/$evidenceId/download',
+              options: Options(headers: {'Authorization': 'Bearer $token'}))))
+          .data!['downloadUrl'] as String;
   Future<Map<String, dynamic>> shiftAssignmentSuggestions(
           String eventId, String shiftId) async =>
       (await _request((token) => _dio.get<Map<String, dynamic>>(
@@ -1021,32 +1204,46 @@ class OperationsApi {
                 options: Options(headers: {'Authorization': 'Bearer $token'}),
               )))
           .data!;
-  Future<List<dynamic>> availabilityChecksForShift(String eventId, String shiftId) async =>
+  Future<List<dynamic>> availabilityChecksForShift(
+          String eventId, String shiftId) async =>
       (await _request((token) => _dio.get<List<dynamic>>(
               '/api/v1/events/$eventId/shifts/$shiftId/availability-checks',
               options: Options(headers: {'Authorization': 'Bearer $token'}))))
           .data ??
       const [];
-  Future<void> requestShiftAvailability(String eventId, String shiftId, List<String> subjects) async =>
+  Future<void> requestShiftAvailability(
+          String eventId, String shiftId, List<String> subjects) async =>
       _command<void>(
-          {'action': 'staff-availability-check.request', 'eventId': eventId, 'shiftId': shiftId, 'subjects': subjects},
+          {
+            'action': 'staff-availability-check.request',
+            'eventId': eventId,
+            'shiftId': shiftId,
+            'subjects': subjects
+          },
           (token, key) => _dio.post<void>(
               '/api/v1/events/$eventId/shifts/$shiftId/availability-checks',
               data: {'subjects': subjects},
-              options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key
+              })));
   Future<List<dynamic>> myAvailabilityChecks() async =>
       (await _request((token) => _dio.get<List<dynamic>>(
               '/api/v1/me/availability-checks',
               options: Options(headers: {'Authorization': 'Bearer $token'}))))
           .data ??
       const [];
-  Future<void> respondToAvailabilityCheck(String checkId, String response) async =>
+  Future<void> respondToAvailabilityCheck(
+          String checkId, String response) async =>
       _command<void>(
           {'action': 'staff-availability-check.$response', 'checkId': checkId},
           (token, key) => _dio.post<void>(
               '/api/v1/me/availability-checks/$checkId/respond',
               data: {'response': response},
-              options: Options(headers: {'Authorization': 'Bearer $token', 'Idempotency-Key': key})));
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key
+              })));
   Future<void> shiftCommand(String eventId, String shiftId, String action,
       {Map<String, Object?>? data}) async {
     await _command<void>(
@@ -1188,22 +1385,60 @@ class OperationsApi {
             })));
   }
 
-  Future<void> createVenue(String name) async => _command<void>(
-      {'action': 'venue.create', 'name': name.trim()},
-      (token, key) => _dio.post<void>('/api/v1/admin/venues',
-          data: {'name': name},
-          options: Options(headers: {
-            'Authorization': 'Bearer $token',
-            'Idempotency-Key': key,
-          })));
-  Future<void> updateVenue(String venueId, String name) async => _command<void>(
-      {'action': 'venue.update', 'venueId': venueId, 'name': name.trim()},
-      (token, key) => _dio.put<void>('/api/v1/admin/venues/$venueId',
+  Future<void> updateOrganizationName(String name) async => _command<void>(
+      {'action': 'organization.update', 'name': name.trim()},
+      (token, key) => _dio.put<void>('/api/v1/admin/organization',
           data: {'name': name.trim()},
           options: Options(headers: {
             'Authorization': 'Bearer $token',
             'Idempotency-Key': key,
           })));
+
+  Future<void> createVenue(String name, String timeZone) async =>
+      _command<void>(
+          {
+            'action': 'venue.create',
+            'name': name.trim(),
+            'timeZone': timeZone.trim()
+          },
+          (token, key) => _dio.post<void>('/api/v1/admin/venues',
+              data: {'name': name.trim(), 'timeZone': timeZone.trim()},
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key,
+              })));
+  Future<void> updateVenue(
+          String venueId, String name, String timeZone) async =>
+      _command<void>(
+          {
+            'action': 'venue.update',
+            'venueId': venueId,
+            'name': name.trim(),
+            'timeZone': timeZone.trim()
+          },
+          (token, key) => _dio.put<void>('/api/v1/admin/venues/$venueId',
+              data: {'name': name.trim(), 'timeZone': timeZone.trim()},
+              options: Options(headers: {
+                'Authorization': 'Bearer $token',
+                'Idempotency-Key': key,
+              })));
+  Future<Map<String, dynamic>> venueReadiness(String venueId) async =>
+      (await _request((token) => _dio.get<Map<String, dynamic>>(
+                '/api/v1/admin/venues/$venueId/readiness',
+                options: Options(headers: {'Authorization': 'Bearer $token'}),
+              )))
+          .data!;
+  Future<void> updateVenueLifecycle(String venueId, String action) async =>
+      _command<void>(
+          {'action': 'venue.lifecycle.$action', 'venueId': venueId},
+          (token, key) => _dio.put<void>(
+                '/api/v1/admin/venues/$venueId/lifecycle',
+                data: {'action': action},
+                options: Options(headers: {
+                  'Authorization': 'Bearer $token',
+                  'Idempotency-Key': key,
+                }),
+              ));
   Future<void> createLocation(String venueId, String name) async => _command<
           void>(
       {'action': 'location.create', 'venueId': venueId, 'name': name.trim()},
@@ -1215,13 +1450,51 @@ class OperationsApi {
           })));
   Future<void> updateLocation(String locationId, String name) async =>
       _command<void>(
-          {'action': 'location.update', 'locationId': locationId, 'name': name.trim()},
+          {
+            'action': 'location.update',
+            'locationId': locationId,
+            'name': name.trim()
+          },
           (token, key) => _dio.put<void>('/api/v1/admin/locations/$locationId',
               data: {'name': name.trim()},
               options: Options(headers: {
                 'Authorization': 'Bearer $token',
                 'Idempotency-Key': key,
               })));
+  Future<Map<String, dynamic>> hospitalityMenuRecipe(
+          String venueId, String itemId) async =>
+      (await _request((token) => _dio.get<Map<String, dynamic>>(
+                '/api/v1/admin/venues/$venueId/hospitality/menu-items/$itemId/recipe',
+                options: Options(headers: {'Authorization': 'Bearer $token'}),
+              )))
+          .data!;
+  Future<List<Map<String, dynamic>>> recipeInventoryItems(
+          String venueId) async =>
+      (await _request((token) => _dio.get<List<dynamic>>(
+                '/api/v1/admin/venues/$venueId/inventory/items',
+                options: Options(headers: {'Authorization': 'Bearer $token'}),
+              )))
+          .data!
+          .whereType<Map>()
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList();
+  Future<void> setHospitalityMenuRecipe(String venueId, String itemId,
+          List<Map<String, Object?>> lines) async =>
+      _command<void>(
+          {
+            'action': 'hospitality.menu_recipe.set',
+            'venueId': venueId,
+            'itemId': itemId,
+            'lines': lines,
+          },
+          (token, key) => _dio.put<void>(
+                '/api/v1/admin/venues/$venueId/hospitality/menu-items/$itemId/recipe',
+                data: {'lines': lines},
+                options: Options(headers: {
+                  'Authorization': 'Bearer $token',
+                  'Idempotency-Key': key,
+                }),
+              ));
   Future<void> createEvent(
           String venueId, String name, DateTime startsAt) async =>
       _command<void>(
@@ -1278,18 +1551,22 @@ class OperationsApi {
               },
               options: Options(headers: {
                 'Authorization': 'Bearer $token',
-            'Idempotency-Key': key,
-          })));
-  Future<void> setPersonActive(String personId, bool active) async =>
-      _command<void>(
-          {'action': 'person.${active ? 'activate' : 'deactivate'}', 'personId': personId, 'active': active},
-          (token, key) => _dio.put<void>(
-              '/api/v1/admin/people/$personId/status',
-              data: {'active': active},
-              options: Options(headers: {
-                'Authorization': 'Bearer $token',
                 'Idempotency-Key': key,
               })));
+  Future<void> setPersonActive(String personId, bool active) async =>
+      _command<void>(
+          {
+            'action': 'person.${active ? 'activate' : 'deactivate'}',
+            'personId': personId,
+            'active': active
+          },
+          (token, key) =>
+              _dio.put<void>('/api/v1/admin/people/$personId/status',
+                  data: {'active': active},
+                  options: Options(headers: {
+                    'Authorization': 'Bearer $token',
+                    'Idempotency-Key': key,
+                  })));
   Future<void> grantQualification(String personId, String code, String name,
           {String? expiresAt}) async =>
       _command<void>(
@@ -1419,6 +1696,7 @@ final operationsApiProvider = Provider((ref) => OperationsApi(
     ref.watch(authRepositoryProvider), const FlutterSecureStorage()));
 final staffAttendanceOutboxProvider = StateNotifierProvider<
     StaffAttendanceOutboxController, List<Map<String, dynamic>>>((ref) {
+  ref.watch(authSessionProvider.select((value) => value.session?.accessToken));
   final controller =
       StaffAttendanceOutboxController(ref.watch(operationsApiProvider));
   unawaited(controller.restore());
@@ -1436,6 +1714,9 @@ final issueEventStreamProvider = StreamProvider.autoDispose
 final eventTasksProvider = FutureProvider.autoDispose
     .family<List<dynamic>, String>(
         (ref, id) => ref.watch(operationsApiProvider).tasks(id));
+final eventIntegrationEventsProvider = FutureProvider.autoDispose
+    .family<List<dynamic>, String>(
+        (ref, id) => ref.watch(operationsApiProvider).integrationEvents(id));
 final eventCloseoutProvider = FutureProvider.autoDispose
     .family<Map<String, dynamic>, String>(
         (ref, id) => ref.watch(operationsApiProvider).eventCloseout(id));
@@ -1466,9 +1747,20 @@ final venueHospitalityMenuItemsProvider = FutureProvider.autoDispose
 final adminVenueHospitalityMenuItemsProvider = FutureProvider.autoDispose
     .family<List<Map<String, dynamic>>, String>((ref, id) =>
         ref.watch(operationsApiProvider).adminHospitalityMenuItems(id));
+final hospitalityRecipeProvider = FutureProvider.autoDispose
+    .family<Map<String, dynamic>, ({String venueId, String itemId})>(
+        (ref, key) => ref
+            .watch(operationsApiProvider)
+            .hospitalityMenuRecipe(key.venueId, key.itemId));
+final recipeInventoryItemsProvider = FutureProvider.autoDispose
+    .family<List<Map<String, dynamic>>, String>((ref, venueId) =>
+        ref.watch(operationsApiProvider).recipeInventoryItems(venueId));
 final eventHospitalityDraftsProvider = FutureProvider.autoDispose
     .family<List<Map<String, dynamic>>, String>(
         (ref, id) => ref.watch(operationsApiProvider).hospitalityDrafts(id));
+final eventHospitalityHandoffsProvider = FutureProvider.autoDispose
+    .family<List<Map<String, dynamic>>, String>((ref, id) =>
+        ref.watch(operationsApiProvider).pendingHospitalityHandoffs(id));
 final eventShiftsProvider = FutureProvider.autoDispose
     .family<List<dynamic>, String>(
         (ref, id) => ref.watch(operationsApiProvider).shifts(id));
@@ -1502,7 +1794,10 @@ class StaffAttendanceOutboxController
   StreamSubscription<List<ConnectivityResult>>? _subscription;
   Future<void>? _syncing;
 
-  Future<void> restore() async => state = await _api.queuedOfflineAttendance();
+  Future<void> restore() async {
+    final pending = await _api.queuedOfflineAttendance();
+    if (mounted) state = pending;
+  }
 
   void watchConnectivity() {
     _subscription = _connectivity.onConnectivityChanged.listen((results) {
@@ -1533,6 +1828,7 @@ class StaffAttendanceOutboxController
   }
 
   Future<void> synchronize() async {
+    if (!mounted) return;
     final current = _syncing;
     if (current != null) return current;
     final operation = _synchronize();

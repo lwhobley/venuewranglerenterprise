@@ -9,6 +9,7 @@ import type { Storage } from '@google-cloud/storage';
 
 const admin: Identity = { subject: 'idp|admin', tenantId: 'tenant-1', capabilities: ['tenant:admin'], venueIds: [], eventIds: [], locationIds: [], assignableUserIds: [] };
 const manager: Identity = { ...admin, capabilities: ['operations:write'] };
+const hospitalityRequester: Identity = { subject: 'requester-1', tenantId: 'tenant-1', capabilities: ['hospitality:order'], venueIds: ['venue-1'], eventIds: ['event-1'], locationIds: [], assignableUserIds: [] };
 const bytes = Buffer.from('%PDF-1.7\nfood-handling-certificate\n%%EOF');
 const digest = createHash('sha256').update(bytes).digest('hex');
 const qualification = {
@@ -26,6 +27,13 @@ function harness() {
       update: vi.fn().mockImplementation(({ data }) => ({ ...qualification, ...data })),
     },
     tenantSetupAuditEvent: { create: vi.fn().mockResolvedValue({}) },
+    hospitalityOrder: { findFirst: vi.fn().mockResolvedValue({ id: 'order-1', organizationId: 'tenant-1', eventId: 'event-1', venueId: 'venue-1', locationId: null, requestedBy: hospitalityRequester.subject, assignedTo: null, state: 'DISTRIBUTED', deliveryReceipt: { photoEvidenceId: 'delivery-photo-1' } }) },
+    hospitalityDeliveryEvidence: {
+      findFirst: vi.fn().mockResolvedValue(null),
+      count: vi.fn().mockResolvedValue(0),
+      create: vi.fn().mockImplementation(({ data }) => ({ id: 'delivery-photo-1', status: 'PENDING_UPLOAD', createdAt: new Date(), readyAt: null, ...data })),
+      update: vi.fn().mockImplementation(({ data }) => ({ id: 'delivery-photo-1', clientId: 'client-photo-1', fileName: 'handoff.jpg', contentType: 'image/jpeg', sizeBytes: 6, sha256: 'f'.repeat(64), status: 'READY', createdAt: new Date(), ...data })),
+    },
   };
   const prisma = { withTenant: vi.fn((_identity: Identity, work: (transaction: never) => unknown) => work(tx as never)) } as unknown as PrismaService;
   const file = {
@@ -95,5 +103,42 @@ describe('qualification evidence', () => {
     const result = await service.reviewQualificationEvidence(admin, 'qualification-1', 'VERIFIED', 'Issuer and expiration were checked.');
     expect(result).toMatchObject({ id: 'qualification-1', evidenceStatus: 'VERIFIED', evidenceReviewReason: 'Issuer and expiration were checked.' });
     expect(tx.tenantSetupAuditEvent.create).toHaveBeenCalledOnce();
+  });
+});
+
+describe('hospitality handoff photo evidence', () => {
+  const photoBytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x01]);
+  const photoDigest = createHash('sha256').update(photoBytes).digest('hex');
+  const photoDto = { clientId: '00000000-0000-4000-8000-000000000001', fileName: 'handoff.jpg', contentType: 'image/jpeg', sizeBytes: photoBytes.length, sha256: photoDigest };
+
+  beforeEach(() => vi.clearAllMocks());
+
+  it('creates a scoped signed upload for a requester and persists only safe metadata', async () => {
+    const { service, tx, file } = harness();
+    const result = await service.createHospitalityDeliveryUpload(hospitalityRequester, 'event-1', 'order-1', photoDto);
+    expect(result).toMatchObject({ evidence: { id: 'delivery-photo-1', status: 'PENDING_UPLOAD' }, uploadUrl: 'https://storage.example/upload' });
+    expect(tx.hospitalityDeliveryEvidence.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+      organizationId: 'tenant-1', eventId: 'event-1', orderId: 'order-1', uploadedBy: hospitalityRequester.subject,
+      contentType: 'image/jpeg', sha256: photoDigest, storageObjectKey: expect.stringContaining('tenants/tenant-1/events/event-1/hospitality/order-1/receipt/'),
+    }) });
+    expect(file.generateSignedPostPolicyV4).toHaveBeenCalledOnce();
+  });
+
+  it('verifies image bytes and digest before marking a handoff photo ready', async () => {
+    const { service, tx, file } = harness();
+    file.getMetadata.mockResolvedValueOnce([{ size: String(photoBytes.length), contentType: 'image/jpeg' }]);
+    file.download.mockResolvedValueOnce([photoBytes]);
+    tx.hospitalityDeliveryEvidence.findFirst.mockResolvedValueOnce({ id: 'delivery-photo-1', status: 'PENDING_UPLOAD', uploadedBy: hospitalityRequester.subject, storageObjectKey: 'tenants/photo', sizeBytes: photoBytes.length, contentType: 'image/jpeg', sha256: photoDigest });
+    const result = await service.completeHospitalityDeliveryUpload(hospitalityRequester, 'event-1', 'order-1', 'delivery-photo-1');
+    expect(result).toMatchObject({ id: 'delivery-photo-1', status: 'READY' });
+    expect(tx.hospitalityDeliveryEvidence.update).toHaveBeenCalledWith({ where: { id: 'delivery-photo-1' }, data: expect.objectContaining({ status: 'READY' }) });
+  });
+
+  it('only returns a short-lived photo URL after the photo is attached to the receipt', async () => {
+    const { service, tx, file } = harness();
+    tx.hospitalityDeliveryEvidence.findFirst.mockResolvedValueOnce({ id: 'delivery-photo-1', status: 'READY', storageObjectKey: 'tenants/photo', fileName: 'handoff.jpg', contentType: 'image/jpeg', sizeBytes: 6 });
+    const result = await service.hospitalityDeliveryDownload(hospitalityRequester, 'event-1', 'order-1', 'delivery-photo-1');
+    expect(result).toMatchObject({ id: 'delivery-photo-1', downloadUrl: 'https://storage.example/private.pdf' });
+    expect(file.getSignedUrl).toHaveBeenCalledWith(expect.objectContaining({ action: 'read', expires: expect.any(Number) }));
   });
 });

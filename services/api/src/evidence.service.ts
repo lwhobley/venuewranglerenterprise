@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AttachmentStatus } from '@prisma/client';
 import { Storage } from '@google-cloud/storage';
@@ -100,6 +100,91 @@ export class EvidenceService {
       data: { status: AttachmentStatus.READY, readyAt: new Date() },
     }));
     return this.publicAttachment(updated);
+  }
+
+  async createHospitalityDeliveryUpload(identity: Identity, eventId: string, orderId: string, dto: CreateEvidenceUploadDto) {
+    if (!supportedContentTypes.has(dto.contentType) || dto.sizeBytes > 8 * 1024 * 1024) throw new BadRequestException('Receipt evidence must be a supported image no larger than 8 MiB.');
+    const row = await this.prisma.withTenant(identity, async tx => {
+      const order = await tx.hospitalityOrder.findFirst({ where: { id: orderId, eventId, organizationId: identity.tenantId } });
+      if (!order) throw new NotFoundException('Hospitality order not found.');
+      this.assertHospitalityEvidenceAccess(identity, order);
+      const existing = await tx.hospitalityDeliveryEvidence.findFirst({ where: { orderId, clientId: dto.clientId } });
+      if (existing) {
+        if (existing.eventId !== eventId || existing.organizationId !== identity.tenantId || existing.uploadedBy !== identity.subject || existing.contentType !== dto.contentType || existing.sizeBytes !== dto.sizeBytes || existing.sha256 !== dto.sha256) throw new ConflictException('This receipt photo upload ID was already used for different content.');
+        return existing;
+      }
+      if (order.state !== 'DISTRIBUTED') throw new ConflictException('A receipt photo can be added only after the order is fully distributed and before pickup is recorded.');
+      const count = await tx.hospitalityDeliveryEvidence.count({ where: { orderId } });
+      if (count >= 5) throw new ConflictException('This order has reached the limit of five receipt photo upload attempts.');
+      const safeName = dto.fileName.replace(/[\\/\x00-\x1f\x7f]/g, '_').slice(0, 200) || 'handoff-photo';
+      return tx.hospitalityDeliveryEvidence.create({ data: {
+        organizationId: identity.tenantId,
+        eventId,
+        orderId,
+        clientId: dto.clientId,
+        uploadedBy: identity.subject,
+        fileName: safeName,
+        contentType: dto.contentType,
+        sizeBytes: dto.sizeBytes,
+        sha256: dto.sha256,
+        storageObjectKey: `tenants/${identity.tenantId}/events/${eventId}/hospitality/${orderId}/receipt/${randomUUID()}`,
+      } });
+    });
+    if (row.status === AttachmentStatus.READY) return { evidence: this.publicAttachment(row), uploadUrl: null, uploadFields: {} };
+    const [policy] = await this.object(row.storageObjectKey).generateSignedPostPolicyV4({
+      expires: Date.now() + 10 * 60 * 1000,
+      fields: { 'Content-Type': row.contentType },
+      conditions: [{ 'Content-Type': row.contentType }, ['content-length-range', row.sizeBytes, row.sizeBytes]],
+    });
+    return { evidence: this.publicAttachment(row), uploadUrl: policy.url, uploadFields: policy.fields };
+  }
+
+  async completeHospitalityDeliveryUpload(identity: Identity, eventId: string, orderId: string, evidenceId: string) {
+    const evidence = await this.prisma.withTenant(identity, async tx => {
+      const order = await tx.hospitalityOrder.findFirst({ where: { id: orderId, eventId, organizationId: identity.tenantId } });
+      if (!order) throw new NotFoundException('Hospitality order not found.');
+      this.assertHospitalityEvidenceAccess(identity, order);
+      if (order.state !== 'DISTRIBUTED') throw new ConflictException('Receipt photos can only finish uploading before pickup is recorded.');
+      const row = await tx.hospitalityDeliveryEvidence.findFirst({ where: { id: evidenceId, orderId, eventId, uploadedBy: identity.subject } });
+      if (!row) throw new NotFoundException('Receipt photo upload not found.');
+      return row;
+    });
+    if (evidence.status === AttachmentStatus.READY) return this.publicAttachment(evidence);
+    const file = this.object(evidence.storageObjectKey);
+    try {
+      const [metadata] = await file.getMetadata();
+      if (Number(metadata.size) !== evidence.sizeBytes || metadata.contentType !== evidence.contentType) throw new BadRequestException('The uploaded receipt photo does not match its declared size and type.');
+      const [bytes] = await file.download();
+      if (createHash('sha256').update(bytes).digest('hex') !== evidence.sha256 || !this.matchesEvidenceType(bytes, evidence.contentType)) throw new BadRequestException('The uploaded receipt photo failed its content integrity check.');
+    } catch (error) {
+      if (error instanceof BadRequestException) await file.delete({ ignoreNotFound: true }).catch(() => undefined);
+      if (error instanceof BadRequestException) throw error;
+      throw new ConflictException('The receipt photo is not uploaded or could not be verified. Retry after upload completes.');
+    }
+    const ready = await this.prisma.withTenant(identity, tx => tx.hospitalityDeliveryEvidence.update({
+      where: { id: evidence.id }, data: { status: AttachmentStatus.READY, readyAt: new Date() },
+    }));
+    return this.publicAttachment(ready);
+  }
+
+  async hospitalityDeliveryDownload(identity: Identity, eventId: string, orderId: string, evidenceId: string) {
+    const evidence = await this.prisma.withTenant(identity, async tx => {
+      const order = await tx.hospitalityOrder.findFirst({ where: { id: orderId, eventId, organizationId: identity.tenantId }, include: { deliveryReceipt: true } });
+      if (!order) throw new NotFoundException('Hospitality order not found.');
+      this.assertHospitalityEvidenceAccess(identity, order);
+      const row = await tx.hospitalityDeliveryEvidence.findFirst({ where: { id: evidenceId, orderId, eventId, organizationId: identity.tenantId, status: AttachmentStatus.READY } });
+      if (!row || order.deliveryReceipt?.photoEvidenceId !== row.id) throw new NotFoundException('Attached receipt photo not found.');
+      return row;
+    });
+    const [downloadUrl] = await this.object(evidence.storageObjectKey).getSignedUrl({ version: 'v4', action: 'read', expires: Date.now() + 5 * 60 * 1000 });
+    return { id: evidence.id, fileName: evidence.fileName, contentType: evidence.contentType, sizeBytes: evidence.sizeBytes, downloadUrl };
+  }
+
+  private assertHospitalityEvidenceAccess(identity: Identity, order: { eventId: string; venueId: string; locationId: string | null; requestedBy: string; assignedTo: string | null }) {
+    if (identity.capabilities.includes('hospitality:fulfill') && order.assignedTo && order.assignedTo !== identity.subject && !identity.capabilities.includes('tenant:admin')) throw new ForbiddenException('This order is assigned to another kitchen operator.');
+    const allowed = (['tenant:admin', 'operations:write', 'hospitality:fulfill', 'hospitality:order'] as const).find(capability => identity.capabilities.includes(capability));
+    if (!allowed || (identity.subject !== order.requestedBy && !identity.capabilities.some(capability => ['tenant:admin', 'operations:write', 'hospitality:fulfill'].includes(capability)))) throw new NotFoundException('Hospitality order not found.');
+    assertScope(identity, allowed, order.eventId, order.venueId, order.locationId ?? undefined);
   }
 
   async list(identity: Identity, eventId: string, issueId: string) {

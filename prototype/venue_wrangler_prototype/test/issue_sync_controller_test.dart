@@ -52,6 +52,47 @@ void main() {
     expect(api.attempts, 1);
     expect(outbox.items, isEmpty);
   });
+
+  test('syncs a newly submitted report while connectivity stays online',
+      () async {
+    final outbox = _FakeOutbox();
+    final api = _FakeIssueApi();
+    final connectivity = _FakeConnectivity(initiallyOnline: true);
+    final controller = IssueSyncController(outbox, api)
+      ..watchConnectivity(connectivity);
+    addTearDown(() {
+      controller.dispose();
+      connectivity.close();
+    });
+
+    await _settleAsyncWork();
+    await controller.submit(_pendingReport());
+    await _settleAsyncWork();
+
+    expect(api.attempts, 1);
+    expect(outbox.items, isEmpty);
+    expect(controller.state, isEmpty);
+  });
+
+  test('does not show or replay another user\'s saved issue report', () async {
+    final outbox = _FakeOutbox()..items.add(_pendingReport());
+    final api = _FakeIssueApi()..scope = 'different-user-scope';
+    final controller = IssueSyncController(outbox, api);
+    addTearDown(controller.dispose);
+
+    await controller.restore();
+    expect(controller.state, isEmpty);
+    await controller.synchronize();
+    expect(api.attempts, 0);
+    expect(outbox.items.single.state, SyncState.pending);
+
+    api.scope = 'test-scope';
+    await controller.restore();
+    expect(controller.state, hasLength(1));
+    await controller.synchronize();
+    expect(api.attempts, 1);
+    expect(outbox.items, isEmpty);
+  });
 }
 
 Future<void> _settleAsyncWork() async {
@@ -98,9 +139,10 @@ class _FakeOutbox implements IssueOutbox {
 class _FakeIssueApi implements IssueApi {
   int attempts = 0;
   int failuresRemaining = 0;
+  String scope = 'test-scope';
 
   @override
-  Future<String?> currentScope() async => 'test-scope';
+  Future<String?> currentScope() async => scope;
 
   @override
   Future<String> create(PendingIssueReport command) async {
@@ -113,8 +155,8 @@ class _FakeIssueApi implements IssueApi {
   }
 
   @override
-  Future<void> uploadEvidence(
-      String eventId, String issueId, evidence, List<int> bytes) async {}
+  Future<void> uploadEvidence(String eventId, String issueId, evidence,
+      List<int> bytes, String sessionScope) async {}
 }
 
 class _FakeConnectivity implements ConnectivityMonitor {

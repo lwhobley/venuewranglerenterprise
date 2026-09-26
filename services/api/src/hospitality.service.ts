@@ -3,7 +3,7 @@ import { Prisma, HospitalityOrderState } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { assertCapability, assertScope, type Identity } from './auth';
 import { PrismaService } from './prisma.service';
-import { CreateHospitalityMenuItemDto, CreateHospitalityOrderDto, HospitalityOrderActionDto, UpdateHospitalityPolicyDto } from './hospitality.dto';
+import { CreateHospitalityMenuItemDto, CreateHospitalityOrderDto, HospitalityOrderActionDto, SetHospitalityMenuRecipeDto, UpdateHospitalityPolicyDto } from './hospitality.dto';
 import { PushNotificationsService } from './push-notifications.service';
 
 @Injectable()
@@ -99,6 +99,83 @@ export class HospitalityService {
         });
       }
       return item;
+    });
+  }
+
+  async getMenuRecipe(identity: Identity, venueId: string, itemId: string) {
+    this.assertMenuManager(identity, venueId, false);
+    return this.prisma.withTenant(identity, async tx => {
+      const menuItem = await tx.hospitalityMenuItem.findFirst({
+        where: { id: itemId, venueId, organizationId: identity.tenantId },
+        select: { id: true, name: true, defaultUnit: true },
+      });
+      if (!menuItem) throw new NotFoundException('Menu item not found in this venue.');
+      const lines = await tx.$queryRaw`
+        SELECT r.stock_item_id AS "stockItemId", r.quantity_per_menu_unit AS "quantityPerMenuUnit",
+          s.sku, s.name AS "stockItemName", s.unit AS "stockUnit", s.location_id AS "locationId",
+          s.on_hand AS "onHand", s.active
+        FROM hospitality_menu_recipe_lines r
+        JOIN stock_items s ON s.id = r.stock_item_id AND s.venue_id = r.venue_id AND s.organization_id = r.organization_id
+        WHERE r.organization_id = ${identity.tenantId}::uuid AND r.venue_id = ${venueId}::uuid AND r.menu_item_id = ${itemId}::uuid
+        ORDER BY s.name, s.sku`;
+      return { menuItem, lines };
+    });
+  }
+
+  async setMenuRecipe(identity: Identity, venueId: string, itemId: string, dto: SetHospitalityMenuRecipeDto, key: string) {
+    this.assertMenuManager(identity, venueId, true);
+    const lines = dto.lines
+      .map(line => ({ stockItemId: line.stockItemId, quantityPerMenuUnit: new Prisma.Decimal(line.quantityPerMenuUnit).toDecimalPlaces(6).toFixed(6) }))
+      .sort((a, b) => a.stockItemId.localeCompare(b.stockItemId));
+    return this.command(identity, key, 'hospitality.menu_recipe.set', { venueId, itemId, lines }, async tx => {
+      const menuItem = await tx.hospitalityMenuItem.findFirst({
+        where: { id: itemId, venueId, organizationId: identity.tenantId },
+        select: { id: true, name: true, defaultUnit: true },
+      });
+      if (!menuItem) throw new NotFoundException('Menu item not found in this venue.');
+      await tx.$queryRaw`SELECT id FROM hospitality_menu_items
+        WHERE id = ${itemId}::uuid AND venue_id = ${venueId}::uuid AND organization_id = ${identity.tenantId}::uuid
+        FOR UPDATE`;
+      for (const line of lines) {
+        const stockItems = await tx.$queryRaw`
+          SELECT id FROM stock_items
+          WHERE id = ${line.stockItemId}::uuid AND venue_id = ${venueId}::uuid
+            AND organization_id = ${identity.tenantId}::uuid AND active = true`;
+        if ((stockItems as unknown[]).length !== 1) {
+          throw new ConflictException('Every recipe ingredient must be an active stock item at this venue.');
+        }
+      }
+      const previous = await tx.hospitalityMenuRecipeLine.findMany({
+        where: { organizationId: identity.tenantId, venueId, menuItemId: itemId },
+        orderBy: { stockItemId: 'asc' },
+      });
+      const unchanged = previous.length === lines.length && previous.every((line, index) =>
+        line.stockItemId === lines[index].stockItemId && line.quantityPerMenuUnit.toFixed(6) === lines[index].quantityPerMenuUnit);
+      if (!unchanged) {
+        await tx.hospitalityMenuRecipeLine.deleteMany({
+          where: { organizationId: identity.tenantId, venueId, menuItemId: itemId },
+        });
+        if (lines.length > 0) {
+          await tx.hospitalityMenuRecipeLine.createMany({
+            data: lines.map(line => ({
+              organizationId: identity.tenantId,
+              venueId,
+              menuItemId: itemId,
+              stockItemId: line.stockItemId,
+              quantityPerMenuUnit: new Prisma.Decimal(line.quantityPerMenuUnit),
+            })),
+          });
+        }
+        await tx.tenantSetupAuditEvent.create({ data: {
+          organizationId: identity.tenantId,
+          actorId: identity.subject,
+          action: 'updated',
+          resourceType: 'hospitality_menu_recipe',
+          resourceId: itemId,
+          changedFields: ['recipe'],
+        } });
+      }
+      return { menuItem, lines };
     });
   }
 
@@ -324,10 +401,18 @@ export class HospitalityService {
         if (!receivedByName || receivedByName.length < 2 || !dto.receiverAcknowledged) throw new ConflictException('Confirm the receiver name and in-person handoff acknowledgement to record pickup.');
         const receiverSignature = this.parseReceiverSignature(dto.receiverSignature);
         if (current.lines.length === 0 || current.lines.some(line => Number(line.fulfilledQuantity) < Number(line.quantity))) throw new ConflictException('Pickup requires every order line to be fully fulfilled.');
+        let photoEvidenceId: string | null = null;
+        if (dto.receiverPhotoEvidenceId) {
+          const evidence = await tx.hospitalityDeliveryEvidence.findFirst({
+            where: { id: dto.receiverPhotoEvidenceId, orderId, eventId, organizationId: identity.tenantId, uploadedBy: identity.subject, status: 'READY' },
+          });
+          if (!evidence) throw new ConflictException('The receiver photo must finish uploading and verify before pickup is recorded.');
+          photoEvidenceId = evidence.id;
+        }
         await tx.hospitalityDeliveryReceipt.create({ data: {
           organizationId: identity.tenantId, eventId, orderId, actorId: identity.subject,
           receivedByName, note: dto.receiptNote?.trim() ?? '', receiverAcknowledged: true,
-          receiverSignature,
+          receiverSignature, photoEvidenceId,
         } });
       }
       const updated = await tx.hospitalityOrder.update({ where: { id: orderId }, data: {
@@ -428,7 +513,7 @@ export class HospitalityService {
     }
 
     for (const row of normalized) {
-      await tx.hospitalityOrderFulfillment.create({
+      const fulfillment = await tx.hospitalityOrderFulfillment.create({
         data: {
           organizationId: identity.tenantId,
           eventId: current.eventId,
@@ -440,6 +525,9 @@ export class HospitalityService {
           reason: row.reason ?? (complete ? null : dto.reason!.trim()),
         },
       });
+      if (row.substituteItemName == null) {
+        await this.depleteRecipeStock(tx, identity, current, row.line, row.batchMilli, fulfillment.id);
+      }
     }
     const updated = await tx.hospitalityOrder.update({
       where: { id: current.id },
@@ -448,6 +536,77 @@ export class HospitalityService {
     });
     await this.audit(tx, identity, current.id, complete ? 'fulfilled' : 'partially_fulfilled', current, updated, dto.reason?.trim());
     return updated;
+  }
+
+  private async depleteRecipeStock(
+    tx: Prisma.TransactionClient,
+    identity: Identity,
+    order: { id: string; eventId: string; venueId: string },
+    line: { id: string; menuItemId: string | null; itemName: string; unit: string },
+    deliveredMilli: number,
+    fulfillmentId: string,
+  ) {
+    if (!line.menuItemId) return;
+    await tx.$queryRaw`SELECT id FROM hospitality_menu_items
+      WHERE id = ${line.menuItemId}::uuid AND venue_id = ${order.venueId}::uuid AND organization_id = ${identity.tenantId}::uuid
+      FOR UPDATE`;
+    const recipe = await tx.$queryRaw<Array<{
+      stockItemId: string;
+      stockItemName: string;
+      stockUnit: string;
+      quantityPerMenuUnit: Prisma.Decimal;
+      active: boolean;
+    }>>`
+      SELECT r.stock_item_id AS "stockItemId", s.name AS "stockItemName", s.unit AS "stockUnit", s.active,
+        r.quantity_per_menu_unit AS "quantityPerMenuUnit"
+      FROM hospitality_menu_recipe_lines r
+      JOIN stock_items s ON s.id = r.stock_item_id AND s.venue_id = r.venue_id AND s.organization_id = r.organization_id
+      WHERE r.organization_id = ${identity.tenantId}::uuid AND r.venue_id = ${order.venueId}::uuid
+        AND r.menu_item_id = ${line.menuItemId}::uuid
+      ORDER BY s.id
+      FOR UPDATE OF s, r`;
+
+    for (const ingredient of recipe) {
+      if (!ingredient.active) {
+        throw new ConflictException(`The ${ingredient.stockItemName} ingredient in the ${line.itemName} recipe is inactive. Update the recipe before fulfilling this item.`);
+      }
+      const amount = new Prisma.Decimal(ingredient.quantityPerMenuUnit)
+        .mul(deliveredMilli)
+        .div(1000)
+        .toDecimalPlaces(3, Prisma.Decimal.ROUND_HALF_UP);
+      if (!amount.greaterThan(0)) {
+        throw new ConflictException(`The recipe for ${line.itemName} consumes less than the inventory precision for this fulfillment amount. Record a larger batch or revise the recipe.`);
+      }
+      const updated = await tx.$queryRaw<Array<{ id: string }>>`
+        UPDATE stock_items
+        SET on_hand = on_hand - ${amount}::numeric, updated_at = now()
+        WHERE id = ${ingredient.stockItemId}::uuid AND organization_id = ${identity.tenantId}::uuid
+          AND active = true AND on_hand >= ${amount}::numeric
+        RETURNING id`;
+      if (updated.length === 0) {
+        throw new ConflictException(`Insufficient ${ingredient.stockItemName} (${ingredient.stockUnit}) for this recipe. Reconcile stock before recording this fulfillment.`);
+      }
+      await tx.$executeRaw`
+        INSERT INTO stock_movements(
+          organization_id, item_id, actor_id, movement_type, quantity_delta, reason,
+          hospitality_order_id, hospitality_fulfillment_id
+        ) VALUES (
+          ${identity.tenantId}::uuid, ${ingredient.stockItemId}::uuid, ${identity.subject},
+          'HOSPITALITY_CONSUMPTION', -${amount}::numeric,
+          ${`Recipe consumption: ${line.itemName}, ${deliveredMilli / 1000} ${line.unit} fulfilled.`},
+          ${order.id}::uuid, ${fulfillmentId}::uuid
+        )`;
+    }
+  }
+
+  private assertMenuManager(identity: Identity, venueId: string, write: boolean) {
+    const permitted = identity.capabilities.includes('tenant:admin') ||
+      (write ? identity.capabilities.includes('operations:write') :
+        identity.capabilities.some(capability => ['operations:read', 'operations:write'].includes(capability)));
+    if (!permitted) throw new ForbiddenException('Hospitality menu access is required.');
+    if (!identity.capabilities.includes('tenant:admin') && !identity.venueIds.includes(venueId)) {
+      throw new ForbiddenException('This venue is outside your assigned scope.');
+    }
   }
 
   private assertCanView(identity: Identity, eventId: string) {

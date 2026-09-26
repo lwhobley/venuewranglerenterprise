@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsDateString, IsIn, IsNumber, IsOptional, IsString, IsUUID, Length, Matches, Max, Min, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, ArrayUnique, IsArray, IsBoolean, IsDateString, IsIn, IsNumber, IsOptional, IsString, IsUUID, Length, Matches, Max, Min, ValidateNested } from 'class-validator';
 
 export class HospitalityOrderLineDto {
   @ApiPropertyOptional({ description: 'Optional link to a venue menu catalog item.' }) @IsOptional() @IsUUID() menuItemId?: string;
@@ -33,6 +33,19 @@ export class SetHospitalityMenuItemStatusDto {
   @ApiProperty() @IsBoolean() active!: boolean;
 }
 
+export class HospitalityMenuRecipeLineDto {
+  @ApiProperty() @IsUUID() stockItemId!: string;
+  @ApiProperty({ description: 'Quantity of this stock unit consumed per one menu default unit.' })
+  @IsNumber({ maxDecimalPlaces: 6 }) @Min(0.000001) @Max(100000) quantityPerMenuUnit!: number;
+}
+
+export class SetHospitalityMenuRecipeDto {
+  @ApiProperty({ type: [HospitalityMenuRecipeLineDto], maxItems: 40 })
+  @IsArray() @ArrayMaxSize(40) @ArrayUnique((line: HospitalityMenuRecipeLineDto) => line.stockItemId)
+  @ValidateNested({ each: true }) @Type(() => HospitalityMenuRecipeLineDto)
+  lines!: HospitalityMenuRecipeLineDto[];
+}
+
 export class UpdateHospitalityPolicyDto {
   @ApiPropertyOptional({ description: 'Tenant-configured estimated order value threshold in the tenant configured currency.' })
   @IsOptional()
@@ -61,4 +74,5 @@ export class HospitalityOrderActionDto {
   @ApiPropertyOptional({ description: 'Short non-sensitive note recorded with the handoff.' }) @IsOptional() @IsString() @Length(0, 500) receiptNote?: string;
   @ApiPropertyOptional({ description: 'Must be true to confirm an in-person handoff.' }) @IsOptional() @IsBoolean() receiverAcknowledged?: boolean;
   @ApiPropertyOptional({ description: 'JSON array of normalized signature strokes captured from the receiver. Required for pickup.' }) @IsOptional() @IsString() @Length(2, 20000) receiverSignature?: string;
+  @ApiPropertyOptional({ description: 'Optional verified, order-scoped handoff photo evidence upload ID.' }) @IsOptional() @IsUUID() receiverPhotoEvidenceId?: string;
 }

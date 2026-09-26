@@ -61,13 +61,35 @@ class _HospitalityMenuManagerDialogState
                                   Text(item['name'] as String? ?? 'Menu item'),
                               subtitle: Text(
                                   '${item['category']} · ${item['currencyCode'] ?? 'USD'} ${item['unitPrice']} / ${item['defaultUnit']}${item['active'] == true ? '' : ' · inactive'}'),
-                              trailing: Switch.adaptive(
-                                value: item['active'] == true,
-                                onChanged: _saving
-                                    ? null
-                                    : (active) => _setActive(
-                                        item['id'] as String, active),
-                              ),
+                              trailing: Wrap(spacing: 4, children: [
+                                IconButton(
+                                  tooltip: 'Configure stock recipe',
+                                  onPressed: _saving
+                                      ? null
+                                      : () => showDialog<void>(
+                                            context: context,
+                                            builder: (_) =>
+                                                _HospitalityRecipeDialog(
+                                              venueId: widget.venueId,
+                                              itemId: item['id'] as String,
+                                              itemName:
+                                                  item['name'] as String? ??
+                                                      'Menu item',
+                                              defaultUnit: item['defaultUnit']
+                                                      as String? ??
+                                                  'each',
+                                            ),
+                                          ),
+                                  icon: const Icon(Icons.blender_outlined),
+                                ),
+                                Switch.adaptive(
+                                  value: item['active'] == true,
+                                  onChanged: _saving
+                                      ? null
+                                      : (active) => _setActive(
+                                          item['id'] as String, active),
+                                ),
+                              ]),
                             ),
                         ],
                       ),
@@ -200,6 +222,280 @@ class _HospitalityMenuManagerDialogState
       if (mounted) setState(() => _saving = false);
     }
   }
+}
+
+class _HospitalityRecipeDialog extends ConsumerWidget {
+  const _HospitalityRecipeDialog({
+    required this.venueId,
+    required this.itemId,
+    required this.itemName,
+    required this.defaultUnit,
+  });
+
+  final String venueId;
+  final String itemId;
+  final String itemName;
+  final String defaultUnit;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final recipe = ref
+        .watch(hospitalityRecipeProvider((venueId: venueId, itemId: itemId)));
+    final inventory = ref.watch(recipeInventoryItemsProvider(venueId));
+    if (recipe.isLoading || inventory.isLoading) {
+      return const AlertDialog(
+          content: SizedBox(
+              width: 340,
+              height: 120,
+              child: Center(child: CircularProgressIndicator())));
+    }
+    if (recipe.hasError || inventory.hasError) {
+      return AlertDialog(
+        title: const Text('Recipe unavailable'),
+        content: Text(
+            'Could not load recipe ingredients: ${recipe.error ?? inventory.error}'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close'))
+        ],
+      );
+    }
+    final recipeData = recipe.requireValue;
+    return _HospitalityRecipeEditor(
+      venueId: venueId,
+      itemId: itemId,
+      itemName: itemName,
+      defaultUnit: defaultUnit,
+      initialLines: (recipeData['lines'] as List? ?? const [])
+          .whereType<Map>()
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList(),
+      stockItems: inventory.requireValue,
+    );
+  }
+}
+
+class _HospitalityRecipeEditor extends ConsumerStatefulWidget {
+  const _HospitalityRecipeEditor({
+    required this.venueId,
+    required this.itemId,
+    required this.itemName,
+    required this.defaultUnit,
+    required this.initialLines,
+    required this.stockItems,
+  });
+
+  final String venueId;
+  final String itemId;
+  final String itemName;
+  final String defaultUnit;
+  final List<Map<String, dynamic>> initialLines;
+  final List<Map<String, dynamic>> stockItems;
+
+  @override
+  ConsumerState<_HospitalityRecipeEditor> createState() =>
+      _HospitalityRecipeEditorState();
+}
+
+class _HospitalityRecipeEditorState
+    extends ConsumerState<_HospitalityRecipeEditor> {
+  late final List<_RecipeIngredientDraft> _lines;
+  bool _saving = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _lines = widget.initialLines
+        .map((row) => _RecipeIngredientDraft(
+              stockItemId: row['stockItemId'] as String,
+              quantity: TextEditingController(
+                  text: row['quantityPerMenuUnit'].toString()),
+            ))
+        .toList();
+  }
+
+  @override
+  void dispose() {
+    for (final line in _lines) {
+      line.quantity.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: Text('${widget.itemName} recipe'),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 620),
+          child: SizedBox(
+            width: double.maxFinite,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Ingredient quantities per 1 ${widget.defaultUnit}.'),
+                  const SizedBox(height: 4),
+                  const Text(
+                      'Each fulfilled batch deducts its recipe amounts from stock. A substituted item skips the original recipe. Insufficient stock blocks fulfillment. Stock is recorded to 0.001 units.'),
+                  const SizedBox(height: 12),
+                  if (widget.stockItems
+                      .where((item) => item['active'] == true)
+                      .isEmpty)
+                    const Text(
+                        'Add active stock items before configuring this recipe.'),
+                  for (var index = 0; index < _lines.length; index++)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Column(children: [
+                        DropdownButtonFormField<String>(
+                          initialValue: _lines[index].stockItemId,
+                          isExpanded: true,
+                          decoration: const InputDecoration(
+                              labelText: 'Stock ingredient'),
+                          items: [
+                            for (final item in widget.stockItems.where((item) =>
+                                item['active'] == true ||
+                                item['id'] == _lines[index].stockItemId))
+                              DropdownMenuItem(
+                                value: item['id'] as String,
+                                child: Text(
+                                  '${item['name']} · ${item['onHand']} ${item['unit']}${item['locationName'] is String ? ' · ${item['locationName']}' : ' · venue'}',
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                          ],
+                          onChanged: _saving
+                              ? null
+                              : (value) => setState(
+                                  () => _lines[index].stockItemId = value),
+                        ),
+                        Row(children: [
+                          SizedBox(
+                            width: 150,
+                            child: TextField(
+                              controller: _lines[index].quantity,
+                              enabled: !_saving,
+                              keyboardType:
+                                  const TextInputType.numberWithOptions(
+                                      decimal: true),
+                              decoration: const InputDecoration(
+                                  labelText: 'Qty per unit'),
+                            ),
+                          ),
+                          IconButton(
+                            tooltip: 'Remove ingredient',
+                            onPressed: _saving
+                                ? null
+                                : () => setState(() {
+                                      _lines.removeAt(index).quantity.dispose();
+                                    }),
+                            icon: const Icon(Icons.remove_circle_outline),
+                          ),
+                        ]),
+                      ]),
+                    ),
+                  TextButton.icon(
+                    onPressed: _saving ||
+                            widget.stockItems
+                                .where((item) => item['active'] == true)
+                                .isEmpty
+                        ? null
+                        : () {
+                            final used =
+                                _lines.map((line) => line.stockItemId).toSet();
+                            Map<String, dynamic>? next;
+                            for (final item in widget.stockItems) {
+                              if (item['active'] == true &&
+                                  !used.contains(item['id'])) {
+                                next = item;
+                                break;
+                              }
+                            }
+                            final selected = next;
+                            if (selected == null) {
+                              setState(() => _error =
+                                  'Each stock item can appear only once in a recipe.');
+                              return;
+                            }
+                            setState(() {
+                              _error = null;
+                              _lines.add(_RecipeIngredientDraft(
+                                stockItemId: selected['id'] as String,
+                                quantity: TextEditingController(),
+                              ));
+                            });
+                          },
+                    icon: const Icon(Icons.add),
+                    label: const Text('Add ingredient'),
+                  ),
+                  if (_error != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(_error!,
+                          style: TextStyle(
+                              color: Theme.of(context).colorScheme.error)),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: _saving ? null : () => Navigator.pop(context),
+              child: const Text('Cancel')),
+          FilledButton.icon(
+            onPressed: _saving ? null : _save,
+            icon: _saving
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.save_outlined),
+            label: const Text('Save recipe'),
+          ),
+        ],
+      );
+
+  Future<void> _save() async {
+    final ids = <String>{};
+    final lines = <Map<String, Object?>>[];
+    for (final line in _lines) {
+      final id = line.stockItemId;
+      final quantity = double.tryParse(line.quantity.text.trim());
+      if (id == null || !ids.add(id) || quantity == null || quantity <= 0) {
+        setState(() => _error =
+            'Choose a different active stock item for each line and enter a positive quantity.');
+        return;
+      }
+      lines.add({'stockItemId': id, 'quantityPerMenuUnit': quantity});
+    }
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    try {
+      await ref
+          .read(operationsApiProvider)
+          .setHospitalityMenuRecipe(widget.venueId, widget.itemId, lines);
+      ref.invalidate(hospitalityRecipeProvider(
+          (venueId: widget.venueId, itemId: widget.itemId)));
+      if (mounted) Navigator.pop(context);
+    } catch (error) {
+      if (mounted) setState(() => _error = 'Could not save recipe: $error');
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+}
+
+class _RecipeIngredientDraft {
+  _RecipeIngredientDraft({required this.stockItemId, required this.quantity});
+  String? stockItemId;
+  final TextEditingController quantity;
 }
 
 class HospitalityPolicyDialog extends ConsumerWidget {

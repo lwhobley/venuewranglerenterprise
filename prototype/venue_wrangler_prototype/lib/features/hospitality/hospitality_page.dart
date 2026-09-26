@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../operations/operations_api.dart';
+import '../issues/issue_outbox.dart';
+import '../issues/secure_evidence_store.dart';
 import 'hospitality_admin_dialogs.dart';
 
 List<List<Offset>> _signatureStrokes(Object? value) {
@@ -124,6 +127,8 @@ class HospitalityPage extends ConsumerWidget {
                 ]),
               ),
             if (canOrder) _PendingHospitalityDrafts(eventId: eventId),
+            if (canOrder || canFulfill)
+              _PendingHospitalityHandoffs(eventId: eventId),
             if (orders.isEmpty)
               const Expanded(
                   child: Center(
@@ -146,6 +151,157 @@ class HospitalityPage extends ConsumerWidget {
           ]),
         );
   }
+}
+
+Future<void> _syncHospitalityHandoff(
+    WidgetRef ref, String eventId, Map<String, dynamic> handoff) async {
+  final receipt = Map<String, dynamic>.from(handoff['receipt'] as Map);
+  final api = ref.read(operationsApiProvider);
+  final evidenceStore = ref.read(secureEvidenceStoreProvider);
+  final photoJson = receipt['receiverPhoto'];
+  String? photoEvidenceId = handoff['photoEvidenceId'] as String?;
+  LocalIssueEvidence? photo;
+  if (photoJson is Map) {
+    photo = LocalIssueEvidence.fromJson(Map<String, dynamic>.from(photoJson));
+    if (photoEvidenceId == null) {
+      photoEvidenceId = await api.uploadHospitalityReceiptPhoto(
+          eventId, handoff['orderId'] as String, photo,
+          await evidenceStore.decrypt(photo));
+      await api.saveHospitalityHandoffPhotoEvidenceId(
+          eventId, handoff['handoffId'] as String, photoEvidenceId);
+      handoff['photoEvidenceId'] = photoEvidenceId;
+    }
+  }
+  await api.hospitalityOrderAction(
+    eventId,
+    handoff['orderId'] as String,
+    'pickup',
+    receivedByName: receipt['receivedByName'] as String,
+    receiptNote: receipt['receiptNote'] as String?,
+    receiverAcknowledged: receipt['receiverAcknowledged'] as bool,
+    receiverSignature: receipt['receiverSignature'] as String,
+    receiverPhotoEvidenceId: photoEvidenceId,
+    idempotencyKeyOverride: handoff['idempotencyKey'] as String,
+  );
+  await api.deletePendingHospitalityHandoff(
+      eventId, handoff['handoffId'] as String);
+  if (photo != null) await evidenceStore.delete(photo);
+}
+
+class _PendingHospitalityHandoffs extends ConsumerStatefulWidget {
+  const _PendingHospitalityHandoffs({required this.eventId});
+  final String eventId;
+
+  @override
+  ConsumerState<_PendingHospitalityHandoffs> createState() =>
+      _PendingHospitalityHandoffsState();
+}
+
+class _PendingHospitalityHandoffsState
+    extends ConsumerState<_PendingHospitalityHandoffs> {
+  StreamSubscription<bool>? _connectivitySubscription;
+  bool _syncing = false;
+  bool _lastSyncFailed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final connectivity = ref.read(connectivityMonitorProvider);
+    _connectivitySubscription = connectivity.changes.listen((online) {
+      if (online) unawaited(_syncQueuedHandoffs());
+    });
+    unawaited(connectivity.isOnline.then((online) {
+      if (online) return _syncQueuedHandoffs();
+    }));
+  }
+
+  Future<void> _syncQueuedHandoffs() async {
+    if (_syncing || !mounted) return;
+    _syncing = true;
+    try {
+      final pending = await ref
+          .read(operationsApiProvider)
+          .pendingHospitalityHandoffs(widget.eventId);
+      var failed = false;
+      for (final handoff in pending) {
+        if (!mounted) return;
+        try {
+          await _syncHospitalityHandoff(ref, widget.eventId, handoff);
+          if (mounted) {
+            ref.invalidate(eventHospitalityHandoffsProvider(widget.eventId));
+            ref.invalidate(eventHospitalityOrdersProvider(widget.eventId));
+          }
+        } catch (_) {
+          failed = true;
+        }
+      }
+      if (mounted && _lastSyncFailed != failed) {
+        setState(() => _lastSyncFailed = failed);
+      }
+    } finally {
+      _syncing = false;
+    }
+  }
+
+  @override
+  void dispose() {
+    _connectivitySubscription?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => ref
+      .watch(eventHospitalityHandoffsProvider(widget.eventId))
+      .when(
+        loading: () => const SizedBox.shrink(),
+        error: (_, __) => const SizedBox.shrink(),
+        data: (handoffs) => handoffs.isEmpty
+            ? const SizedBox.shrink()
+            : Card(
+                margin: const EdgeInsets.symmetric(horizontal: 12),
+                child: ExpansionTile(
+                  leading: const Icon(Icons.sync_problem_outlined),
+                  title: Text(
+                      '${handoffs.length} handoff${handoffs.length == 1 ? '' : 's'} pending sync'),
+                  subtitle: Text(
+                      _lastSyncFailed
+                          ? 'Last sync attempt failed. The receipt is retained securely; retry when online.'
+                          : 'Saved securely on this device. The order remains unconfirmed until the server accepts the handoff.'),
+                  children: [
+                    for (final handoff in handoffs)
+                      ListTile(
+                        title: Text(
+                            'Receiver: ${(handoff['receipt'] as Map)['receivedByName'] ?? 'Not named'}'),
+                        subtitle: Text(
+                            'Saved ${DateTime.tryParse(handoff['savedAt'] as String? ?? '')?.toLocal().toString() ?? 'on this device'}${(handoff['receipt'] as Map)['receiverPhoto'] == null ? '' : ' · photo attached'}'),
+                        trailing: IconButton(
+                          tooltip: 'Retry handoff sync',
+                          onPressed: () async {
+                            try {
+                              await _syncHospitalityHandoff(
+                                  ref, widget.eventId, handoff);
+                              if (context.mounted) {
+                                ref.invalidate(eventHospitalityHandoffsProvider(
+                                    widget.eventId));
+                                ref.invalidate(eventHospitalityOrdersProvider(
+                                    widget.eventId));
+                              }
+                            } catch (error) {
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                        content: Text(
+                                            'Handoff is still pending; retry when online: $error')));
+                              }
+                            }
+                          },
+                          icon: const Icon(Icons.sync),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+      );
 }
 
 class _PendingHospitalityDrafts extends ConsumerWidget {
@@ -352,36 +508,56 @@ class _HospitalityOrderCard extends ConsumerWidget {
                 'Received by ${(order['deliveryReceipt'] as Map)['receivedByName']}'),
             subtitle: Text([
               'Handoff acknowledged · ${DateTime.tryParse((order['deliveryReceipt'] as Map)['acknowledgedAt']?.toString() ?? '')?.toLocal().toString() ?? 'time unavailable'}',
-              if ((order['deliveryReceipt'] as Map)['receiverSignature'] is List)
+              if ((order['deliveryReceipt'] as Map)['receiverSignature']
+                  is List)
                 'Receiver signature captured',
+              if ((order['deliveryReceipt'] as Map)['photoEvidenceId']
+                  is String)
+                'Receiver photo attached',
               if (((order['deliveryReceipt'] as Map)['note'] as String? ?? '')
                   .isNotEmpty)
                 (order['deliveryReceipt'] as Map)['note'] as String,
             ].join(' · ')),
-            trailing: (order['deliveryReceipt'] as Map)['receiverSignature'] is List
-                ? TextButton(
-                    onPressed: () => showDialog<void>(
-                      context: context,
-                      builder: (context) => AlertDialog(
-                        title: const Text('Receiver handoff signature'),
-                        content: SizedBox(
-                          width: 420,
-                          height: 120,
-                          child: CustomPaint(
-                            painter: _ReceiverSignaturePainter(_signatureStrokes(
-                                (order['deliveryReceipt'] as Map)['receiverSignature'])),
-                          ),
+            trailing: Wrap(spacing: 4, children: [
+              if ((order['deliveryReceipt'] as Map)['receiverSignature']
+                  is List)
+                TextButton(
+                  onPressed: () => showDialog<void>(
+                    context: context,
+                    builder: (context) => AlertDialog(
+                      title: const Text('Receiver handoff signature'),
+                      content: SizedBox(
+                        width: 420,
+                        height: 120,
+                        child: CustomPaint(
+                          painter: _ReceiverSignaturePainter(_signatureStrokes(
+                              (order['deliveryReceipt']
+                                  as Map)['receiverSignature'])),
                         ),
-                        actions: [
-                          TextButton(
-                              onPressed: () => Navigator.pop(context),
-                              child: const Text('Close')),
-                        ],
                       ),
+                      actions: [
+                        TextButton(
+                            onPressed: () => Navigator.pop(context),
+                            child: const Text('Close')),
+                      ],
                     ),
-                    child: const Text('View signature'),
-                  )
-                : null,
+                  ),
+                  child: const Text('Signature'),
+                ),
+              if ((order['deliveryReceipt'] as Map)['photoEvidenceId']
+                  is String)
+                TextButton.icon(
+                  onPressed: () => _viewReceiptPhoto(
+                      context,
+                      ref,
+                      eventId,
+                      orderId,
+                      (order['deliveryReceipt'] as Map)['photoEvidenceId']
+                          as String),
+                  icon: const Icon(Icons.photo_outlined),
+                  label: const Text('Photo'),
+                ),
+            ]),
           ),
         if (actions.isNotEmpty)
           Padding(
@@ -420,6 +596,31 @@ class _HospitalityOrderCard extends ConsumerWidget {
     String? receiptNote;
     bool? receiverAcknowledged;
     String? receiverSignature;
+    String? receiverPhotoEvidenceId;
+    LocalIssueEvidence? receiverPhoto;
+    if (action == 'pickup') {
+      final queued = await ref
+          .read(operationsApiProvider)
+          .pendingHospitalityHandoffs(eventId);
+      if (!context.mounted) return;
+      final existing = queued.where((row) => row['orderId'] == orderId);
+      if (existing.isNotEmpty) {
+        try {
+          await _syncHospitalityHandoff(ref, eventId, existing.first);
+          if (context.mounted) {
+            ref.invalidate(eventHospitalityHandoffsProvider(eventId));
+            ref.invalidate(eventHospitalityOrdersProvider(eventId));
+          }
+        } catch (error) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text(
+                    'Saved handoff is still pending; retry when online: $error')));
+          }
+        }
+        return;
+      }
+    }
     if (action == 'fulfill') {
       final result = await showDialog<Map<String, Object?>>(
         context: context,
@@ -466,15 +667,36 @@ class _HospitalityOrderCard extends ConsumerWidget {
       if (!context.mounted) return;
       final receipt = await showDialog<Map<String, Object?>>(
         context: context,
-        builder: (_) => const _PickupReceiptDialog(),
+        builder: (_) => _PickupReceiptDialog(
+          onCapturePhoto: () =>
+              ref.read(secureEvidenceStoreProvider).capturePhoto(),
+          onDeletePhoto: (photo) =>
+              ref.read(secureEvidenceStoreProvider).delete(photo),
+          onQueueReceipt: (receipt) => ref
+              .read(operationsApiProvider)
+              .savePendingHospitalityHandoff(eventId, orderId, {
+                ...receipt,
+                'receiverPhoto':
+                    (receipt['receiverPhoto'] as LocalIssueEvidence?)?.toJson(),
+              }),
+        ),
       );
       if (!context.mounted || receipt == null) return;
       receivedByName = receipt['receivedByName'] as String;
       receiptNote = receipt['receiptNote'] as String?;
       receiverAcknowledged = receipt['receiverAcknowledged'] as bool;
       receiverSignature = receipt['receiverSignature'] as String;
+      receiverPhoto = receipt['receiverPhoto'] as LocalIssueEvidence?;
+      ref.invalidate(eventHospitalityHandoffsProvider(eventId));
     }
     try {
+      final photo = receiverPhoto;
+      if (photo != null) {
+        receiverPhotoEvidenceId = await ref
+            .read(operationsApiProvider)
+            .uploadHospitalityReceiptPhoto(eventId, orderId, photo,
+                await ref.read(secureEvidenceStoreProvider).decrypt(photo));
+      }
       await ref.read(operationsApiProvider).hospitalityOrderAction(
           eventId, orderId, action,
           reason: reason,
@@ -482,13 +704,50 @@ class _HospitalityOrderCard extends ConsumerWidget {
           receivedByName: receivedByName,
           receiptNote: receiptNote,
           receiverAcknowledged: receiverAcknowledged,
-          receiverSignature: receiverSignature);
+          receiverSignature: receiverSignature,
+          receiverPhotoEvidenceId: receiverPhotoEvidenceId);
+      if (photo != null) {
+        await ref.read(secureEvidenceStoreProvider).delete(photo);
+      }
       ref.invalidate(eventHospitalityOrdersProvider(eventId));
     } catch (error) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text('Could not update hospitality order: $error')));
       }
+    }
+  }
+}
+
+Future<void> _viewReceiptPhoto(BuildContext context, WidgetRef ref,
+    String eventId, String orderId, String evidenceId) async {
+  try {
+    final url = await ref
+        .read(operationsApiProvider)
+        .hospitalityReceiptPhotoUrl(eventId, orderId, evidenceId);
+    if (!context.mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Hospitality handoff photo'),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560, maxHeight: 480),
+          child: Image.network(url,
+              fit: BoxFit.contain,
+              errorBuilder: (_, __, ___) => const Text(
+                  'The photo could not be loaded. Reopen it to request a fresh secure link.')),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close'))
+        ],
+      ),
+    );
+  } catch (error) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not open handoff photo: $error')));
     }
   }
 }
@@ -654,7 +913,14 @@ class _FulfillmentComposerState extends State<_FulfillmentComposer> {
 }
 
 class _PickupReceiptDialog extends StatefulWidget {
-  const _PickupReceiptDialog();
+  const _PickupReceiptDialog(
+      {required this.onCapturePhoto,
+      required this.onDeletePhoto,
+      required this.onQueueReceipt});
+
+  final Future<LocalIssueEvidence?> Function() onCapturePhoto;
+  final Future<void> Function(LocalIssueEvidence) onDeletePhoto;
+  final Future<void> Function(Map<String, Object?> receipt) onQueueReceipt;
 
   @override
   State<_PickupReceiptDialog> createState() => _PickupReceiptDialogState();
@@ -666,9 +932,28 @@ class _PickupReceiptDialogState extends State<_PickupReceiptDialog> {
   final List<List<Offset>> _strokes = [];
   List<Offset>? _activeStroke;
   bool _acknowledged = false;
+  LocalIssueEvidence? _photo;
+  bool _saved = false;
+
+  Future<void> _capturePhoto() async {
+    try {
+      final photo = await widget.onCapturePhoto();
+      if (photo == null) return;
+      final previous = _photo;
+      setState(() => _photo = photo);
+      if (previous != null) await widget.onDeletePhoto(previous);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not save handoff photo: $error')));
+      }
+    }
+  }
 
   void _addPoint(Offset position, Size size, {bool start = false}) {
-    if (_strokes.fold<int>(0, (sum, stroke) => sum + stroke.length) >= 512) return;
+    if (_strokes.fold<int>(0, (sum, stroke) => sum + stroke.length) >= 512) {
+      return;
+    }
     final point = Offset(
       (position.dx / size.width).clamp(0.0, 1.0).toDouble(),
       (position.dy / size.height).clamp(0.0, 1.0).toDouble(),
@@ -684,13 +969,13 @@ class _PickupReceiptDialogState extends State<_PickupReceiptDialog> {
   }
 
   String _signatureJson() => jsonEncode(_strokes
-      .map((stroke) => stroke
-          .map((point) => {'x': point.dx, 'y': point.dy})
-          .toList())
+      .map((stroke) =>
+          stroke.map((point) => {'x': point.dx, 'y': point.dy}).toList())
       .toList());
 
   @override
   void dispose() {
+    if (!_saved && _photo != null) unawaited(widget.onDeletePhoto(_photo!));
     _receiver.dispose();
     _note.dispose();
     super.dispose();
@@ -722,6 +1007,35 @@ class _PickupReceiptDialogState extends State<_PickupReceiptDialog> {
             const SizedBox(height: 12),
             Align(
               alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                onPressed: _photo == null ? _capturePhoto : null,
+                icon: const Icon(Icons.camera_alt_outlined),
+                label: Text(_photo == null
+                    ? 'Add handoff photo (optional)'
+                    : 'Photo attached'),
+              ),
+            ),
+            const Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                  'Your handoff is saved encrypted on this device first. Pickup stays pending until the server accepts it.'),
+            ),
+            if (_photo != null)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: () async {
+                    final photo = _photo!;
+                    setState(() => _photo = null);
+                    await widget.onDeletePhoto(photo);
+                  },
+                  icon: const Icon(Icons.delete_outline),
+                  label: const Text('Remove photo'),
+                ),
+              ),
+            const SizedBox(height: 12),
+            Align(
+              alignment: Alignment.centerLeft,
               child: Text('Receiver signature',
                   style: Theme.of(context).textTheme.titleSmall),
             ),
@@ -734,9 +1048,11 @@ class _PickupReceiptDialogState extends State<_PickupReceiptDialog> {
                 return GestureDetector(
                   onPanStart: (details) =>
                       _addPoint(details.localPosition, size, start: true),
-                  onPanUpdate: (details) => _addPoint(details.localPosition, size),
+                  onPanUpdate: (details) =>
+                      _addPoint(details.localPosition, size),
                   onPanEnd: (_) => setState(() {
-                    if ((_activeStroke?.length ?? 0) < 2 && _strokes.isNotEmpty) {
+                    if ((_activeStroke?.length ?? 0) < 2 &&
+                        _strokes.isNotEmpty) {
                       _strokes.removeLast();
                     }
                     _activeStroke = null;
@@ -786,12 +1102,27 @@ class _PickupReceiptDialogState extends State<_PickupReceiptDialog> {
             onPressed: _receiver.text.trim().length >= 2 &&
                     _acknowledged &&
                     _strokes.isNotEmpty
-                ? () => Navigator.pop(context, {
+                ? () async {
+                    final receipt = <String, Object?>{
                       'receivedByName': _receiver.text.trim(),
                       'receiptNote': _note.text.trim(),
                       'receiverAcknowledged': true,
                       'receiverSignature': _signatureJson(),
-                    })
+                      'receiverPhoto': _photo,
+                    };
+                    try {
+                      await widget.onQueueReceipt(receipt);
+                      if (!context.mounted) return;
+                      _saved = true;
+                      Navigator.pop(context, receipt);
+                    } catch (error) {
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                            content: Text(
+                                'Could not save the handoff securely: $error')));
+                      }
+                    }
+                  }
                 : null,
             child: const Text('Save receipt'),
           ),

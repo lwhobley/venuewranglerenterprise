@@ -12,6 +12,7 @@ import { InventoryService } from './inventory.service';
 export class InventoryController {
   constructor(private readonly inventory: InventoryService) {}
   @Get('inventory/items') items(@Req() req: Request, @Query('venueId', new ParseUUIDPipe()) venueId: string, @Query('locationId') locationId?: string) { return this.inventory.listItems(req.identity, venueId, locationId); }
+  @Get('admin/venues/:venueId/inventory/items') venueItems(@Req() req: Request, @Param('venueId', new ParseUUIDPipe()) venueId: string) { return this.inventory.listVenueItems(req.identity, venueId); }
   @Post('admin/inventory/items') createItem(@Req() req: Request, @Body() dto: CreateStockItemDto, @Headers('idempotency-key') key: string) { return this.inventory.createItem(req.identity, dto, this.key(key)); }
   @Get('events/:eventId/inventory/counts') counts(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string) { return this.inventory.listCounts(req.identity, eventId); }
   @Post('events/:eventId/inventory/counts') start(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Body() dto: StartStockCountDto, @Headers('idempotency-key') key: string) { return this.inventory.startCount(req.identity, eventId, dto, this.key(key)); }

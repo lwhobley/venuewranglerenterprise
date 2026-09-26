@@ -31,7 +31,7 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
   }
 
-  Widget buildWorkspace() => MaterialApp(
+  Widget buildWorkspace({String? focusIssueId}) => MaterialApp(
         home: Scaffold(
           body: ResponsiveIssueWorkspace(
             issues: issues
@@ -39,6 +39,7 @@ void main() {
                 .toList(),
             capabilities: const {'issue:triage', 'issue:resolve'},
             canAssign: true,
+            focusIssueId: focusIssueId,
             onAction: (_, __) {},
             onEvidence: (_) {},
           ),
@@ -74,5 +75,15 @@ void main() {
     expect(
         find.byKey(const ValueKey('issue-desktop-split-view')), findsNothing);
     expect(find.text('Concourse leak'), findsOneWidget);
+  });
+
+  testWidgets('notification focus opens the referenced issue', (tester) async {
+    await setViewport(tester, const Size(1440, 900));
+    await tester.pumpWidget(buildWorkspace(focusIssueId: 'issue-2'));
+
+    final detail = find.byKey(const ValueKey('issue-detail-issue-2'));
+    expect(detail, findsOneWidget);
+    expect(find.descendant(of: detail, matching: find.text('Power outage')),
+        findsOneWidget);
   });
 }

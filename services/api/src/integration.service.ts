@@ -174,6 +174,16 @@ export class IntegrationService {
       },
       orderBy: [{ occurredAt: 'desc' }, { receivedAt: 'desc' }],
       take: 100,
+      select: {
+        id: true,
+        organizationId: true,
+        eventId: true,
+        source: true,
+        externalId: true,
+        eventType: true,
+        occurredAt: true,
+        receivedAt: true,
+      },
     }));
   }
 

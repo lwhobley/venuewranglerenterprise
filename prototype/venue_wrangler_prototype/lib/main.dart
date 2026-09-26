@@ -15,6 +15,7 @@ import 'features/hospitality/hospitality_page.dart';
 import 'features/issues/issue_outbox.dart';
 import 'features/issues/secure_evidence_store.dart';
 import 'features/operations/operations_api.dart';
+import 'features/operations/workspace_command_palette.dart';
 import 'features/notifications/push_notifications.dart';
 import 'features/operations/event_closeout_page.dart';
 import 'features/operations/vendor_staffing_page.dart';
@@ -102,9 +103,30 @@ class AuthGate extends ConsumerWidget {
     if (auth.loading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
-    return auth.session == null
-        ? const SignInPage()
-        : const _PushNotificationGate(child: PrototypeShell());
+    if (auth.session == null) return const SignInPage();
+    if (!auth.session!.offlineReadOnly) {
+      return const _PushNotificationGate(child: PrototypeShell());
+    }
+    return Column(children: [
+      Material(
+          color: const Color(0xFFFFEFCF),
+          child: SafeArea(
+              bottom: false,
+              child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Row(children: [
+                    const Icon(Icons.cloud_off_outlined, size: 20),
+                    const SizedBox(width: 8),
+                    const Expanded(
+                        child: Text(
+                            'Offline access · Saved views may be out of date.')),
+                    TextButton(
+                        onPressed: () =>
+                            ref.read(authSessionProvider.notifier).restore(),
+                        child: const Text('Retry')),
+                  ])))),
+      const Expanded(child: _PushNotificationGate(child: PrototypeShell())),
+    ]);
   }
 }
 
@@ -138,28 +160,61 @@ class _PushNotificationGateState extends ConsumerState<_PushNotificationGate> {
         !mounted) {
       return;
     }
-    _foregroundSubscription =
-        FirebaseMessaging.onMessage.listen(_handlePushMessage);
+    _foregroundSubscription = FirebaseMessaging.onMessage
+        .listen((message) => _showForegroundNotification(message));
     _openedSubscription =
-        FirebaseMessaging.onMessageOpenedApp.listen(_handlePushMessage);
+        FirebaseMessaging.onMessageOpenedApp.listen(_openPushedNotification);
     final initial = await FirebaseMessaging.instance.getInitialMessage();
-    if (initial != null && mounted) _handlePushMessage(initial);
+    if (initial != null && mounted) await _openPushedNotification(initial);
   }
 
-  void _handlePushMessage(RemoteMessage _) {
+  void _showForegroundNotification(RemoteMessage message) {
     ref.invalidate(userNotificationsProvider);
     final messenger = ScaffoldMessenger.maybeOf(context);
     messenger?.showSnackBar(SnackBar(
       content: const Text('A new operational update is available.'),
       action: SnackBarAction(
         label: 'View',
-        onPressed: () => showModalBottomSheet<void>(
-          context: context,
-          isScrollControlled: true,
-          builder: (_) => const _NotificationInbox(),
-        ),
+        onPressed: () => _openPushedNotification(message),
       ),
     ));
+  }
+
+  Future<void> _openPushedNotification(RemoteMessage message) async {
+    ref.invalidate(userNotificationsProvider);
+    final notificationId = message.data['notificationId'];
+    if (notificationId is! String || notificationId.isEmpty) {
+      _showNotificationInbox();
+      return;
+    }
+    try {
+      final rows = await ref.read(userNotificationsProvider.future);
+      Map<String, dynamic>? match;
+      for (final row in rows.whereType<Map>()) {
+        final candidate = Map<String, dynamic>.from(row);
+        if (candidate['id'] == notificationId) {
+          match = candidate;
+          break;
+        }
+      }
+      if (!mounted) return;
+      if (match == null ||
+          !await _activateNotification(context, ref, match,
+              closeInbox: false)) {
+        _showNotificationInbox();
+      }
+    } catch (_) {
+      if (mounted) _showNotificationInbox();
+    }
+  }
+
+  void _showNotificationInbox() {
+    if (!mounted) return;
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => const _NotificationInbox(),
+    );
   }
 
   @override
@@ -212,6 +267,74 @@ class PrototypeShell extends ConsumerWidget {
 
 final _selectedLiveEventProvider = StateProvider<String?>((_) => null);
 final _liveTabProvider = StateProvider<int>((_) => 0);
+final _pendingIssueNavigationProvider = StateProvider<String?>((_) => null);
+final _staffingViewProvider =
+    StateProvider.autoDispose.family<String, String>((ref, _) => 'ALL');
+
+List<String> liveTabsForCapabilities(Set<String> capabilities) => [
+      'Today',
+      if (capabilities.contains('issue:read') ||
+          capabilities.contains('issue:report'))
+        'Issues',
+      if (capabilities.contains('operations:read')) 'Operations',
+      if (capabilities.contains('hospitality:order') ||
+          capabilities.contains('hospitality:fulfill') ||
+          capabilities.contains('operations:write') ||
+          capabilities.contains('tenant:admin'))
+        'Hospitality',
+      if (capabilities.contains('operations:read')) 'Stock',
+      if (capabilities.contains('operations:read')) 'Staffing',
+      if (capabilities.contains('operations:read') ||
+          capabilities.contains('operations:write') ||
+          capabilities.contains('vendor:staffing') ||
+          capabilities.contains('tenant:admin'))
+        'Vendors',
+      if (capabilities.contains('event:closeout')) 'Closeout',
+      if (capabilities.contains('tenant:admin')) 'Setup',
+    ];
+
+String notificationTargetTab(Map<String, dynamic> notification) {
+  if (notification['issueId'] is String) return 'Issues';
+  if (notification['hospitalityOrderId'] is String) return 'Hospitality';
+  if (notification['shiftId'] is String) return 'Staffing';
+  final kind = notification['kind'] as String? ?? '';
+  if (kind == 'event_closeout_followup') return 'Closeout';
+  if (kind.startsWith('vendor_staffing_')) return 'Vendors';
+  return 'Today';
+}
+
+List<Map<String, dynamic>> filterStaffingShifts(
+  List<Map<String, dynamic>> shifts, {
+  required String view,
+  required String subject,
+  required bool canWrite,
+}) {
+  return shifts.where((shift) {
+    final state = shift['state'] as String? ?? 'DRAFT';
+    final assignedSubject = shift['assignedSubject'] as String?;
+    final response = shift['response'] as String? ?? 'PENDING';
+    final currentResponse = shift['responseRevision'] == shift['revision'];
+    final hasAttendanceClaims =
+        (shift['attendanceClaims'] as List? ?? const []).isNotEmpty;
+    switch (view) {
+      case 'MINE':
+        return assignedSubject == subject;
+      case 'OPEN':
+        return assignedSubject == null && state == 'PUBLISHED';
+      case 'NEEDS_ACTION':
+        if (assignedSubject == null) {
+          return state == 'PUBLISHED' || (canWrite && state == 'DRAFT');
+        }
+        if (!canWrite && assignedSubject != subject) return false;
+        if (hasAttendanceClaims) return true;
+        if (state == 'DRAFT') return canWrite;
+        return state == 'PUBLISHED' &&
+            (response != 'ACKNOWLEDGED' || !currentResponse);
+      default:
+        return true;
+    }
+  }).toList();
+}
 
 class _LiveVenueShell extends ConsumerWidget {
   const _LiveVenueShell();
@@ -290,18 +413,7 @@ class _LiveOperationsHome extends ConsumerWidget {
           .state = event['id'] as String);
     }
     final isAdmin = caps.contains('tenant:admin');
-    final tabs = <String>[
-      'Today',
-      if (caps.contains('issue:read') || caps.contains('issue:report'))
-        'Issues',
-      if (caps.contains('operations:read')) 'Operations',
-      if (caps.contains('hospitality:order') || caps.contains('hospitality:fulfill') || caps.contains('operations:write') || isAdmin) 'Hospitality',
-      if (caps.contains('operations:read')) 'Stock',
-      if (caps.contains('operations:read')) 'Staffing',
-      if (caps.contains('operations:read') || caps.contains('operations:write') || caps.contains('vendor:staffing') || isAdmin) 'Vendors',
-      if (caps.contains('event:closeout')) 'Closeout',
-      if (isAdmin) 'Setup'
-    ];
+    final tabs = liveTabsForCapabilities(caps);
     final selectedTab =
         ref.watch(_liveTabProvider).clamp(0, tabs.length - 1).toInt();
     final title = (org['name'] as String?) ?? 'Venue operations';
@@ -315,6 +427,7 @@ class _LiveOperationsHome extends ConsumerWidget {
         0;
     final page = tabs[selectedTab] == 'Setup' && isAdmin
         ? _TenantSetupPage(
+            organization: org,
             venues: venues,
             locations: locations,
             events: events,
@@ -334,6 +447,7 @@ class _LiveOperationsHome extends ConsumerWidget {
                     event: event,
                     canRead: caps.contains('issue:read'),
                     capabilities: caps,
+                    focusIssueId: ref.watch(_pendingIssueNavigationProvider),
                     assignableUserIds:
                         (identity['assignableUserIds'] as List? ?? const [])
                             .whereType<String>()
@@ -346,7 +460,9 @@ class _LiveOperationsHome extends ConsumerWidget {
                     event: event, canWrite: caps.contains('operations:write')),
                 'Hospitality' => HospitalityPage(
                     event: event,
-                    canOrder: caps.contains('hospitality:order') || caps.contains('operations:write') || isAdmin,
+                    canOrder: caps.contains('hospitality:order') ||
+                        caps.contains('operations:write') ||
+                        isAdmin,
                     canFulfill: caps.contains('hospitality:fulfill') || isAdmin,
                     canApprove: caps.contains('operations:write') || isAdmin,
                     canManageMenu: caps.contains('operations:write') || isAdmin,
@@ -371,10 +487,19 @@ class _LiveOperationsHome extends ConsumerWidget {
                 'Vendors' => VendorStaffingPage(
                     event: event,
                     canManage: caps.contains('operations:write') || isAdmin,
-                    isVendor: caps.contains('vendor:staffing') && !caps.contains('operations:write') && !isAdmin,
-                    assignableUserIds: (identity['assignableUserIds'] as List? ?? const []).whereType<String>().toSet(),
-                    people: (data['people'] as List? ?? const []).whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList()),
+                    isVendor: caps.contains('vendor:staffing') &&
+                        !caps.contains('operations:write') &&
+                        !isAdmin,
+                    assignableUserIds:
+                        (identity['assignableUserIds'] as List? ?? const [])
+                            .whereType<String>()
+                            .toSet(),
+                    people: (data['people'] as List? ?? const [])
+                        .whereType<Map>()
+                        .map((e) => Map<String, dynamic>.from(e))
+                        .toList()),
                 'Setup' => _TenantSetupPage(
+                    organization: org,
                     venues: venues,
                     locations: locations,
                     events: events,
@@ -413,10 +538,12 @@ class _LiveOperationsHome extends ConsumerWidget {
     final isDesktop = MediaQuery.sizeOf(context).width >= 1024;
     final mobilePrimaryTabs = <String>['Today'];
     if (isAdmin) mobilePrimaryTabs.add('Setup');
-    if (caps.contains('vendor:staffing') && !caps.contains('operations:write')) {
+    if (caps.contains('vendor:staffing') &&
+        !caps.contains('operations:write')) {
       mobilePrimaryTabs.add('Vendors');
     }
-    if (caps.contains('hospitality:fulfill') && !caps.contains('operations:write')) {
+    if (caps.contains('hospitality:fulfill') &&
+        !caps.contains('operations:write')) {
       mobilePrimaryTabs.add('Hospitality');
     }
     if (caps.contains('operations:write')) mobilePrimaryTabs.add('Staffing');
@@ -438,155 +565,180 @@ class _LiveOperationsHome extends ConsumerWidget {
       final target = tabs.indexOf(tab);
       if (target >= 0) ref.read(_liveTabProvider.notifier).state = target;
     }
-    return Scaffold(
-      appBar: AppBar(
-        title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(title,
-              style:
-                  const TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
-          Text(eventName ?? 'Select an event',
-              style: const TextStyle(fontSize: 12, color: Color(0xFF59645D)))
-        ]),
-        actions: [
-          if (caps.contains('notification:read'))
+
+    Future<void> openCommandPalette() async {
+      final tab = await showDialog<String>(
+        context: context,
+        builder: (_) => WorkspaceCommandPaletteDialog(tabs: tabs),
+      );
+      if (tab != null) selectTab(tab);
+    }
+
+    return WorkspaceCommandShortcuts(
+      onOpen: openCommandPalette,
+      child: Scaffold(
+        appBar: AppBar(
+          title:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(title,
+                style:
+                    const TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+            Text(eventName ?? 'Select an event',
+                style: const TextStyle(fontSize: 12, color: Color(0xFF59645D)))
+          ]),
+          actions: [
+            if (isDesktop)
+              IconButton(
+                tooltip: 'Search workflows · Ctrl+K',
+                onPressed: openCommandPalette,
+                icon: const Icon(Icons.search),
+              ),
+            if (caps.contains('notification:read'))
+              IconButton(
+                  tooltip: 'Notifications',
+                  onPressed: () => showModalBottomSheet<void>(
+                      context: context,
+                      isScrollControlled: true,
+                      builder: (_) => const _NotificationInbox()),
+                  icon: Badge(
+                      isLabelVisible: unreadNotifications > 0,
+                      label: Text('$unreadNotifications'),
+                      child: const Icon(Icons.notifications_outlined))),
+            if (events.isNotEmpty)
+              PopupMenuButton<String>(
+                  tooltip: 'Select event',
+                  icon: const Icon(Icons.event_available_outlined),
+                  onSelected: (id) {
+                    ref.read(_selectedLiveEventProvider.notifier).state = id;
+                  },
+                  itemBuilder: (_) => events
+                      .map((e) => PopupMenuItem(
+                          value: e['id'] as String,
+                          child: Text(e['name'] as String? ?? 'Event')))
+                      .toList()),
             IconButton(
-                tooltip: 'Notifications',
-                onPressed: () => showModalBottomSheet<void>(
-                    context: context,
-                    isScrollControlled: true,
-                    builder: (_) => const _NotificationInbox()),
-                icon: Badge(
-                    isLabelVisible: unreadNotifications > 0,
-                    label: Text('$unreadNotifications'),
-                    child: const Icon(Icons.notifications_outlined))),
-          if (events.isNotEmpty)
-            PopupMenuButton<String>(
-                tooltip: 'Select event',
-                icon: const Icon(Icons.event_available_outlined),
-                onSelected: (id) {
-                  ref.read(_selectedLiveEventProvider.notifier).state = id;
+                tooltip: 'Refresh',
+                onPressed: () {
+                  ref.invalidate(operationsBootstrapProvider);
+                  if (event != null) {
+                    ref.invalidate(eventIssuesProvider(event['id'] as String));
+                    ref.invalidate(eventTasksProvider(event['id'] as String));
+                    ref.invalidate(eventShiftsProvider(event['id'] as String));
+                    ref.invalidate(
+                        eventInventoryCountsProvider(event['id'] as String));
+                    ref.invalidate(
+                        eventHospitalityOrdersProvider(event['id'] as String));
+                    ref.invalidate(
+                        vendorStaffingRequestsProvider(event['id'] as String));
+                    ref.invalidate(
+                        staffingCoverageProvider(event['id'] as String));
+                    ref.invalidate(
+                        eventCloseoutProvider(event['id'] as String));
+                  }
                 },
-                itemBuilder: (_) => events
-                    .map((e) => PopupMenuItem(
-                        value: e['id'] as String,
-                        child: Text(e['name'] as String? ?? 'Event')))
-                    .toList()),
-          IconButton(
-              tooltip: 'Refresh',
-              onPressed: () {
-                ref.invalidate(operationsBootstrapProvider);
-                if (event != null) {
-                  ref.invalidate(eventIssuesProvider(event['id'] as String));
-                  ref.invalidate(eventTasksProvider(event['id'] as String));
-                  ref.invalidate(eventShiftsProvider(event['id'] as String));
-                  ref.invalidate(eventInventoryCountsProvider(event['id'] as String));
-                  ref.invalidate(eventHospitalityOrdersProvider(event['id'] as String));
-                  ref.invalidate(vendorStaffingRequestsProvider(event['id'] as String));
-                  ref.invalidate(staffingCoverageProvider(event['id'] as String));
-                  ref.invalidate(eventCloseoutProvider(event['id'] as String));
-                }
-              },
-              icon: const Icon(Icons.refresh)),
-          IconButton(
-              tooltip: 'Sign out',
-              onPressed: () => ref.read(authSessionProvider.notifier).signOut(),
-              icon: const Icon(Icons.logout_outlined)),
-        ],
+                icon: const Icon(Icons.refresh)),
+            IconButton(
+                tooltip: 'Sign out',
+                onPressed: () =>
+                    ref.read(authSessionProvider.notifier).signOut(),
+                icon: const Icon(Icons.logout_outlined)),
+          ],
+        ),
+        body: SafeArea(
+          child: isCompact
+              ? Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                  child: page)
+              : Row(children: [
+                  ResponsiveWorkspaceNavigation(
+                      tabs: tabs,
+                      selectedTab: selectedTab,
+                      desktop: isDesktop,
+                      onSelect: selectTab),
+                  const VerticalDivider(width: 1, thickness: 1),
+                  Expanded(
+                      child: Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                          child: page)),
+                ]),
+        ),
+        bottomNavigationBar: isCompact && tabs.length > 1
+            ? ResponsiveMobileNavigation(
+                primaryTabs: mobileTabs,
+                selectedTab: tabs[selectedTab],
+                hasMore: tabs.any((tab) => !mobileTabs.contains(tab)),
+                onSelect: selectTab,
+                onMore: () {
+                  final overflowTabs =
+                      tabs.where((tab) => !mobileTabs.contains(tab)).toList();
+                  showModalBottomSheet<void>(
+                      context: context,
+                      builder: (sheetContext) => SafeArea(
+                            child: ListView(
+                              shrinkWrap: true,
+                              children: [
+                                for (final tab in overflowTabs)
+                                  ListTile(
+                                      leading: Icon(_workspaceTabIcon(tab)),
+                                      title: Text(tab),
+                                      selected: tabs[selectedTab] == tab,
+                                      onTap: () {
+                                        Navigator.pop(sheetContext);
+                                        selectTab(tab);
+                                      }),
+                              ],
+                            ),
+                          ));
+                },
+              )
+            : null,
+        floatingActionButton: event != null &&
+                tabs[selectedTab] == 'Issues' &&
+                caps.contains('issue:report')
+            ? FloatingActionButton.extended(
+                onPressed: () => _newLiveIssue(context, ref, event, locations),
+                backgroundColor: _coral,
+                foregroundColor: Colors.white,
+                icon: const Icon(Icons.add_alert_outlined),
+                label: const Text('Report issue'))
+            : event != null &&
+                    tabs[selectedTab] == 'Staffing' &&
+                    caps.contains('operations:write')
+                ? FloatingActionButton.extended(
+                    onPressed: () => _newLiveShift(
+                        context,
+                        ref,
+                        event,
+                        locations,
+                        (identity['assignableUserIds'] as List? ?? const [])
+                            .whereType<String>()
+                            .toList(),
+                        (data['people'] as List? ?? const [])
+                            .whereType<Map>()
+                            .map((e) => Map<String, dynamic>.from(e))
+                            .toList()),
+                    icon: const Icon(Icons.person_add_alt_1),
+                    label: const Text('Add shift'))
+                : event != null &&
+                        tabs[selectedTab] == 'Operations' &&
+                        caps.contains('operations:write')
+                    ? FloatingActionButton.extended(
+                        onPressed: () => _newLiveTask(
+                            context,
+                            ref,
+                            event,
+                            locations,
+                            (identity['assignableUserIds'] as List? ?? const [])
+                                .whereType<String>()
+                                .toList(),
+                            (data['people'] as List? ?? const [])
+                                .whereType<Map>()
+                                .map((e) => Map<String, dynamic>.from(e))
+                                .toList()),
+                        icon: const Icon(Icons.add_task),
+                        label: const Text('Add task'))
+                    : null,
       ),
-      body: SafeArea(
-        child: isCompact
-            ? Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-                child: page)
-            : Row(children: [
-                ResponsiveWorkspaceNavigation(
-                    tabs: tabs,
-                    selectedTab: selectedTab,
-                    desktop: isDesktop,
-                    onSelect: selectTab),
-                const VerticalDivider(width: 1, thickness: 1),
-                Expanded(
-                    child: Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-                        child: page)),
-              ]),
-      ),
-      bottomNavigationBar: isCompact && tabs.length > 1
-          ? ResponsiveMobileNavigation(
-              primaryTabs: mobileTabs,
-              selectedTab: tabs[selectedTab],
-              hasMore: tabs.any((tab) => !mobileTabs.contains(tab)),
-              onSelect: selectTab,
-              onMore: () {
-                final overflowTabs =
-                    tabs.where((tab) => !mobileTabs.contains(tab)).toList();
-                showModalBottomSheet<void>(
-                    context: context,
-                    builder: (sheetContext) => SafeArea(
-                          child: ListView(
-                            shrinkWrap: true,
-                            children: [
-                              for (final tab in overflowTabs)
-                                ListTile(
-                                    leading: Icon(_workspaceTabIcon(tab)),
-                                    title: Text(tab),
-                                    selected: tabs[selectedTab] == tab,
-                                    onTap: () {
-                                      Navigator.pop(sheetContext);
-                                      selectTab(tab);
-                                    }),
-                            ],
-                          ),
-                        ));
-              },
-            )
-          : null,
-      floatingActionButton: event != null &&
-              tabs[selectedTab] == 'Issues' &&
-              caps.contains('issue:report')
-          ? FloatingActionButton.extended(
-              onPressed: () => _newLiveIssue(context, ref, event, locations),
-              backgroundColor: _coral,
-              foregroundColor: Colors.white,
-              icon: const Icon(Icons.add_alert_outlined),
-              label: const Text('Report issue'))
-          : event != null &&
-                  tabs[selectedTab] == 'Staffing' &&
-                  caps.contains('operations:write')
-              ? FloatingActionButton.extended(
-                  onPressed: () => _newLiveShift(
-                      context,
-                      ref,
-                      event,
-                      locations,
-                      (identity['assignableUserIds'] as List? ?? const [])
-                          .whereType<String>()
-                          .toList(),
-                      (data['people'] as List? ?? const [])
-                          .whereType<Map>()
-                          .map((e) => Map<String, dynamic>.from(e))
-                          .toList()),
-                  icon: const Icon(Icons.person_add_alt_1),
-                  label: const Text('Add shift'))
-              : event != null &&
-                  tabs[selectedTab] == 'Operations' &&
-                  caps.contains('operations:write')
-              ? FloatingActionButton.extended(
-                  onPressed: () => _newLiveTask(
-                      context,
-                      ref,
-                      event,
-                      locations,
-                      (identity['assignableUserIds'] as List? ?? const [])
-                          .whereType<String>()
-                          .toList(),
-                      (data['people'] as List? ?? const [])
-                          .whereType<Map>()
-                          .map((e) => Map<String, dynamic>.from(e))
-                          .toList()),
-                  icon: const Icon(Icons.add_task),
-                  label: const Text('Add task'))
-              : null,
     );
   }
 }
@@ -661,7 +813,8 @@ class ResponsiveWorkspaceNavigation extends StatelessWidget {
   Widget build(BuildContext context) => SizedBox(
         width: desktop ? 232 : 88,
         child: ListView.builder(
-          padding: EdgeInsets.symmetric(vertical: 12, horizontal: desktop ? 12 : 6),
+          padding:
+              EdgeInsets.symmetric(vertical: 12, horizontal: desktop ? 12 : 6),
           itemCount: tabs.length,
           itemBuilder: (context, index) {
             final tab = tabs[index];
@@ -704,7 +857,9 @@ class ResponsiveWorkspaceNavigation extends StatelessWidget {
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           Icon(_workspaceTabIcon(tab),
-                              color: selected ? colors.onSecondaryContainer : null),
+                              color: selected
+                                  ? colors.onSecondaryContainer
+                                  : null),
                           const SizedBox(height: 4),
                           Text(tab,
                               textAlign: TextAlign.center,
@@ -870,50 +1025,74 @@ class _NotificationInboxState extends ConsumerState<_NotificationInbox> {
                                   subtitle: Text(
                                       '${notification['body'] ?? ''}\n${notification['createdAt'] ?? ''}'),
                                   isThreeLine: true,
-                                  onTap: unread
-                                      ? () async {
-                                          try {
-                                            await ref
-                                                .read(operationsApiProvider)
-                                                .markNotificationRead(
-                                                    notification['id']
-                                                        as String);
-                                            ref.invalidate(
-                                                userNotificationsProvider);
-                                            final closeoutNotice = notification['kind'] == 'event_closeout_followup';
-                                            final vendorNotice = notification['kind'] == 'vendor_staffing_request' || notification['kind'] == 'vendor_staffing_response';
-                                            if ((notification['shiftId'] is String || notification['hospitalityOrderId'] is String || closeoutNotice || vendorNotice) && notification['eventId'] is String) {
-                                              final identity = ref.read(operationsBootstrapProvider).valueOrNull?['identity'] as Map<String, dynamic>? ?? const {};
-                                              final capabilities = (identity['capabilities'] as List? ?? const []).whereType<String>().toSet();
-                                              final tabs = <String>[
-                                                'Today',
-                                                if (capabilities.contains('issue:read') || capabilities.contains('issue:report')) 'Issues',
-                                                if (capabilities.contains('operations:read')) 'Operations',
-                                                if (capabilities.contains('hospitality:order') || capabilities.contains('hospitality:fulfill') || capabilities.contains('operations:write') || capabilities.contains('tenant:admin')) 'Hospitality',
-                                                if (capabilities.contains('operations:read')) 'Stock',
-                                                if (capabilities.contains('operations:read')) 'Staffing',
-                                                if (capabilities.contains('operations:read') || capabilities.contains('operations:write') || capabilities.contains('vendor:staffing') || capabilities.contains('tenant:admin')) 'Vendors',
-                                                if (capabilities.contains('event:closeout')) 'Closeout',
-                                                if (capabilities.contains('tenant:admin')) 'Setup',
-                                              ];
-                                              ref.read(_selectedLiveEventProvider.notifier).state = notification['eventId'] as String;
-                                              final targetTab = closeoutNotice ? 'Closeout' : vendorNotice ? 'Vendors' : notification['hospitalityOrderId'] is String ? 'Hospitality' : 'Staffing';
-                                              final targetIndex = tabs.indexOf(targetTab);
-                                              if (targetIndex >= 0) ref.read(_liveTabProvider.notifier).state = targetIndex;
-                                              if (context.mounted) Navigator.pop(context);
-                                            }
-                                          } catch (error) {
-                                            if (context.mounted) {
-                                              ScaffoldMessenger.of(context)
-                                                  .showSnackBar(SnackBar(
-                                                      content: Text(
-                                                          'Could not mark notification read: $error')));
-                                            }
-                                          }
-                                        }
-                                      : null);
+                                  onTap: () => _activateNotification(
+                                      context, ref, notification,
+                                      closeInbox: true));
                             })))
           ])));
+}
+
+Future<bool> _activateNotification(
+  BuildContext context,
+  WidgetRef ref,
+  Map<String, dynamic> notification, {
+  required bool closeInbox,
+}) async {
+  final eventId = notification['eventId'];
+  if (eventId is! String) return false;
+
+  final bootstrap = await ref.read(operationsBootstrapProvider.future);
+  final assignedEvents = (bootstrap['events'] as List? ?? const [])
+      .whereType<Map>()
+      .map((row) => Map<String, dynamic>.from(row))
+      .toList();
+  if (!assignedEvents.any((event) => event['id'] == eventId)) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('You no longer have access to this event.')));
+    }
+    return false;
+  }
+
+  final identity = bootstrap['identity'] as Map<String, dynamic>? ?? const {};
+  final capabilities = (identity['capabilities'] as List? ?? const [])
+      .whereType<String>()
+      .toSet();
+  final tabs = liveTabsForCapabilities(capabilities);
+  final targetTab = notificationTargetTab(notification);
+  final targetIndex = tabs.indexOf(targetTab);
+  if (targetIndex < 0 ||
+      (targetTab == 'Issues' && !capabilities.contains('issue:read'))) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content:
+              Text('Your current access does not include this workflow.')));
+    }
+    return false;
+  }
+
+  try {
+    if (notification['readAt'] == null) {
+      await ref
+          .read(operationsApiProvider)
+          .markNotificationRead(notification['id'] as String);
+      ref.invalidate(userNotificationsProvider);
+    }
+    ref.read(_selectedLiveEventProvider.notifier).state = eventId;
+    ref.read(_liveTabProvider.notifier).state = targetIndex;
+    if (targetTab == 'Issues' && notification['issueId'] is String) {
+      ref.read(_pendingIssueNavigationProvider.notifier).state =
+          notification['issueId'] as String;
+    }
+    if (closeInbox && context.mounted) Navigator.of(context).pop();
+    return true;
+  } catch (error) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not open notification: $error')));
+    }
+    return false;
+  }
 }
 
 class _LiveTodayPage extends ConsumerWidget {
@@ -959,31 +1138,36 @@ class _LiveTodayPage extends ConsumerWidget {
         : null;
     final canViewCoverage = capabilities.contains('operations:write') ||
         capabilities.contains('tenant:admin');
-    final coverage = canViewCoverage
-        ? ref.watch(staffingCoverageProvider(eventId))
-        : null;
-    String count(AsyncValue<List<dynamic>>? source, bool Function(Map) include) {
+    final coverage =
+        canViewCoverage ? ref.watch(staffingCoverageProvider(eventId)) : null;
+    String count(
+        AsyncValue<List<dynamic>>? source, bool Function(Map) include) {
       if (source == null) return '—';
       if (source.hasError) return '—';
       final rows = source.valueOrNull;
       if (rows == null) return '…';
       return rows.where((row) => include(row as Map)).length.toString();
     }
-    final openIssues = (issues?.valueOrNull ?? const []).where((row) =>
-        (row as Map)['state'] != 'CLOSED').toList();
-    final openTasks = (tasks?.valueOrNull ?? const []).where((row) =>
-        (row as Map)['state'] != 'DONE').toList();
-    final scheduledShifts = (shifts?.valueOrNull ?? const []).where((row) =>
-        (row as Map)['state'] != 'CANCELLED').length;
+
+    final openIssues = (issues?.valueOrNull ?? const [])
+        .where((row) => (row as Map)['state'] != 'CLOSED')
+        .toList();
+    final openTasks = (tasks?.valueOrNull ?? const [])
+        .where((row) => (row as Map)['state'] != 'DONE')
+        .toList();
+    final scheduledShifts = (shifts?.valueOrNull ?? const [])
+        .where((row) => (row as Map)['state'] != 'CANCELLED')
+        .length;
     final submittedStockCounts = (stockCounts?.valueOrNull ?? const [])
-        .where((row) => row['state'] == 'SUBMITTED').length;
+        .where((row) => row['state'] == 'SUBMITTED')
+        .length;
     final activeHospitalityOrders = (hospitalityOrders?.valueOrNull ?? const [])
-        .where((row) => !['PICKED_UP', 'REJECTED', 'CANCELLED']
-            .contains(row['state']))
+        .where((row) =>
+            !['PICKED_UP', 'REJECTED', 'CANCELLED'].contains(row['state']))
         .length;
     final activeVendorRequests = (vendorRequests?.valueOrNull ?? const [])
-        .where((row) => !['DECLINED', 'CANCELLED', 'FULFILLED']
-            .contains(row['state']))
+        .where((row) =>
+            !['DECLINED', 'CANCELLED', 'FULFILLED'].contains(row['state']))
         .length;
     final unfilledPositions = (coverage?.valueOrNull ?? const []).fold<int>(
         0,
@@ -994,22 +1178,34 @@ class _LiveTodayPage extends ConsumerWidget {
       final item = Map<String, dynamic>.from(row as Map);
       final severity = item['severity'] as String? ?? 'MODERATE';
       if (severity == 'CRITICAL' || severity == 'HIGH') {
-        attention.add({...item, '_area': 'Issues', '_rank': severity == 'CRITICAL' ? 0 : 1, '_label': '$severity · ${item['state'] ?? 'REPORTED'}'});
+        attention.add({
+          ...item,
+          '_area': 'Issues',
+          '_rank': severity == 'CRITICAL' ? 0 : 1,
+          '_label': '$severity · ${item['state'] ?? 'REPORTED'}'
+        });
       }
     }
     final now = DateTime.now();
     for (final row in openTasks) {
       final item = Map<String, dynamic>.from(row as Map);
-      final dueAt = DateTime.tryParse(item['dueAt'] as String? ?? '')?.toLocal();
+      final dueAt =
+          DateTime.tryParse(item['dueAt'] as String? ?? '')?.toLocal();
       final overdue = dueAt != null && dueAt.isBefore(now);
       final blocked = item['state'] == 'BLOCKED';
       if (overdue || blocked) {
-        attention.add({...item, '_area': 'Operations', '_rank': blocked ? 1 : 2, '_label': blocked ? 'BLOCKED' : 'OVERDUE · ${_clockLabel(dueAt)}'});
+        attention.add({
+          ...item,
+          '_area': 'Operations',
+          '_rank': blocked ? 1 : 2,
+          '_label': blocked ? 'BLOCKED' : 'OVERDUE · ${_clockLabel(dueAt)}'
+        });
       }
     }
     if (submittedStockCounts > 0) {
       attention.add({
-        'title': '$submittedStockCounts stock count${submittedStockCounts == 1 ? '' : 's'} awaiting approval',
+        'title':
+            '$submittedStockCounts stock count${submittedStockCounts == 1 ? '' : 's'} awaiting approval',
         '_area': 'Stock',
         '_rank': 2,
         '_label': 'REVIEW REQUIRED',
@@ -1017,7 +1213,8 @@ class _LiveTodayPage extends ConsumerWidget {
     }
     if (activeHospitalityOrders > 0) {
       attention.add({
-        'title': '$activeHospitalityOrders active hospitality order${activeHospitalityOrders == 1 ? '' : 's'}',
+        'title':
+            '$activeHospitalityOrders active hospitality order${activeHospitalityOrders == 1 ? '' : 's'}',
         '_area': 'Hospitality',
         '_rank': 2,
         '_label': 'SERVICE IN PROGRESS',
@@ -1025,7 +1222,8 @@ class _LiveTodayPage extends ConsumerWidget {
     }
     if (activeVendorRequests > 0) {
       attention.add({
-        'title': '$activeVendorRequests vendor staffing request${activeVendorRequests == 1 ? '' : 's'} in progress',
+        'title':
+            '$activeVendorRequests vendor staffing request${activeVendorRequests == 1 ? '' : 's'} in progress',
         '_area': 'Vendors',
         '_rank': 2,
         '_label': 'AWAITING FULFILLMENT',
@@ -1033,7 +1231,8 @@ class _LiveTodayPage extends ConsumerWidget {
     }
     if (unfilledPositions > 0) {
       attention.add({
-        'title': '$unfilledPositions staffing position${unfilledPositions == 1 ? '' : 's'} unfilled',
+        'title':
+            '$unfilledPositions staffing position${unfilledPositions == 1 ? '' : 's'} unfilled',
         '_area': 'Staffing',
         '_rank': 1,
         '_label': 'COVERAGE GAP',
@@ -1042,14 +1241,21 @@ class _LiveTodayPage extends ConsumerWidget {
     attention.sort((a, b) {
       final rank = (a['_rank'] as int).compareTo(b['_rank'] as int);
       if (rank != 0) return rank;
-      final aUpdated = DateTime.tryParse(a['updatedAt'] as String? ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
-      final bUpdated = DateTime.tryParse(b['updatedAt'] as String? ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final aUpdated = DateTime.tryParse(a['updatedAt'] as String? ?? '') ??
+          DateTime.fromMillisecondsSinceEpoch(0);
+      final bUpdated = DateTime.tryParse(b['updatedAt'] as String? ?? '') ??
+          DateTime.fromMillisecondsSinceEpoch(0);
       return bUpdated.compareTo(aUpdated);
     });
     final recentChanges = <Map<String, dynamic>>[
-      for (final row in openIssues) {...Map<String, dynamic>.from(row as Map), '_area': 'Issues'},
-      for (final row in openTasks) {...Map<String, dynamic>.from(row as Map), '_area': 'Operations'},
-    ]..sort((a, b) => (DateTime.tryParse(b['updatedAt'] as String? ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0)).compareTo(DateTime.tryParse(a['updatedAt'] as String? ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0)));
+      for (final row in openIssues)
+        {...Map<String, dynamic>.from(row as Map), '_area': 'Issues'},
+      for (final row in openTasks)
+        {...Map<String, dynamic>.from(row as Map), '_area': 'Operations'},
+    ]..sort((a, b) => (DateTime.tryParse(b['updatedAt'] as String? ?? '') ??
+            DateTime.fromMillisecondsSinceEpoch(0))
+        .compareTo(DateTime.tryParse(a['updatedAt'] as String? ?? '') ??
+            DateTime.fromMillisecondsSinceEpoch(0)));
     return ListView(children: [
       Text('Event day',
           style: Theme.of(context)
@@ -1081,34 +1287,66 @@ class _LiveTodayPage extends ConsumerWidget {
         if (shifts != null)
           _LiveMetric(
               label: 'Scheduled shifts',
-              value: shifts.hasError ? '—' : shifts.valueOrNull == null ? '…' : '$scheduledShifts',
+              value: shifts.hasError
+                  ? '—'
+                  : shifts.valueOrNull == null
+                      ? '…'
+                      : '$scheduledShifts',
               icon: Icons.badge_outlined),
         if (hospitalityOrders != null)
           _LiveMetric(
               label: 'Active hospitality orders',
-              value: hospitalityOrders.hasError ? '—' : hospitalityOrders.valueOrNull == null ? '…' : '$activeHospitalityOrders',
+              value: hospitalityOrders.hasError
+                  ? '—'
+                  : hospitalityOrders.valueOrNull == null
+                      ? '…'
+                      : '$activeHospitalityOrders',
               icon: Icons.room_service_outlined),
         if (stockCounts != null)
           _LiveMetric(
               label: 'Stock counts for approval',
-              value: stockCounts.hasError ? '—' : stockCounts.valueOrNull == null ? '…' : '$submittedStockCounts',
+              value: stockCounts.hasError
+                  ? '—'
+                  : stockCounts.valueOrNull == null
+                      ? '…'
+                      : '$submittedStockCounts',
               icon: Icons.inventory_2_outlined),
         if (vendorRequests != null)
           _LiveMetric(
               label: 'Active vendor requests',
-              value: vendorRequests.hasError ? '—' : vendorRequests.valueOrNull == null ? '…' : '$activeVendorRequests',
+              value: vendorRequests.hasError
+                  ? '—'
+                  : vendorRequests.valueOrNull == null
+                      ? '…'
+                      : '$activeVendorRequests',
               icon: Icons.groups_outlined),
         if (coverage != null)
           _LiveMetric(
               label: 'Unfilled positions',
-              value: coverage.hasError ? '—' : coverage.valueOrNull == null ? '…' : '$unfilledPositions',
+              value: coverage.hasError
+                  ? '—'
+                  : coverage.valueOrNull == null
+                      ? '…'
+                      : '$unfilledPositions',
               icon: Icons.person_search_outlined),
       ]),
       const SizedBox(height: 20),
-      if ((issues?.hasError ?? false) || (tasks?.hasError ?? false) || (shifts?.hasError ?? false) || (stockCounts?.hasError ?? false) || (hospitalityOrders?.hasError ?? false) || (vendorRequests?.hasError ?? false) || (coverage?.hasError ?? false))
+      if ((issues?.hasError ?? false) ||
+          (tasks?.hasError ?? false) ||
+          (shifts?.hasError ?? false) ||
+          (stockCounts?.hasError ?? false) ||
+          (hospitalityOrders?.hasError ?? false) ||
+          (vendorRequests?.hasError ?? false) ||
+          (coverage?.hasError ?? false))
         const Text(
             'Some live data could not be loaded. Check your connection and refresh.'),
-      if (issues != null || tasks != null || shifts != null || stockCounts != null || hospitalityOrders != null || vendorRequests != null || coverage != null) ...[
+      if (issues != null ||
+          tasks != null ||
+          shifts != null ||
+          stockCounts != null ||
+          hospitalityOrders != null ||
+          vendorRequests != null ||
+          coverage != null) ...[
         const Text('Needs attention',
             style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18)),
         const SizedBox(height: 8),
@@ -1133,22 +1371,27 @@ class _LiveTodayPage extends ConsumerWidget {
         return ListTile(
             onTap: () => onNavigate(item['_area'] as String),
             leading: Icon(
-                item['_area'] == 'Issues' ? Icons.report_problem_outlined : Icons.task_alt_outlined,
+                item['_area'] == 'Issues'
+                    ? Icons.report_problem_outlined
+                    : Icons.task_alt_outlined,
                 color: (item['_rank'] as int) <= 1 ? _coral : _brass),
             title: Text(item['title'] as String? ?? 'Task'),
-            subtitle: Text('${item['_label']} · ${item['_area']} · ${item['ownerId'] ?? 'Unassigned'}'),
+            subtitle: Text(
+                '${item['_label']} · ${item['_area']} · ${item['ownerId'] ?? 'Unassigned'}'),
             trailing: const Icon(Icons.chevron_right));
       }),
       if (recentChanges.isNotEmpty) ...[
         const SizedBox(height: 18),
-        const Text('Recently updated', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18)),
+        const Text('Recently updated',
+            style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18)),
         const SizedBox(height: 8),
         ...recentChanges.take(3).map((item) => ListTile(
-          onTap: () => onNavigate(item['_area'] as String),
-          leading: const Icon(Icons.history),
-          title: Text(item['title'] as String? ?? 'Event update'),
-          subtitle: Text('${item['_area']} · ${item['state'] ?? 'Updated'} · ${_clockLabel(DateTime.tryParse(item['updatedAt'] as String? ?? '')?.toLocal())}'),
-        )),
+              onTap: () => onNavigate(item['_area'] as String),
+              leading: const Icon(Icons.history),
+              title: Text(item['title'] as String? ?? 'Event update'),
+              subtitle: Text(
+                  '${item['_area']} · ${item['state'] ?? 'Updated'} · ${_clockLabel(DateTime.tryParse(item['updatedAt'] as String? ?? '')?.toLocal())}'),
+            )),
       ],
     ]);
   }
@@ -1195,6 +1438,7 @@ class ResponsiveIssueWorkspace extends StatefulWidget {
     required this.canAssign,
     required this.onAction,
     required this.onEvidence,
+    this.focusIssueId,
     super.key,
   });
 
@@ -1203,6 +1447,7 @@ class ResponsiveIssueWorkspace extends StatefulWidget {
   final bool canAssign;
   final void Function(Map<String, dynamic> issue, String action) onAction;
   final ValueChanged<Map<String, dynamic>> onEvidence;
+  final String? focusIssueId;
 
   @override
   State<ResponsiveIssueWorkspace> createState() =>
@@ -1213,6 +1458,21 @@ class _ResponsiveIssueWorkspaceState extends State<ResponsiveIssueWorkspace> {
   String _query = '';
   String _stateFilter = 'ALL';
   String? _selectedIssueId;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedIssueId = widget.focusIssueId;
+  }
+
+  @override
+  void didUpdateWidget(covariant ResponsiveIssueWorkspace oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.focusIssueId != widget.focusIssueId &&
+        widget.focusIssueId != null) {
+      _selectedIssueId = widget.focusIssueId;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1242,7 +1502,10 @@ class _ResponsiveIssueWorkspaceState extends State<ResponsiveIssueWorkspace> {
         break;
       }
     }
-    selected ??= filtered.isEmpty ? null : filtered.first;
+    final focusedIssueMissing = widget.focusIssueId != null &&
+        !widget.issues.any((issue) => issue['id'] == widget.focusIssueId);
+    selected ??=
+        filtered.isEmpty || focusedIssueMissing ? null : filtered.first;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1501,11 +1764,13 @@ class _LiveIssuesPage extends ConsumerWidget {
       {required this.event,
       required this.canRead,
       required this.capabilities,
+      required this.focusIssueId,
       required this.assignableUserIds,
       required this.people});
   final Map<String, dynamic> event;
   final bool canRead;
   final Set<String> capabilities;
+  final String? focusIssueId;
   final List<String> assignableUserIds;
   final List<Map<String, dynamic>> people;
   @override
@@ -1513,6 +1778,9 @@ class _LiveIssuesPage extends ConsumerWidget {
     final eventId = event['id'] as String;
     final liveConnection =
         canRead ? ref.watch(issueEventStreamProvider(eventId)) : null;
+    final offlineSnapshotAt = canRead
+        ? ref.read(operationsApiProvider).offlineIssueSnapshotAt(eventId)
+        : null;
     if (canRead) {
       ref.listen(issueEventStreamProvider(eventId), (previous, next) {
         if (next.valueOrNull?.containsKey('issueId') ?? false) {
@@ -1527,13 +1795,15 @@ class _LiveIssuesPage extends ConsumerWidget {
           child: Padding(
             padding: const EdgeInsets.only(bottom: 8),
             child: Text(
-              liveConnection?.hasError ?? false
-                  ? 'Live updates disconnected · reconnecting'
-                  : liveConnection?.valueOrNull?['_connected'] == false
+              offlineSnapshotAt != null
+                  ? 'Offline snapshot · updated ${offlineSnapshotAt.toLocal().toString().substring(0, 16)}'
+                  : liveConnection?.hasError ?? false
                       ? 'Live updates disconnected · reconnecting'
-                      : liveConnection?.valueOrNull?['_connected'] == true
-                          ? 'Live updates connected'
-                          : 'Connecting to live updates…',
+                      : liveConnection?.valueOrNull?['_connected'] == false
+                          ? 'Live updates disconnected · reconnecting'
+                          : liveConnection?.valueOrNull?['_connected'] == true
+                              ? 'Live updates connected'
+                              : 'Connecting to live updates…',
               style: const TextStyle(fontSize: 12, color: Color(0xFF59645D)),
             ),
           ),
@@ -1547,25 +1817,41 @@ class _LiveIssuesPage extends ConsumerWidget {
                         const Center(child: CircularProgressIndicator()),
                     error: (error, _) =>
                         Center(child: Text('Issue list unavailable: $error')),
-                    data: (rows) => ResponsiveIssueWorkspace(
-                      issues: rows
+                    data: (rows) {
+                      final issues = rows
                           .whereType<Map>()
                           .map((row) => Map<String, dynamic>.from(row))
-                          .toList(),
-                      capabilities: capabilities,
-                      canAssign: assignableUserIds.isNotEmpty,
-                      onAction: (issue, action) => _performLiveIssueAction(
-                        context,
-                        ref,
-                        eventId,
-                        issue,
-                        action,
-                        assignableUserIds,
-                        people,
-                      ),
-                      onEvidence: (issue) =>
-                          _showIssueEvidence(context, ref, eventId, issue),
-                    ),
+                          .toList();
+                      if (focusIssueId != null &&
+                          issues.any((issue) => issue['id'] == focusIssueId)) {
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          if (context.mounted &&
+                              ref.read(_pendingIssueNavigationProvider) ==
+                                  focusIssueId) {
+                            ref
+                                .read(_pendingIssueNavigationProvider.notifier)
+                                .state = null;
+                          }
+                        });
+                      }
+                      return ResponsiveIssueWorkspace(
+                        issues: issues,
+                        capabilities: capabilities,
+                        canAssign: assignableUserIds.isNotEmpty,
+                        focusIssueId: focusIssueId,
+                        onAction: (issue, action) => _performLiveIssueAction(
+                          context,
+                          ref,
+                          eventId,
+                          issue,
+                          action,
+                          assignableUserIds,
+                          people,
+                        ),
+                        onEvidence: (issue) =>
+                            _showIssueEvidence(context, ref, eventId, issue),
+                      );
+                    },
                   )),
       _PendingIssueQueue(eventId: eventId),
     ]);
@@ -1753,69 +2039,163 @@ class _LiveTasksPage extends ConsumerWidget {
   const _LiveTasksPage({required this.event, required this.canWrite});
   final Map<String, dynamic> event;
   final bool canWrite;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final eventId = event['id'] as String;
+    final tasks = ref.watch(eventTasksProvider(eventId));
+    return Column(
+      children: [
+        Expanded(
+          child: tasks.when(
+            loading: () => const Center(child: CircularProgressIndicator()),
+            error: (error, _) => Center(
+              child: Text('Operations queue unavailable: $error'),
+            ),
+            data: (rows) => rows.isEmpty
+                ? const Center(child: Text('No tasks for this event yet.'))
+                : ListView(
+                    children: [
+                      for (final row in rows)
+                        _taskCard(context, ref, eventId, row, canWrite),
+                    ],
+                  ),
+          ),
+        ),
+        _IntegrationActivityPanel(eventId: eventId),
+      ],
+    );
+  }
+
+  Widget _taskCard(
+    BuildContext context,
+    WidgetRef ref,
+    String eventId,
+    dynamic value,
+    bool canWrite,
+  ) {
+    final item = Map<String, dynamic>.from(value as Map);
+    final state = item['state'] as String? ?? 'OPEN';
+    return Card(
+      child: ListTile(
+        leading: Icon(
+          state == 'DONE'
+              ? Icons.check_circle_outline
+              : state == 'BLOCKED'
+                  ? Icons.warning_amber_outlined
+                  : Icons.radio_button_unchecked,
+          color: state == 'BLOCKED' ? _coral : _pine,
+        ),
+        title: Text(item['title'] as String? ?? 'Task'),
+        subtitle: Text(
+          '${item['kind']} · $state${item['ownerId'] == null ? '' : ' · ${item['ownerId']}'}',
+        ),
+        trailing: canWrite && state != 'DONE'
+            ? PopupMenuButton<String>(
+                onSelected: (next) async {
+                  try {
+                    await ref.read(operationsApiProvider).updateTask(
+                      eventId,
+                      item['id'] as String,
+                      {'state': next},
+                    );
+                    ref.invalidate(eventTasksProvider(eventId));
+                  } catch (_) {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                            'Could not update task. Check your connection or refresh before retrying.',
+                          ),
+                        ),
+                      );
+                    }
+                  }
+                },
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'IN_PROGRESS', child: Text('Start')),
+                  PopupMenuItem(value: 'BLOCKED', child: Text('Mark blocked')),
+                  PopupMenuItem(value: 'DONE', child: Text('Complete')),
+                ],
+              )
+            : Text(state),
+      ),
+    );
+  }
+}
+
+class _IntegrationActivityPanel extends ConsumerWidget {
+  const _IntegrationActivityPanel({required this.eventId});
+  final String eventId;
+
   @override
   Widget build(BuildContext context, WidgetRef ref) =>
-      ref.watch(eventTasksProvider(event['id'] as String)).when(
-          loading: () => const Center(child: CircularProgressIndicator()),
-          error: (e, _) =>
-              Center(child: Text('Operations queue unavailable: $e')),
-          data: (rows) => rows.isEmpty
-              ? const Center(child: Text('No tasks for this event yet.'))
-              : ListView(
-                  children: rows.map((row) {
-                  final item = Map<String, dynamic>.from(row as Map);
-                  final state = item['state'] as String? ?? 'OPEN';
-                  return Card(
-                      child: ListTile(
-                          leading: Icon(
-                              state == 'DONE'
-                                  ? Icons.check_circle_outline
-                                  : state == 'BLOCKED'
-                                      ? Icons.warning_amber_outlined
-                                      : Icons.radio_button_unchecked,
-                              color: state == 'BLOCKED' ? _coral : _pine),
-                          title: Text(item['title'] as String? ?? 'Task'),
-                          subtitle: Text(
-                              '${item['kind']} · $state${item['ownerId'] == null ? '' : ' · ${item['ownerId']}'}'),
-                          trailing: canWrite && state != 'DONE'
-                              ? PopupMenuButton<String>(
-                                  onSelected: (next) async {
-                                    try {
-                                      await ref
-                                          .read(operationsApiProvider)
-                                          .updateTask(
-                                              event['id'] as String,
-                                              item['id'] as String,
-                                              {'state': next});
-                                      ref.invalidate(eventTasksProvider(
-                                          event['id'] as String));
-                                    } catch (_) {
-                                      if (context.mounted) {
-                                        ScaffoldMessenger.of(context)
-                                            .showSnackBar(SnackBar(
-                                          content: const Text(
-                                              'Could not update task. Check your connection or refresh before retrying.'),
-                                        ));
-                                      }
-                                    }
-                                  },
-                                  itemBuilder: (_) => const [
-                                        PopupMenuItem(
-                                            value: 'IN_PROGRESS',
-                                            child: Text('Start')),
-                                        PopupMenuItem(
-                                            value: 'BLOCKED',
-                                            child: Text('Mark blocked')),
-                                        PopupMenuItem(
-                                            value: 'DONE',
-                                            child: Text('Complete'))
-                                      ])
-                              : Text(state)));
-                }).toList()));
+      ref.watch(eventIntegrationEventsProvider(eventId)).when(
+            loading: () => const LinearProgressIndicator(),
+            error: (error, _) => ListTile(
+              leading: const Icon(Icons.sync_problem_outlined),
+              title: const Text('Integration activity unavailable'),
+              subtitle: Text('$error'),
+              trailing: IconButton(
+                tooltip: 'Retry integration activity',
+                onPressed: () =>
+                    ref.invalidate(eventIntegrationEventsProvider(eventId)),
+                icon: const Icon(Icons.refresh),
+              ),
+            ),
+            data: (events) => Card(
+              child: ExpansionTile(
+                leading: const Icon(Icons.hub_outlined),
+                title: const Text('Integration activity'),
+                subtitle: Text(
+                  '${events.length} recent accepted event${events.length == 1 ? '' : 's'} · latest 20 shown',
+                ),
+                children: [
+                  if (events.isEmpty)
+                    const ListTile(
+                      title:
+                          Text('No external events recorded for this event.'),
+                    )
+                  else
+                    SizedBox(
+                      height: 220,
+                      child: ListView(
+                        children: [
+                          for (final value in events.take(20))
+                            _integrationEventTile(value),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          );
+
+  Widget _integrationEventTile(dynamic value) {
+    final row = Map<String, dynamic>.from(value as Map);
+    final occurredAt =
+        DateTime.tryParse('${row['occurredAt'] ?? ''}')?.toLocal();
+    return ListTile(
+      dense: true,
+      leading: const Icon(Icons.check_circle_outline),
+      title:
+          Text('${row['source'] ?? 'Source'} · ${row['eventType'] ?? 'Event'}'),
+      subtitle: Text(
+        '${row['externalId'] ?? ''} · ${occurredAt == null ? 'Time unavailable' : _clockLabel(occurredAt)}',
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+      ),
+    );
+  }
 }
 
 class _LiveInventoryPage extends ConsumerWidget {
-  const _LiveInventoryPage({required this.event, required this.canWrite, required this.isAdmin, required this.subject, required this.locations});
+  const _LiveInventoryPage(
+      {required this.event,
+      required this.canWrite,
+      required this.isAdmin,
+      required this.subject,
+      required this.locations});
   final Map<String, dynamic> event;
   final bool canWrite;
   final bool isAdmin;
@@ -1827,207 +2207,729 @@ class _LiveInventoryPage extends ConsumerWidget {
     final eventId = event['id'] as String;
     final venueId = event['venueId'] as String;
     return ref.watch(eventInventoryCountsProvider(eventId)).when(
-      loading: () => const Center(child: CircularProgressIndicator()),
-      error: (error, _) => Center(child: Text('Inventory counts unavailable: $error')),
-      data: (counts) => Column(children: [
-        Padding(padding: const EdgeInsets.all(12), child: Wrap(spacing: 8, children: [
-          if (canWrite) FilledButton.icon(onPressed: () => _startStockCount(context, ref, eventId, venueId), icon: const Icon(Icons.playlist_add_check), label: const Text('Start venue count')),
-          for (final location in locations.where((row) => row['venueId'] == venueId)) if (canWrite) OutlinedButton.icon(onPressed: () => _startStockCount(context, ref, eventId, venueId, locationId: location['id'] as String), icon: const Icon(Icons.location_on_outlined), label: Text('Count ${location['name']}')),
-          if (isAdmin) OutlinedButton.icon(onPressed: () => _addStockItem(context, ref, venueId, eventId), icon: const Icon(Icons.add_box_outlined), label: const Text('Add stock item')),
-          if (canWrite) OutlinedButton.icon(onPressed: () => _requestStockTransfer(context, ref, eventId, venueId), icon: const Icon(Icons.swap_horiz), label: const Text('Request transfer')),
-          if (canWrite) OutlinedButton.icon(onPressed: () => _createStockPurchaseOrder(context, ref, eventId, venueId), icon: const Icon(Icons.playlist_add_outlined), label: const Text('Request venue purchase')),
-          for (final location in locations.where((row) => row['venueId'] == venueId))
-            if (canWrite) OutlinedButton.icon(onPressed: () => _createStockPurchaseOrder(context, ref, eventId, venueId, locationId: location['id'] as String, locationName: location['name'] as String? ?? 'Location'), icon: const Icon(Icons.location_on_outlined), label: Text('Request ${location['name']} purchase')),
-        ])),
-        ref.watch(eventStockTransfersProvider(eventId)).when(
-          loading: () => const LinearProgressIndicator(),
-          error: (error, _) => ListTile(title: const Text('Transfers unavailable'), subtitle: Text('$error')),
-          data: (transfers) => transfers.isEmpty ? const SizedBox.shrink() : SizedBox(height: 190, child: ListView.builder(itemCount: transfers.length, itemBuilder: (context, index) {
-            final transfer = transfers[index];
-            final source = locations.where((row) => row['id'] == transfer['sourceLocationId']);
-            final destination = locations.where((row) => row['id'] == transfer['destinationLocationId']);
-            final sourceName = source.isEmpty ? 'Venue stock' : source.first['name'] as String? ?? 'Source';
-            final destinationName = destination.isEmpty ? 'Venue stock' : destination.first['name'] as String? ?? 'Destination';
-            final state = transfer['state'] as String? ?? 'REQUESTED';
-            return Card(child: ListTile(
-              leading: const Icon(Icons.swap_horiz),
-              title: Text('$sourceName → $destinationName · $state'),
-              subtitle: Text(((transfer['lines'] as List? ?? const []).whereType<Map>().map((line) => '${line['name']}: ${line['receivedQuantity'] ?? line['requestedQuantity']} ${line['unit']}')).join(' · ')),
-              trailing: canWrite ? Wrap(children: [
-                if (state == 'REQUESTED') IconButton(tooltip: 'Dispatch', icon: const Icon(Icons.local_shipping_outlined), onPressed: () => _stockTransferAction(context, ref, eventId, transfer['id'] as String, 'dispatch')),
-                if (state == 'REQUESTED') IconButton(tooltip: 'Cancel', icon: const Icon(Icons.cancel_outlined), onPressed: () => _cancelStockTransfer(context, ref, eventId, transfer['id'] as String)),
-                if (state == 'IN_TRANSIT') IconButton(tooltip: 'Confirm receipt', icon: const Icon(Icons.inventory_2_outlined), onPressed: () => _receiveStockTransfer(context, ref, eventId, transfer)),
-              ]) : null,
-            ));
-          })),
-        ),
-        ref.watch(eventStockPurchaseOrdersProvider(eventId)).when(
-          loading: () => const LinearProgressIndicator(),
-          error: (error, _) => ListTile(title: const Text('Purchase orders unavailable'), subtitle: Text('$error')),
-          data: (orders) => orders.isEmpty ? const SizedBox.shrink() : SizedBox(height: 205, child: ListView.builder(itemCount: orders.length, itemBuilder: (context, index) {
-            final order = orders[index];
-            final orderId = order['id'] as String;
-            final state = order['state'] as String? ?? 'SUBMITTED';
-            final lines = (order['lines'] as List? ?? const []).whereType<Map>().map((line) => '${line['name']}: ${line['receivedQuantity'] ?? 0}/${line['orderedQuantity']} ${line['unit']}').join(' · ');
-            return Card(child: ListTile(
-              leading: const Icon(Icons.local_shipping_outlined),
-              title: Text('${order['supplierName']} · ${state.replaceAll('_', ' ')}'),
-              subtitle: Text(lines),
-              trailing: canWrite ? Wrap(children: [
-                if (state == 'SUBMITTED' && order['requestedBy'] != subject) IconButton(tooltip: 'Approve (independent manager)', icon: const Icon(Icons.verified_outlined), onPressed: () => _stockPurchaseOrderAction(context, ref, eventId, orderId, 'approve')),
-                if (state == 'SUBMITTED' && order['requestedBy'] == subject) IconButton(tooltip: 'Cancel purchase request', icon: const Icon(Icons.cancel_outlined), onPressed: () => _cancelStockPurchaseOrder(context, ref, eventId, orderId)),
-                if ((state == 'APPROVED' || state == 'PARTIALLY_RECEIVED') && order['approvedBy'] != subject) IconButton(tooltip: 'Record received quantities', icon: const Icon(Icons.inventory_outlined), onPressed: () => _receiveStockPurchaseOrder(context, ref, eventId, order)),
-                if (state == 'PARTIALLY_RECEIVED') IconButton(tooltip: 'Close with short quantity', icon: const Icon(Icons.assignment_turned_in_outlined), onPressed: () => _closeShortStockPurchaseOrder(context, ref, eventId, orderId)),
-              ]) : null,
-            ));
-          })),
-        ),
-        if (counts.isEmpty) const Expanded(child: Center(child: Text('No stock counts for this event. Start a count or add items to the catalog.')))
-        else Expanded(child: ListView.builder(itemCount: counts.length, itemBuilder: (context, index) {
-          final count = counts[index];
-          final lines = (count['lines'] as List? ?? const []).whereType<Map>().map((row) => Map<String, dynamic>.from(row)).toList();
-          final countId = count['id'] as String;
-          final state = count['state'] as String? ?? 'IN_PROGRESS';
-          return Card(child: ExpansionTile(
-            title: Text('Stock count · $state'),
-            subtitle: Text('Started ${DateTime.tryParse(count['createdAt'] as String? ?? '')?.toLocal().toString() ?? ''} · ${lines.length} items'),
-            children: [
-              for (final line in lines) ListTile(
-                title: Text('${line['name']} (${line['sku']})'),
-                subtitle: Text('${line['unit']} · counted ${line['countedQuantity'] ?? 'not entered'}${line['expectedQuantity'] == null ? '' : ' · expected ${line['expectedQuantity']}'}'),
-                trailing: canWrite && state == 'IN_PROGRESS' ? IconButton(icon: const Icon(Icons.edit_outlined), tooltip: 'Enter count', onPressed: () => _recordStockLine(context, ref, eventId, countId, line)) : null,
-              ),
-              if (canWrite && state == 'IN_PROGRESS') Align(alignment: Alignment.centerRight, child: TextButton(onPressed: () async {
-                try { await ref.read(operationsApiProvider).inventoryCountCommand(eventId, countId, 'submit'); ref.invalidate(eventInventoryCountsProvider(eventId)); }
-                catch (error) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not submit count: $error'))); }
-              }, child: const Text('Submit for independent review'))),
-              if (canWrite && state == 'SUBMITTED') Align(alignment: Alignment.centerRight, child: TextButton(onPressed: () => _approveStockCount(context, ref, eventId, countId), child: const Text('Review and approve'))),
-            ],
-          ));
-        })),
-      ]),
-    );
+          loading: () => const Center(child: CircularProgressIndicator()),
+          error: (error, _) =>
+              Center(child: Text('Inventory counts unavailable: $error')),
+          data: (counts) => Column(children: [
+            Padding(
+                padding: const EdgeInsets.all(12),
+                child: Wrap(spacing: 8, children: [
+                  if (canWrite)
+                    FilledButton.icon(
+                        onPressed: () =>
+                            _startStockCount(context, ref, eventId, venueId),
+                        icon: const Icon(Icons.playlist_add_check),
+                        label: const Text('Start venue count')),
+                  for (final location
+                      in locations.where((row) => row['venueId'] == venueId))
+                    if (canWrite)
+                      OutlinedButton.icon(
+                          onPressed: () => _startStockCount(
+                              context, ref, eventId, venueId,
+                              locationId: location['id'] as String),
+                          icon: const Icon(Icons.location_on_outlined),
+                          label: Text('Count ${location['name']}')),
+                  if (isAdmin)
+                    OutlinedButton.icon(
+                        onPressed: () =>
+                            _addStockItem(context, ref, venueId, eventId),
+                        icon: const Icon(Icons.add_box_outlined),
+                        label: const Text('Add stock item')),
+                  if (canWrite)
+                    OutlinedButton.icon(
+                        onPressed: () => _requestStockTransfer(
+                            context, ref, eventId, venueId),
+                        icon: const Icon(Icons.swap_horiz),
+                        label: const Text('Request transfer')),
+                  if (canWrite)
+                    OutlinedButton.icon(
+                        onPressed: () => _createStockPurchaseOrder(
+                            context, ref, eventId, venueId),
+                        icon: const Icon(Icons.playlist_add_outlined),
+                        label: const Text('Request venue purchase')),
+                  for (final location
+                      in locations.where((row) => row['venueId'] == venueId))
+                    if (canWrite)
+                      OutlinedButton.icon(
+                          onPressed: () => _createStockPurchaseOrder(
+                              context, ref, eventId, venueId,
+                              locationId: location['id'] as String,
+                              locationName:
+                                  location['name'] as String? ?? 'Location'),
+                          icon: const Icon(Icons.location_on_outlined),
+                          label: Text('Request ${location['name']} purchase')),
+                ])),
+            ref.watch(eventStockTransfersProvider(eventId)).when(
+                  loading: () => const LinearProgressIndicator(),
+                  error: (error, _) => ListTile(
+                      title: const Text('Transfers unavailable'),
+                      subtitle: Text('$error')),
+                  data: (transfers) => transfers.isEmpty
+                      ? const SizedBox.shrink()
+                      : SizedBox(
+                          height: 190,
+                          child: ListView.builder(
+                              itemCount: transfers.length,
+                              itemBuilder: (context, index) {
+                                final transfer = transfers[index];
+                                final source = locations.where((row) =>
+                                    row['id'] == transfer['sourceLocationId']);
+                                final destination = locations.where((row) =>
+                                    row['id'] ==
+                                    transfer['destinationLocationId']);
+                                final sourceName = source.isEmpty
+                                    ? 'Venue stock'
+                                    : source.first['name'] as String? ??
+                                        'Source';
+                                final destinationName = destination.isEmpty
+                                    ? 'Venue stock'
+                                    : destination.first['name'] as String? ??
+                                        'Destination';
+                                final state =
+                                    transfer['state'] as String? ?? 'REQUESTED';
+                                return Card(
+                                    child: ListTile(
+                                  leading: const Icon(Icons.swap_horiz),
+                                  title: Text(
+                                      '$sourceName → $destinationName · $state'),
+                                  subtitle: Text(((transfer['lines'] as List? ??
+                                              const [])
+                                          .whereType<Map>()
+                                          .map((line) =>
+                                              '${line['name']}: ${line['receivedQuantity'] ?? line['requestedQuantity']} ${line['unit']}'))
+                                      .join(' · ')),
+                                  trailing: canWrite
+                                      ? Wrap(children: [
+                                          if (state == 'REQUESTED')
+                                            IconButton(
+                                                tooltip: 'Dispatch',
+                                                icon: const Icon(Icons
+                                                    .local_shipping_outlined),
+                                                onPressed: () =>
+                                                    _stockTransferAction(
+                                                        context,
+                                                        ref,
+                                                        eventId,
+                                                        transfer['id']
+                                                            as String,
+                                                        'dispatch')),
+                                          if (state == 'REQUESTED')
+                                            IconButton(
+                                                tooltip: 'Cancel',
+                                                icon: const Icon(
+                                                    Icons.cancel_outlined),
+                                                onPressed: () =>
+                                                    _cancelStockTransfer(
+                                                        context,
+                                                        ref,
+                                                        eventId,
+                                                        transfer['id']
+                                                            as String)),
+                                          if (state == 'IN_TRANSIT')
+                                            IconButton(
+                                                tooltip: 'Confirm receipt',
+                                                icon: const Icon(
+                                                    Icons.inventory_2_outlined),
+                                                onPressed: () =>
+                                                    _receiveStockTransfer(
+                                                        context,
+                                                        ref,
+                                                        eventId,
+                                                        transfer)),
+                                        ])
+                                      : null,
+                                ));
+                              })),
+                ),
+            ref.watch(eventStockPurchaseOrdersProvider(eventId)).when(
+                  loading: () => const LinearProgressIndicator(),
+                  error: (error, _) => ListTile(
+                      title: const Text('Purchase orders unavailable'),
+                      subtitle: Text('$error')),
+                  data: (orders) => orders.isEmpty
+                      ? const SizedBox.shrink()
+                      : SizedBox(
+                          height: 205,
+                          child: ListView.builder(
+                              itemCount: orders.length,
+                              itemBuilder: (context, index) {
+                                final order = orders[index];
+                                final orderId = order['id'] as String;
+                                final state =
+                                    order['state'] as String? ?? 'SUBMITTED';
+                                final lines = (order['lines'] as List? ??
+                                        const [])
+                                    .whereType<Map>()
+                                    .map((line) =>
+                                        '${line['name']}: ${line['receivedQuantity'] ?? 0}/${line['orderedQuantity']} ${line['unit']}')
+                                    .join(' · ');
+                                return Card(
+                                    child: ListTile(
+                                  leading:
+                                      const Icon(Icons.local_shipping_outlined),
+                                  title: Text(
+                                      '${order['supplierName']} · ${state.replaceAll('_', ' ')}'),
+                                  subtitle: Text(lines),
+                                  trailing: canWrite
+                                      ? Wrap(children: [
+                                          if (state == 'SUBMITTED' &&
+                                              order['requestedBy'] != subject)
+                                            IconButton(
+                                                tooltip:
+                                                    'Approve (independent manager)',
+                                                icon: const Icon(
+                                                    Icons.verified_outlined),
+                                                onPressed: () =>
+                                                    _stockPurchaseOrderAction(
+                                                        context,
+                                                        ref,
+                                                        eventId,
+                                                        orderId,
+                                                        'approve')),
+                                          if (state == 'SUBMITTED' &&
+                                              order['requestedBy'] == subject)
+                                            IconButton(
+                                                tooltip:
+                                                    'Cancel purchase request',
+                                                icon: const Icon(
+                                                    Icons.cancel_outlined),
+                                                onPressed: () =>
+                                                    _cancelStockPurchaseOrder(
+                                                        context,
+                                                        ref,
+                                                        eventId,
+                                                        orderId)),
+                                          if ((state == 'APPROVED' ||
+                                                  state ==
+                                                      'PARTIALLY_RECEIVED') &&
+                                              order['approvedBy'] != subject)
+                                            IconButton(
+                                                tooltip:
+                                                    'Record received quantities',
+                                                icon: const Icon(
+                                                    Icons.inventory_outlined),
+                                                onPressed: () =>
+                                                    _receiveStockPurchaseOrder(
+                                                        context,
+                                                        ref,
+                                                        eventId,
+                                                        order)),
+                                          if (state == 'PARTIALLY_RECEIVED')
+                                            IconButton(
+                                                tooltip:
+                                                    'Close with short quantity',
+                                                icon: const Icon(Icons
+                                                    .assignment_turned_in_outlined),
+                                                onPressed: () =>
+                                                    _closeShortStockPurchaseOrder(
+                                                        context,
+                                                        ref,
+                                                        eventId,
+                                                        orderId)),
+                                        ])
+                                      : null,
+                                ));
+                              })),
+                ),
+            if (counts.isEmpty)
+              const Expanded(
+                  child: Center(
+                      child: Text(
+                          'No stock counts for this event. Start a count or add items to the catalog.')))
+            else
+              Expanded(
+                  child: ListView.builder(
+                      itemCount: counts.length,
+                      itemBuilder: (context, index) {
+                        final count = counts[index];
+                        final lines = (count['lines'] as List? ?? const [])
+                            .whereType<Map>()
+                            .map((row) => Map<String, dynamic>.from(row))
+                            .toList();
+                        final countId = count['id'] as String;
+                        final state =
+                            count['state'] as String? ?? 'IN_PROGRESS';
+                        return Card(
+                            child: ExpansionTile(
+                          title: Text('Stock count · $state'),
+                          subtitle: Text(
+                              'Started ${DateTime.tryParse(count['createdAt'] as String? ?? '')?.toLocal().toString() ?? ''} · ${lines.length} items'),
+                          children: [
+                            for (final line in lines)
+                              ListTile(
+                                title: Text('${line['name']} (${line['sku']})'),
+                                subtitle: Text(
+                                    '${line['unit']} · counted ${line['countedQuantity'] ?? 'not entered'}${line['expectedQuantity'] == null ? '' : ' · expected ${line['expectedQuantity']}'}'),
+                                trailing: canWrite && state == 'IN_PROGRESS'
+                                    ? IconButton(
+                                        icon: const Icon(Icons.edit_outlined),
+                                        tooltip: 'Enter count',
+                                        onPressed: () => _recordStockLine(
+                                            context,
+                                            ref,
+                                            eventId,
+                                            countId,
+                                            line))
+                                    : null,
+                              ),
+                            if (canWrite && state == 'IN_PROGRESS')
+                              Align(
+                                  alignment: Alignment.centerRight,
+                                  child: TextButton(
+                                      onPressed: () async {
+                                        try {
+                                          await ref
+                                              .read(operationsApiProvider)
+                                              .inventoryCountCommand(
+                                                  eventId, countId, 'submit');
+                                          ref.invalidate(
+                                              eventInventoryCountsProvider(
+                                                  eventId));
+                                        } catch (error) {
+                                          if (context.mounted) {
+                                            ScaffoldMessenger.of(context)
+                                                .showSnackBar(SnackBar(
+                                                    content: Text(
+                                                        'Could not submit count: $error')));
+                                          }
+                                        }
+                                      },
+                                      child: const Text(
+                                          'Submit for independent review'))),
+                            if (canWrite && state == 'SUBMITTED')
+                              Align(
+                                  alignment: Alignment.centerRight,
+                                  child: TextButton(
+                                      onPressed: () => _approveStockCount(
+                                          context, ref, eventId, countId),
+                                      child: const Text('Review and approve'))),
+                          ],
+                        ));
+                      })),
+          ]),
+        );
   }
 
-  Future<void> _startStockCount(BuildContext context, WidgetRef ref, String eventId, String venueId, {String? locationId}) async {
-    try { await ref.read(operationsApiProvider).startInventoryCount(eventId, venueId, locationId: locationId); ref.invalidate(eventInventoryCountsProvider(eventId)); }
-    catch (error) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not start count: $error'))); }
+  Future<void> _startStockCount(
+      BuildContext context, WidgetRef ref, String eventId, String venueId,
+      {String? locationId}) async {
+    try {
+      await ref
+          .read(operationsApiProvider)
+          .startInventoryCount(eventId, venueId, locationId: locationId);
+      ref.invalidate(eventInventoryCountsProvider(eventId));
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not start count: $error')));
+      }
+    }
   }
 
-  Future<void> _recordStockLine(BuildContext context, WidgetRef ref, String eventId, String countId, Map<String, dynamic> line) async {
-    final quantity = TextEditingController(text: line['countedQuantity']?.toString() ?? '');
+  Future<void> _recordStockLine(BuildContext context, WidgetRef ref,
+      String eventId, String countId, Map<String, dynamic> line) async {
+    final quantity =
+        TextEditingController(text: line['countedQuantity']?.toString() ?? '');
     final note = TextEditingController(text: line['note']?.toString() ?? '');
-    final save = await showDialog<bool>(context: context, builder: (dialogContext) => AlertDialog(
-      title: Text('Count ${line['name']}'),
-      content: Column(mainAxisSize: MainAxisSize.min, children: [TextField(controller: quantity, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: InputDecoration(labelText: 'Quantity (${line['unit']})')), TextField(controller: note, decoration: const InputDecoration(labelText: 'Note (optional)'))]),
-      actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')), FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Save count'))],
-    ));
+    final save = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+              title: Text('Count ${line['name']}'),
+              content: Column(mainAxisSize: MainAxisSize.min, children: [
+                TextField(
+                    controller: quantity,
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                    decoration: InputDecoration(
+                        labelText: 'Quantity (${line['unit']})')),
+                TextField(
+                    controller: note,
+                    decoration:
+                        const InputDecoration(labelText: 'Note (optional)'))
+              ]),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(dialogContext, false),
+                    child: const Text('Cancel')),
+                FilledButton(
+                    onPressed: () => Navigator.pop(dialogContext, true),
+                    child: const Text('Save count'))
+              ],
+            ));
     if (save != true) return;
     final parsed = double.tryParse(quantity.text.trim());
-    if (parsed == null || parsed < 0) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Enter a valid non-negative quantity.'))); return; }
-    try { await ref.read(operationsApiProvider).recordInventoryCount(eventId, countId, line['id'] as String, parsed, note: note.text.trim().isEmpty ? null : note.text.trim()); ref.invalidate(eventInventoryCountsProvider(eventId)); }
-    catch (error) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not save count: $error'))); }
+    if (parsed == null || parsed < 0) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Enter a valid non-negative quantity.')));
+      }
+      return;
+    }
+    try {
+      await ref.read(operationsApiProvider).recordInventoryCount(
+          eventId, countId, line['id'] as String, parsed,
+          note: note.text.trim().isEmpty ? null : note.text.trim());
+      ref.invalidate(eventInventoryCountsProvider(eventId));
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not save count: $error')));
+      }
+    }
   }
 
-  Future<void> _approveStockCount(BuildContext context, WidgetRef ref, String eventId, String countId) async {
+  Future<void> _approveStockCount(BuildContext context, WidgetRef ref,
+      String eventId, String countId) async {
     final reason = TextEditingController();
-    final approve = await showDialog<bool>(context: context, builder: (dialogContext) => AlertDialog(
-      title: const Text('Review stock variance'),
-      content: TextField(controller: reason, minLines: 2, maxLines: 4, decoration: const InputDecoration(labelText: 'Reason for approval')),
-      actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')), FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Approve adjustments'))],
-    ));
+    final approve = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+              title: const Text('Review stock variance'),
+              content: TextField(
+                  controller: reason,
+                  minLines: 2,
+                  maxLines: 4,
+                  decoration:
+                      const InputDecoration(labelText: 'Reason for approval')),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(dialogContext, false),
+                    child: const Text('Cancel')),
+                FilledButton(
+                    onPressed: () => Navigator.pop(dialogContext, true),
+                    child: const Text('Approve adjustments'))
+              ],
+            ));
     if (approve != true) return;
-    try { await ref.read(operationsApiProvider).inventoryCountCommand(eventId, countId, 'approve', reason: reason.text.trim()); ref.invalidate(eventInventoryCountsProvider(eventId)); }
-    catch (error) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not approve count: $error'))); }
+    try {
+      await ref.read(operationsApiProvider).inventoryCountCommand(
+          eventId, countId, 'approve',
+          reason: reason.text.trim());
+      ref.invalidate(eventInventoryCountsProvider(eventId));
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not approve count: $error')));
+      }
+    }
   }
 
-  Future<void> _addStockItem(BuildContext context, WidgetRef ref, String venueId, String eventId) async {
-    final sku = TextEditingController(), name = TextEditingController(), unit = TextEditingController();
-    final save = await showDialog<bool>(context: context, builder: (dialogContext) => AlertDialog(
-      title: const Text('Add stock catalog item'),
-      content: Column(mainAxisSize: MainAxisSize.min, children: [TextField(controller: sku, decoration: const InputDecoration(labelText: 'SKU')), TextField(controller: name, decoration: const InputDecoration(labelText: 'Item name')), TextField(controller: unit, decoration: const InputDecoration(labelText: 'Count unit (e.g. case, each)'))]),
-      actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')), FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Add item'))],
-    ));
+  Future<void> _addStockItem(BuildContext context, WidgetRef ref,
+      String venueId, String eventId) async {
+    final sku = TextEditingController(),
+        name = TextEditingController(),
+        unit = TextEditingController();
+    final save = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+              title: const Text('Add stock catalog item'),
+              content: Column(mainAxisSize: MainAxisSize.min, children: [
+                TextField(
+                    controller: sku,
+                    decoration: const InputDecoration(labelText: 'SKU')),
+                TextField(
+                    controller: name,
+                    decoration: const InputDecoration(labelText: 'Item name')),
+                TextField(
+                    controller: unit,
+                    decoration: const InputDecoration(
+                        labelText: 'Count unit (e.g. case, each)'))
+              ]),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(dialogContext, false),
+                    child: const Text('Cancel')),
+                FilledButton(
+                    onPressed: () => Navigator.pop(dialogContext, true),
+                    child: const Text('Add item'))
+              ],
+            ));
     if (save != true) return;
-    try { await ref.read(operationsApiProvider).createInventoryItem(venueId, sku.text.trim(), name.text.trim(), unit.text.trim()); ref.invalidate(eventInventoryCountsProvider(eventId)); if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Catalog item added.'))); }
-    catch (error) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not add catalog item: $error'))); }
+    try {
+      await ref.read(operationsApiProvider).createInventoryItem(
+          venueId, sku.text.trim(), name.text.trim(), unit.text.trim());
+      ref.invalidate(eventInventoryCountsProvider(eventId));
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Catalog item added.')));
+      }
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not add catalog item: $error')));
+      }
+    }
   }
 
-  Future<void> _requestStockTransfer(BuildContext context, WidgetRef ref, String eventId, String venueId) async {
-    final venueLocations = locations.where((row) => row['venueId'] == venueId).toList();
-    if (venueLocations.length < 2) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Create at least two locations before requesting a transfer.'))); return; }
+  Future<void> _requestStockTransfer(BuildContext context, WidgetRef ref,
+      String eventId, String venueId) async {
+    final venueLocations =
+        locations.where((row) => row['venueId'] == venueId).toList();
+    if (venueLocations.length < 2) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text(
+              'Create at least two locations before requesting a transfer.')));
+      return;
+    }
     String sourceId = venueLocations.first['id'] as String;
-    String destinationId = (venueLocations.length > 1 ? venueLocations[1] : venueLocations.first)['id'] as String;
+    String destinationId = (venueLocations.length > 1
+        ? venueLocations[1]
+        : venueLocations.first)['id'] as String;
     final quantity = TextEditingController(text: '1');
     Map<String, dynamic>? selectedItem;
-    final chosen = await showDialog<Map<String, Object?>?>(context: context, builder: (dialogContext) => StatefulBuilder(builder: (context, setState) => AlertDialog(
-      title: const Text('Request stock transfer'),
-      content: SizedBox(width: 420, child: Column(mainAxisSize: MainAxisSize.min, children: [
-        DropdownButtonFormField<String>(initialValue: sourceId, decoration: const InputDecoration(labelText: 'From'), items: venueLocations.map((row) => DropdownMenuItem(value: row['id'] as String, child: Text(row['name'] as String? ?? 'Location'))).toList(), onChanged: (value) { if (value != null) setState(() { sourceId = value; if (destinationId == value) destinationId = venueLocations.firstWhere((row) => row['id'] != value)['id'] as String; selectedItem = null; }); }),
-        DropdownButtonFormField<String>(initialValue: destinationId, decoration: const InputDecoration(labelText: 'To'), items: venueLocations.where((row) => row['id'] != sourceId).map((row) => DropdownMenuItem(value: row['id'] as String, child: Text(row['name'] as String? ?? 'Location'))).toList(), onChanged: (value) { if (value != null) setState(() => destinationId = value); }),
-        const SizedBox(height: 8),
-        FutureBuilder<List<Map<String, dynamic>>>(future: ref.read(operationsApiProvider).inventoryItems(venueId, locationId: sourceId), builder: (context, snapshot) {
-          final items = snapshot.data ?? const <Map<String, dynamic>>[];
-          if (snapshot.connectionState == ConnectionState.waiting) return const LinearProgressIndicator();
-          if (snapshot.hasError) return Text('Catalog unavailable: ${snapshot.error}');
-          return DropdownButtonFormField<String>(initialValue: selectedItem?['id'] as String?, decoration: const InputDecoration(labelText: 'Item'), items: items.map((item) => DropdownMenuItem(value: item['id'] as String, child: Text('${item['name']} · ${item['onHand']} ${item['unit']}'))).toList(), onChanged: (id) => setState(() => selectedItem = items.where((item) => item['id'] == id).firstOrNull));
-        }),
-        TextField(controller: quantity, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Quantity')),
-      ])),
-      actions: [TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')), FilledButton(onPressed: selectedItem == null ? null : () => Navigator.pop(dialogContext, {'itemId': selectedItem!['id'] as String, 'quantity': double.tryParse(quantity.text) ?? 0}), child: const Text('Create request'))],
-    )));
+    final chosen = await showDialog<Map<String, Object?>?>(
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(
+            builder: (context, setState) => AlertDialog(
+                  title: const Text('Request stock transfer'),
+                  content: SizedBox(
+                      width: 420,
+                      child: Column(mainAxisSize: MainAxisSize.min, children: [
+                        DropdownButtonFormField<String>(
+                            initialValue: sourceId,
+                            decoration:
+                                const InputDecoration(labelText: 'From'),
+                            items: venueLocations
+                                .map((row) => DropdownMenuItem(
+                                    value: row['id'] as String,
+                                    child: Text(
+                                        row['name'] as String? ?? 'Location')))
+                                .toList(),
+                            onChanged: (value) {
+                              if (value != null) {
+                                setState(() {
+                                  sourceId = value;
+                                  if (destinationId == value) {
+                                    destinationId = venueLocations.firstWhere(
+                                            (row) => row['id'] != value)['id']
+                                        as String;
+                                  }
+                                  selectedItem = null;
+                                });
+                              }
+                            }),
+                        DropdownButtonFormField<String>(
+                            initialValue: destinationId,
+                            decoration: const InputDecoration(labelText: 'To'),
+                            items: venueLocations
+                                .where((row) => row['id'] != sourceId)
+                                .map((row) => DropdownMenuItem(
+                                    value: row['id'] as String,
+                                    child: Text(
+                                        row['name'] as String? ?? 'Location')))
+                                .toList(),
+                            onChanged: (value) {
+                              if (value != null) {
+                                setState(() => destinationId = value);
+                              }
+                            }),
+                        const SizedBox(height: 8),
+                        FutureBuilder<List<Map<String, dynamic>>>(
+                            future: ref
+                                .read(operationsApiProvider)
+                                .inventoryItems(venueId, locationId: sourceId),
+                            builder: (context, snapshot) {
+                              final items = snapshot.data ??
+                                  const <Map<String, dynamic>>[];
+                              if (snapshot.connectionState ==
+                                  ConnectionState.waiting) {
+                                return const LinearProgressIndicator();
+                              }
+                              if (snapshot.hasError) {
+                                return Text(
+                                    'Catalog unavailable: ${snapshot.error}');
+                              }
+                              return DropdownButtonFormField<String>(
+                                  initialValue: selectedItem?['id'] as String?,
+                                  decoration:
+                                      const InputDecoration(labelText: 'Item'),
+                                  items: items
+                                      .map((item) => DropdownMenuItem(
+                                          value: item['id'] as String,
+                                          child: Text(
+                                              '${item['name']} · ${item['onHand']} ${item['unit']}')))
+                                      .toList(),
+                                  onChanged: (id) => setState(() =>
+                                      selectedItem = items
+                                          .where((item) => item['id'] == id)
+                                          .firstOrNull));
+                            }),
+                        TextField(
+                            controller: quantity,
+                            keyboardType: const TextInputType.numberWithOptions(
+                                decimal: true),
+                            decoration:
+                                const InputDecoration(labelText: 'Quantity')),
+                      ])),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(dialogContext),
+                        child: const Text('Cancel')),
+                    FilledButton(
+                        onPressed: selectedItem == null
+                            ? null
+                            : () => Navigator.pop(dialogContext, {
+                                  'itemId': selectedItem!['id'] as String,
+                                  'quantity':
+                                      double.tryParse(quantity.text) ?? 0
+                                }),
+                        child: const Text('Create request'))
+                  ],
+                )));
     if (chosen == null) return;
-    try { await ref.read(operationsApiProvider).createStockTransfer(eventId, venueId, sourceId, destinationId, [chosen]); ref.invalidate(eventStockTransfersProvider(eventId)); }
-    catch (error) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not request transfer: $error'))); }
+    try {
+      await ref.read(operationsApiProvider).createStockTransfer(
+          eventId, venueId, sourceId, destinationId, [chosen]);
+      ref.invalidate(eventStockTransfersProvider(eventId));
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not request transfer: $error')));
+      }
+    }
   }
 
-  Future<void> _stockTransferAction(BuildContext context, WidgetRef ref, String eventId, String transferId, String action) async {
-    try { await ref.read(operationsApiProvider).stockTransferAction(eventId, transferId, action); ref.invalidate(eventStockTransfersProvider(eventId)); ref.invalidate(eventInventoryCountsProvider(eventId)); }
-    catch (error) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not $action transfer: $error'))); }
+  Future<void> _stockTransferAction(BuildContext context, WidgetRef ref,
+      String eventId, String transferId, String action) async {
+    try {
+      await ref
+          .read(operationsApiProvider)
+          .stockTransferAction(eventId, transferId, action);
+      ref.invalidate(eventStockTransfersProvider(eventId));
+      ref.invalidate(eventInventoryCountsProvider(eventId));
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not $action transfer: $error')));
+      }
+    }
   }
 
-  Future<void> _cancelStockTransfer(BuildContext context, WidgetRef ref, String eventId, String transferId) async {
+  Future<void> _cancelStockTransfer(BuildContext context, WidgetRef ref,
+      String eventId, String transferId) async {
     final reason = TextEditingController();
-    final confirmed = await showDialog<bool>(context: context, builder: (dialogContext) => AlertDialog(title: const Text('Cancel transfer'), content: TextField(controller: reason, decoration: const InputDecoration(labelText: 'Reason (required)')), actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Keep request')), FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Cancel transfer'))]));
+    final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+                title: const Text('Cancel transfer'),
+                content: TextField(
+                    controller: reason,
+                    decoration:
+                        const InputDecoration(labelText: 'Reason (required)')),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(dialogContext, false),
+                      child: const Text('Keep request')),
+                  FilledButton(
+                      onPressed: () => Navigator.pop(dialogContext, true),
+                      child: const Text('Cancel transfer'))
+                ]));
     if (confirmed != true || reason.text.trim().length < 3) return;
-    try { await ref.read(operationsApiProvider).stockTransferAction(eventId, transferId, 'cancel', data: {'reason': reason.text.trim()}); ref.invalidate(eventStockTransfersProvider(eventId)); }
-    catch (error) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not cancel transfer: $error'))); }
+    try {
+      await ref.read(operationsApiProvider).stockTransferAction(
+          eventId, transferId, 'cancel',
+          data: {'reason': reason.text.trim()});
+      ref.invalidate(eventStockTransfersProvider(eventId));
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not cancel transfer: $error')));
+      }
+    }
   }
 
-  Future<void> _receiveStockTransfer(BuildContext context, WidgetRef ref, String eventId, Map<String, dynamic> transfer) async {
-    final lines = (transfer['lines'] as List? ?? const []).whereType<Map>().map((line) => Map<String, dynamic>.from(line)).toList();
-    final controllers = lines.map((line) => TextEditingController(text: line['requestedQuantity'].toString())).toList();
+  Future<void> _receiveStockTransfer(BuildContext context, WidgetRef ref,
+      String eventId, Map<String, dynamic> transfer) async {
+    final lines = (transfer['lines'] as List? ?? const [])
+        .whereType<Map>()
+        .map((line) => Map<String, dynamic>.from(line))
+        .toList();
+    final controllers = lines
+        .map((line) =>
+            TextEditingController(text: line['requestedQuantity'].toString()))
+        .toList();
     final reason = TextEditingController();
-    final confirmed = await showDialog<bool>(context: context, builder: (dialogContext) => AlertDialog(title: const Text('Confirm received quantities'), content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [for (var i = 0; i < lines.length; i++) TextField(controller: controllers[i], keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: InputDecoration(labelText: '${lines[i]['name']} · dispatched ${lines[i]['requestedQuantity']}')), TextField(controller: reason, decoration: const InputDecoration(labelText: 'Variance reason (if short)'))])), actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Back')), FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Confirm receipt'))]));
+    final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+                title: const Text('Confirm received quantities'),
+                content: SingleChildScrollView(
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  for (var i = 0; i < lines.length; i++)
+                    TextField(
+                        controller: controllers[i],
+                        keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true),
+                        decoration: InputDecoration(
+                            labelText:
+                                '${lines[i]['name']} · dispatched ${lines[i]['requestedQuantity']}')),
+                  TextField(
+                      controller: reason,
+                      decoration: const InputDecoration(
+                          labelText: 'Variance reason (if short)'))
+                ])),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(dialogContext, false),
+                      child: const Text('Back')),
+                  FilledButton(
+                      onPressed: () => Navigator.pop(dialogContext, true),
+                      child: const Text('Confirm receipt'))
+                ]));
     if (confirmed != true) return;
-    try { await ref.read(operationsApiProvider).stockTransferAction(eventId, transfer['id'] as String, 'receive', data: {'lines': [for (var i = 0; i < lines.length; i++) {'lineId': lines[i]['id'], 'quantity': double.tryParse(controllers[i].text) ?? -1}], if (reason.text.trim().isNotEmpty) 'reason': reason.text.trim()}); ref.invalidate(eventStockTransfersProvider(eventId)); ref.invalidate(eventInventoryCountsProvider(eventId)); }
-    catch (error) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not confirm receipt: $error'))); }
+    try {
+      await ref.read(operationsApiProvider).stockTransferAction(
+          eventId, transfer['id'] as String, 'receive',
+          data: {
+            'lines': [
+              for (var i = 0; i < lines.length; i++)
+                {
+                  'lineId': lines[i]['id'],
+                  'quantity': double.tryParse(controllers[i].text) ?? -1
+                }
+            ],
+            if (reason.text.trim().isNotEmpty) 'reason': reason.text.trim()
+          });
+      ref.invalidate(eventStockTransfersProvider(eventId));
+      ref.invalidate(eventInventoryCountsProvider(eventId));
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not confirm receipt: $error')));
+      }
+    }
   }
 }
 
 class _StockPurchaseOrderComposer extends StatefulWidget {
-  const _StockPurchaseOrderComposer({required this.items, required this.locationName});
+  const _StockPurchaseOrderComposer(
+      {required this.items, required this.locationName});
   final List<Map<String, dynamic>> items;
   final String locationName;
 
   @override
-  State<_StockPurchaseOrderComposer> createState() => _StockPurchaseOrderComposerState();
+  State<_StockPurchaseOrderComposer> createState() =>
+      _StockPurchaseOrderComposerState();
 }
 
-class _StockPurchaseOrderComposerState extends State<_StockPurchaseOrderComposer> {
+class _StockPurchaseOrderComposerState
+    extends State<_StockPurchaseOrderComposer> {
   final _supplier = TextEditingController();
   final _reference = TextEditingController();
   final _note = TextEditingController();
   final Map<String, TextEditingController> _quantities = {};
 
-  bool get _hasLines => _quantities.values.any((controller) => (double.tryParse(controller.text.trim()) ?? 0) > 0);
+  bool get _hasLines => _quantities.values
+      .any((controller) => (double.tryParse(controller.text.trim()) ?? 0) > 0);
 
   @override
   void dispose() {
     _supplier.dispose();
     _reference.dispose();
     _note.dispose();
-    for (final controller in _quantities.values) { controller.dispose(); }
+    for (final controller in _quantities.values) {
+      controller.dispose();
+    }
     super.dispose();
   }
 
@@ -2040,52 +2942,77 @@ class _StockPurchaseOrderComposerState extends State<_StockPurchaseOrderComposer
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               Align(
                 alignment: Alignment.centerLeft,
-                child: Text('${widget.locationName} · a different manager must approve before receipt.'),
+                child: Text(
+                    '${widget.locationName} · a different manager must approve before receipt.'),
               ),
-              TextField(controller: _supplier, maxLength: 160, onChanged: (_) => setState(() {}), decoration: const InputDecoration(labelText: 'Supplier')),
-              TextField(controller: _reference, maxLength: 120, decoration: const InputDecoration(labelText: 'Supplier reference (optional)')),
-              TextField(controller: _note, maxLength: 500, decoration: const InputDecoration(labelText: 'Request note (optional)')),
+              TextField(
+                  controller: _supplier,
+                  maxLength: 160,
+                  onChanged: (_) => setState(() {}),
+                  decoration: const InputDecoration(labelText: 'Supplier')),
+              TextField(
+                  controller: _reference,
+                  maxLength: 120,
+                  decoration: const InputDecoration(
+                      labelText: 'Supplier reference (optional)')),
+              TextField(
+                  controller: _note,
+                  maxLength: 500,
+                  decoration: const InputDecoration(
+                      labelText: 'Request note (optional)')),
               const SizedBox(height: 8),
-              for (final item in widget.items) Builder(builder: (context) {
-                final id = item['id'] as String;
-                final quantity = _quantities[id];
-                return Row(children: [
-                  Expanded(child: CheckboxListTile(
-                    contentPadding: EdgeInsets.zero,
-                    value: quantity != null,
-                    onChanged: (selected) => setState(() {
-                      if (selected == true) {
-                        _quantities[id] = TextEditingController(text: '1');
-                      } else {
-                        _quantities.remove(id)?.dispose();
-                      }
-                    }),
-                    title: Text('${item['name']} · ${item['unit']}'),
-                    subtitle: Text('${item['sku']} · on hand ${item['onHand']}'),
-                    controlAffinity: ListTileControlAffinity.leading,
-                  )),
-                  if (quantity != null)
-                    SizedBox(width: 92, child: TextField(
-                      controller: quantity,
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      onChanged: (_) => setState(() {}),
-                      decoration: const InputDecoration(labelText: 'Order qty'),
+              for (final item in widget.items)
+                Builder(builder: (context) {
+                  final id = item['id'] as String;
+                  final quantity = _quantities[id];
+                  return Row(children: [
+                    Expanded(
+                        child: CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: quantity != null,
+                      onChanged: (selected) => setState(() {
+                        if (selected == true) {
+                          _quantities[id] = TextEditingController(text: '1');
+                        } else {
+                          _quantities.remove(id)?.dispose();
+                        }
+                      }),
+                      title: Text('${item['name']} · ${item['unit']}'),
+                      subtitle:
+                          Text('${item['sku']} · on hand ${item['onHand']}'),
+                      controlAffinity: ListTileControlAffinity.leading,
                     )),
-                ]);
-              }),
+                    if (quantity != null)
+                      SizedBox(
+                          width: 92,
+                          child: TextField(
+                            controller: quantity,
+                            keyboardType: const TextInputType.numberWithOptions(
+                                decimal: true),
+                            onChanged: (_) => setState(() {}),
+                            decoration:
+                                const InputDecoration(labelText: 'Order qty'),
+                          )),
+                  ]);
+                }),
             ]),
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel')),
           FilledButton(
             onPressed: _supplier.text.trim().length < 2 || !_hasLines
                 ? null
                 : () {
                     final lines = <Map<String, Object?>>[];
                     for (final entry in _quantities.entries) {
-                      final amount = double.tryParse(entry.value.text.trim()) ?? 0;
-                      if (amount > 0) lines.add({'itemId': entry.key, 'quantity': amount});
+                      final amount =
+                          double.tryParse(entry.value.text.trim()) ?? 0;
+                      if (amount > 0) {
+                        lines.add({'itemId': entry.key, 'quantity': amount});
+                      }
                     }
                     Navigator.pop(context, <String, Object?>{
                       'supplierName': _supplier.text.trim(),
@@ -2097,6 +3024,46 @@ class _StockPurchaseOrderComposerState extends State<_StockPurchaseOrderComposer
             child: const Text('Submit request'),
           ),
         ],
+      );
+}
+
+class _StaffingQuickViews extends StatelessWidget {
+  const _StaffingQuickViews({
+    required this.selected,
+    required this.allCount,
+    required this.needsActionCount,
+    required this.openCount,
+    required this.mineCount,
+    required this.onSelected,
+  });
+
+  final String selected;
+  final int allCount;
+  final int needsActionCount;
+  final int openCount;
+  final int mineCount;
+  final ValueChanged<String> onSelected;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.fromLTRB(4, 8, 4, 12),
+        child: Wrap(
+          spacing: 8,
+          runSpacing: 4,
+          children: [
+            _viewChip('ALL', 'All shifts', allCount),
+            _viewChip('NEEDS_ACTION', 'Needs action', needsActionCount),
+            _viewChip('OPEN', 'Open shifts', openCount),
+            _viewChip('MINE', 'My shifts', mineCount),
+          ],
+        ),
+      );
+
+  Widget _viewChip(String value, String label, int count) => ChoiceChip(
+        key: ValueKey('staffing-view-$value'),
+        label: Text('$label · $count'),
+        selected: selected == value,
+        onSelected: (_) => onSelected(value),
       );
 }
 
@@ -2117,148 +3084,527 @@ class _LiveStaffingPage extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final eventId = event['id'] as String;
+    final selectedView = ref.watch(_staffingViewProvider(eventId));
     final queuedAttendance = ref.watch(staffAttendanceOutboxProvider);
     ref.listen(staffAttendanceOutboxProvider, (previous, next) {
-      if (previous?.length != next.length) ref.invalidate(eventShiftsProvider(eventId));
+      if (previous?.length != next.length) {
+        ref.invalidate(eventShiftsProvider(eventId));
+      }
     });
     return ref.watch(eventShiftsProvider(eventId)).when(
-      loading: () => const Center(child: CircularProgressIndicator()),
-      error: (error, _) => Center(
-          child: Text('Staffing schedule unavailable: $error',
-              textAlign: TextAlign.center)),
-      data: (rows) => Column(children: [
-            const _MyUnavailabilityPanel(),
-            const _MyAvailabilityChecksPanel(),
-            if (queuedAttendance.any((item) => item['eventId'] == eventId))
-              Card(child: ListTile(
-                leading: const Icon(Icons.sync_problem_outlined, color: _brass),
-                title: const Text('Attendance waiting to sync'),
-                subtitle: const Text('Device times stay unverified until a supervisor reviews them.'),
-                trailing: TextButton(onPressed: () => _syncStaffAttendance(context, ref, eventId), child: const Text('Sync now')),
-              )),
-            if (canWrite) _TeamAvailabilityPanel(
-              eventId: eventId,
-              initialDate: DateTime.tryParse(event['startsAt'] as String? ?? '')?.toLocal() ?? DateTime.now(),
-            ),
-            if (canWrite) _CoveragePlanningPanel(
-              eventId: eventId,
-              venueId: event['venueId'] as String? ?? '',
-              initialDate: DateTime.tryParse(event['startsAt'] as String? ?? '')?.toLocal() ?? DateTime.now(),
-              locations: locations,
-            ),
-            Expanded(child: rows.isEmpty
-          ? const Center(child: Text('No shifts are scheduled for this event.'))
-          : ListView.separated(
-              itemCount: rows.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 4),
-              itemBuilder: (context, index) {
-                final shift = Map<String, dynamic>.from(rows[index] as Map);
-                final assignedToMe = shift['assignedSubject'] == subject;
-                final state = shift['state'] as String? ?? 'DRAFT';
-                final response = shift['response'] as String? ?? 'PENDING';
-                final attendance = shift['attendance'] as String? ?? 'NOT_STARTED';
-                final queuedForShift = queuedAttendance.where((item) => item['eventId'] == eventId && item['shiftId'] == shift['id']).toList();
-                final pendingClaims = (shift['attendanceClaims'] as List? ?? const []).whereType<Map>().map((item) => Map<String, dynamic>.from(item)).toList();
-                final hasPendingCheckIn = queuedForShift.any((item) => item['action'] == 'CHECK_IN') || pendingClaims.any((item) => item['action'] == 'CHECK_IN');
-                final hasPendingCheckOut = queuedForShift.any((item) => item['action'] == 'CHECK_OUT') || pendingClaims.any((item) => item['action'] == 'CHECK_OUT');
-                final breaks = (shift['breaks'] as List? ?? const []).whereType<Map>().map((row) => Map<String, dynamic>.from(row)).toList();
-                Map<String, dynamic>? activeBreak;
-                for (final record in breaks) {
-                  if (record['endedAt'] == null) { activeBreak = record; break; }
-                }
-                final startsAt = DateTime.tryParse(shift['startsAt'] as String? ?? '')?.toLocal();
-                final endsAt = DateTime.tryParse(shift['endsAt'] as String? ?? '')?.toLocal();
-                final locationId = shift['locationId'] as String?;
-                final location = locations.where((row) => row['id'] == locationId);
-                final locationName = location.isEmpty ? 'All areas' : location.first['name'] as String? ?? 'Area';
-                final assigned = people.where((row) => row['externalSubject'] == shift['assignedSubject']);
-                final assignedName = assignedToMe ? 'You' : assigned.isEmpty ? 'Open shift' : assigned.first['displayName'] as String? ?? 'Assigned worker';
-                final requiredQualifications = (shift['requiredQualificationCodes'] as List? ?? const []).cast<String>();
-                final currentResponse = shift['responseRevision'] == shift['revision'];
-                final breakSummary = breaks.map((record) {
-                  final kind = record['kind'] == 'MEAL' ? 'Meal' : 'Rest';
-                  final started = DateTime.tryParse(record['startedAt'] as String? ?? '')?.toLocal();
-                  final ended = DateTime.tryParse(record['endedAt'] as String? ?? '')?.toLocal();
-                  return '$kind break ${_clockLabel(started)}–${ended == null ? 'active' : _clockLabel(ended)}';
-                }).join(' · ');
-                return Card(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 6),
-                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      ListTile(
-                        leading: const CircleAvatar(child: Icon(Icons.badge_outlined)),
-                        title: Text(shift['role'] as String? ?? 'Shift', style: const TextStyle(fontWeight: FontWeight.w800)),
-                        subtitle: Text('$assignedName · $locationName\n${_shiftTimeLabel(startsAt, endsAt)}\n$state · $response · $attendance${attendance == 'NOT_STARTED' ? '' : '\n${_attendanceTimeLabel(shift)}'}${breakSummary.isEmpty ? '' : '\n$breakSummary'}${requiredQualifications.isEmpty ? '' : '\nRequires: ${requiredQualifications.join(', ')}'}'),
-                        isThreeLine: true,
-                      ),
-                      if (shift['instructions'] is String && (shift['instructions'] as String).isNotEmpty)
-                        Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 8), child: Text(shift['instructions'] as String)),
-                      for (final queued in queuedForShift)
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                          child: Text('Pending sync · ${queued['action'] == 'CHECK_IN' ? 'check-in' : 'check-out'} at ${_clockLabel(DateTime.tryParse(queued['recordedAt'] as String? ?? '')?.toLocal())}. Device time is unverified until supervisor review.', style: const TextStyle(color: _brass, fontWeight: FontWeight.w700)),
-                        ),
-                      for (final claim in pendingClaims) ...[
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-                          child: Text('Offline ${claim['action'] == 'CHECK_IN' ? 'check-in' : 'check-out'} · ${_clockLabel(DateTime.tryParse(claim['recordedAt'] as String? ?? '')?.toLocal())} · UNVERIFIED', style: const TextStyle(color: _brass, fontWeight: FontWeight.w800)),
-                        ),
-                        if (canWrite)
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-                            child: Wrap(spacing: 8, children: [
-                              FilledButton.tonal(onPressed: () => _reviewAttendanceClaim(context, ref, eventId, claim['id'] as String, 'ACCEPTED'), child: const Text('Accept time')),
-                              TextButton(onPressed: () => _reviewAttendanceClaim(context, ref, eventId, claim['id'] as String, 'REJECTED'), child: const Text('Reject')),
-                            ]),
-                          ),
-                      ],
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-                        child: Wrap(spacing: 8, runSpacing: 4, children: [
-                          if (canWrite && state == 'DRAFT')
-                            OutlinedButton(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'publish'), child: const Text('Publish')),
-                          if (canWrite && state == 'DRAFT' && attendance == 'NOT_STARTED')
-                            OutlinedButton.icon(onPressed: () => _suggestShiftAssignee(context, ref, eventId, shift), icon: const Icon(Icons.auto_awesome_outlined), label: const Text('Suggest staff')),
-                          if (canWrite && state == 'DRAFT' && attendance == 'NOT_STARTED')
-                            TextButton.icon(onPressed: () => _showAvailabilityChecks(context, ref, eventId, shift['id'] as String), icon: const Icon(Icons.how_to_reg_outlined), label: const Text('Availability responses')),
-                          if (canWrite && state == 'PUBLISHED' && attendance == 'NOT_STARTED')
-                            TextButton(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'cancel'), child: const Text('Cancel shift')),
-                          if (canWrite && attendance != 'NOT_STARTED')
-                            OutlinedButton(onPressed: () => _correctAttendance(context, ref, eventId, shift), child: const Text('Correct attendance')),
-                          if (shift['assignedSubject'] == null && state == 'PUBLISHED')
-                            FilledButton(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'claim'), child: const Text('Claim shift')),
-                          if (assignedToMe && state == 'PUBLISHED' && response == 'PENDING') ...[
-                            FilledButton(onPressed: () => _respondToShift(context, ref, eventId, shift['id'] as String, 'ACKNOWLEDGED'), child: const Text('Acknowledge')),
-                            TextButton(onPressed: () => _respondToShift(context, ref, eventId, shift['id'] as String, 'DECLINED'), child: const Text('Decline')),
-                          ],
-                          if (assignedToMe && state == 'PUBLISHED' && response == 'ACKNOWLEDGED' && !currentResponse)
-                            FilledButton(onPressed: () => _respondToShift(context, ref, eventId, shift['id'] as String, 'ACKNOWLEDGED'), child: const Text('Review changes')),
-                          if (assignedToMe && state == 'PUBLISHED' && response == 'ACKNOWLEDGED' && currentResponse && attendance == 'NOT_STARTED')
-                            if (hasPendingCheckIn && hasPendingCheckOut)
-                              const Text('Check-out time is waiting for sync and supervisor review.')
-                            else if (hasPendingCheckIn)
-                              OutlinedButton(onPressed: () => _recordShiftAttendance(context, ref, eventId, shift['id'] as String, 'CHECK_OUT', queueForReview: true), child: const Text('Queue check-out time'))
-                            else
-                              FilledButton(onPressed: () => _recordShiftAttendance(context, ref, eventId, shift['id'] as String, 'CHECK_IN'), child: const Text('Check in')),
-                          if (assignedToMe && attendance == 'CHECKED_IN')
-                            if (hasPendingCheckOut)
-                              const Text('Check-out time is awaiting supervisor review.')
-                            else if (activeBreak != null)
-                              FilledButton.tonal(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'break/end'), child: const Text('End break'))
-                            else ...[
-                              OutlinedButton(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'break/start', data: {'kind': 'REST'}), child: const Text('Start rest break')),
-                              OutlinedButton(onPressed: () => _runShiftCommand(context, ref, eventId, shift['id'] as String, 'break/start', data: {'kind': 'MEAL'}), child: const Text('Start meal break')),
-                              FilledButton(onPressed: () => _recordShiftAttendance(context, ref, eventId, shift['id'] as String, 'CHECK_OUT'), child: const Text('Check out')),
-                            ],
-                        ]),
-                      ),
-                    ]),
-                  ),
-                );
-              },
-            )),
-          ]),
-    );
+          loading: () => const Center(child: CircularProgressIndicator()),
+          error: (error, _) => Center(
+              child: Text('Staffing schedule unavailable: $error',
+                  textAlign: TextAlign.center)),
+          data: (rows) {
+            final shifts = rows
+                .whereType<Map>()
+                .map((row) => Map<String, dynamic>.from(row))
+                .toList();
+            final visibleShifts = filterStaffingShifts(shifts,
+                view: selectedView, subject: subject, canWrite: canWrite);
+            final needsActionCount = filterStaffingShifts(shifts,
+                    view: 'NEEDS_ACTION', subject: subject, canWrite: canWrite)
+                .length;
+            final openCount = filterStaffingShifts(shifts,
+                    view: 'OPEN', subject: subject, canWrite: canWrite)
+                .length;
+            final mineCount = filterStaffingShifts(shifts,
+                    view: 'MINE', subject: subject, canWrite: canWrite)
+                .length;
+            return Column(children: [
+              const _MyUnavailabilityPanel(),
+              const _MyAvailabilityChecksPanel(),
+              if (queuedAttendance.any((item) => item['eventId'] == eventId))
+                Card(
+                    child: ListTile(
+                  leading:
+                      const Icon(Icons.sync_problem_outlined, color: _brass),
+                  title: const Text('Attendance waiting to sync'),
+                  subtitle: const Text(
+                      'Device times stay unverified until a supervisor reviews them.'),
+                  trailing: TextButton(
+                      onPressed: () =>
+                          _syncStaffAttendance(context, ref, eventId),
+                      child: const Text('Sync now')),
+                )),
+              if (canWrite)
+                _TeamAvailabilityPanel(
+                  eventId: eventId,
+                  initialDate:
+                      DateTime.tryParse(event['startsAt'] as String? ?? '')
+                              ?.toLocal() ??
+                          DateTime.now(),
+                ),
+              if (canWrite)
+                _CoveragePlanningPanel(
+                  eventId: eventId,
+                  venueId: event['venueId'] as String? ?? '',
+                  initialDate:
+                      DateTime.tryParse(event['startsAt'] as String? ?? '')
+                              ?.toLocal() ??
+                          DateTime.now(),
+                  locations: locations,
+                ),
+              if (shifts.isNotEmpty)
+                _StaffingQuickViews(
+                  selected: selectedView,
+                  allCount: shifts.length,
+                  needsActionCount: needsActionCount,
+                  openCount: openCount,
+                  mineCount: mineCount,
+                  onSelected: (view) => ref
+                      .read(_staffingViewProvider(eventId).notifier)
+                      .state = view,
+                ),
+              Expanded(
+                  child: shifts.isEmpty
+                      ? const Center(
+                          child:
+                              Text('No shifts are scheduled for this event.'))
+                      : visibleShifts.isEmpty
+                          ? Center(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Text('No shifts in this view.'),
+                                  TextButton(
+                                    onPressed: () => ref
+                                        .read(_staffingViewProvider(eventId)
+                                            .notifier)
+                                        .state = 'ALL',
+                                    child: const Text('Show all shifts'),
+                                  ),
+                                ],
+                              ),
+                            )
+                          : ListView.separated(
+                              itemCount: visibleShifts.length,
+                              separatorBuilder: (_, __) =>
+                                  const SizedBox(height: 4),
+                              itemBuilder: (context, index) {
+                                final shift = visibleShifts[index];
+                                final assignedToMe =
+                                    shift['assignedSubject'] == subject;
+                                final state =
+                                    shift['state'] as String? ?? 'DRAFT';
+                                final response =
+                                    shift['response'] as String? ?? 'PENDING';
+                                final attendance =
+                                    shift['attendance'] as String? ??
+                                        'NOT_STARTED';
+                                final queuedForShift = queuedAttendance
+                                    .where((item) =>
+                                        item['eventId'] == eventId &&
+                                        item['shiftId'] == shift['id'])
+                                    .toList();
+                                final pendingClaims =
+                                    (shift['attendanceClaims'] as List? ??
+                                            const [])
+                                        .whereType<Map>()
+                                        .map((item) =>
+                                            Map<String, dynamic>.from(item))
+                                        .toList();
+                                final hasPendingCheckIn = queuedForShift.any(
+                                        (item) =>
+                                            item['action'] == 'CHECK_IN') ||
+                                    pendingClaims.any(
+                                        (item) => item['action'] == 'CHECK_IN');
+                                final hasPendingCheckOut = queuedForShift.any(
+                                        (item) =>
+                                            item['action'] == 'CHECK_OUT') ||
+                                    pendingClaims.any((item) =>
+                                        item['action'] == 'CHECK_OUT');
+                                final breaks = (shift['breaks'] as List? ??
+                                        const [])
+                                    .whereType<Map>()
+                                    .map(
+                                        (row) => Map<String, dynamic>.from(row))
+                                    .toList();
+                                Map<String, dynamic>? activeBreak;
+                                for (final record in breaks) {
+                                  if (record['endedAt'] == null) {
+                                    activeBreak = record;
+                                    break;
+                                  }
+                                }
+                                final startsAt = DateTime.tryParse(
+                                        shift['startsAt'] as String? ?? '')
+                                    ?.toLocal();
+                                final endsAt = DateTime.tryParse(
+                                        shift['endsAt'] as String? ?? '')
+                                    ?.toLocal();
+                                final locationId =
+                                    shift['locationId'] as String?;
+                                final location = locations
+                                    .where((row) => row['id'] == locationId);
+                                final locationName = location.isEmpty
+                                    ? 'All areas'
+                                    : location.first['name'] as String? ??
+                                        'Area';
+                                final assigned = people.where((row) =>
+                                    row['externalSubject'] ==
+                                    shift['assignedSubject']);
+                                final assignedName = assignedToMe
+                                    ? 'You'
+                                    : assigned.isEmpty
+                                        ? 'Open shift'
+                                        : assigned.first['displayName']
+                                                as String? ??
+                                            'Assigned worker';
+                                final requiredQualifications =
+                                    (shift['requiredQualificationCodes']
+                                                as List? ??
+                                            const [])
+                                        .cast<String>();
+                                final currentResponse =
+                                    shift['responseRevision'] ==
+                                        shift['revision'];
+                                final breakSummary = breaks.map((record) {
+                                  final kind = record['kind'] == 'MEAL'
+                                      ? 'Meal'
+                                      : 'Rest';
+                                  final started = DateTime.tryParse(
+                                          record['startedAt'] as String? ?? '')
+                                      ?.toLocal();
+                                  final ended = DateTime.tryParse(
+                                          record['endedAt'] as String? ?? '')
+                                      ?.toLocal();
+                                  return '$kind break ${_clockLabel(started)}–${ended == null ? 'active' : _clockLabel(ended)}';
+                                }).join(' · ');
+                                return Card(
+                                  child: Padding(
+                                    padding:
+                                        const EdgeInsets.symmetric(vertical: 6),
+                                    child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          ListTile(
+                                            leading: const CircleAvatar(
+                                                child:
+                                                    Icon(Icons.badge_outlined)),
+                                            title: Text(
+                                                shift['role'] as String? ??
+                                                    'Shift',
+                                                style: const TextStyle(
+                                                    fontWeight:
+                                                        FontWeight.w800)),
+                                            subtitle: Text(
+                                                '$assignedName · $locationName\n${_shiftTimeLabel(startsAt, endsAt)}\n$state · $response · $attendance${attendance == 'NOT_STARTED' ? '' : '\n${_attendanceTimeLabel(shift)}'}${breakSummary.isEmpty ? '' : '\n$breakSummary'}${requiredQualifications.isEmpty ? '' : '\nRequires: ${requiredQualifications.join(', ')}'}'),
+                                            isThreeLine: true,
+                                          ),
+                                          if (shift['instructions'] is String &&
+                                              (shift['instructions'] as String)
+                                                  .isNotEmpty)
+                                            Padding(
+                                                padding:
+                                                    const EdgeInsets.fromLTRB(
+                                                        16, 0, 16, 8),
+                                                child: Text(
+                                                    shift['instructions']
+                                                        as String)),
+                                          for (final queued in queuedForShift)
+                                            Padding(
+                                              padding:
+                                                  const EdgeInsets.fromLTRB(
+                                                      16, 0, 16, 8),
+                                              child: Text(
+                                                  'Pending sync · ${queued['action'] == 'CHECK_IN' ? 'check-in' : 'check-out'} at ${_clockLabel(DateTime.tryParse(queued['recordedAt'] as String? ?? '')?.toLocal())}. Device time is unverified until supervisor review.',
+                                                  style: const TextStyle(
+                                                      color: _brass,
+                                                      fontWeight:
+                                                          FontWeight.w700)),
+                                            ),
+                                          for (final claim
+                                              in pendingClaims) ...[
+                                            Padding(
+                                              padding:
+                                                  const EdgeInsets.fromLTRB(
+                                                      16, 0, 16, 4),
+                                              child: Text(
+                                                  'Offline ${claim['action'] == 'CHECK_IN' ? 'check-in' : 'check-out'} · ${_clockLabel(DateTime.tryParse(claim['recordedAt'] as String? ?? '')?.toLocal())} · UNVERIFIED',
+                                                  style: const TextStyle(
+                                                      color: _brass,
+                                                      fontWeight:
+                                                          FontWeight.w800)),
+                                            ),
+                                            if (canWrite)
+                                              Padding(
+                                                padding:
+                                                    const EdgeInsets.fromLTRB(
+                                                        12, 0, 12, 8),
+                                                child:
+                                                    Wrap(spacing: 8, children: [
+                                                  FilledButton.tonal(
+                                                      onPressed: () =>
+                                                          _reviewAttendanceClaim(
+                                                              context,
+                                                              ref,
+                                                              eventId,
+                                                              claim['id']
+                                                                  as String,
+                                                              'ACCEPTED'),
+                                                      child: const Text(
+                                                          'Accept time')),
+                                                  TextButton(
+                                                      onPressed: () =>
+                                                          _reviewAttendanceClaim(
+                                                              context,
+                                                              ref,
+                                                              eventId,
+                                                              claim['id']
+                                                                  as String,
+                                                              'REJECTED'),
+                                                      child:
+                                                          const Text('Reject')),
+                                                ]),
+                                              ),
+                                          ],
+                                          Padding(
+                                            padding: const EdgeInsets.fromLTRB(
+                                                12, 0, 12, 8),
+                                            child: Wrap(
+                                                spacing: 8,
+                                                runSpacing: 4,
+                                                children: [
+                                                  if (canWrite &&
+                                                      state == 'DRAFT')
+                                                    OutlinedButton(
+                                                        onPressed: () =>
+                                                            _runShiftCommand(
+                                                                context,
+                                                                ref,
+                                                                eventId,
+                                                                shift['id']
+                                                                    as String,
+                                                                'publish'),
+                                                        child: const Text(
+                                                            'Publish')),
+                                                  if (canWrite &&
+                                                      state == 'DRAFT' &&
+                                                      attendance ==
+                                                          'NOT_STARTED')
+                                                    OutlinedButton.icon(
+                                                        onPressed: () =>
+                                                            _suggestShiftAssignee(
+                                                                context,
+                                                                ref,
+                                                                eventId,
+                                                                shift),
+                                                        icon: const Icon(Icons
+                                                            .auto_awesome_outlined),
+                                                        label: const Text(
+                                                            'Suggest staff')),
+                                                  if (canWrite &&
+                                                      state == 'DRAFT' &&
+                                                      attendance ==
+                                                          'NOT_STARTED')
+                                                    TextButton.icon(
+                                                        onPressed: () =>
+                                                            _showAvailabilityChecks(
+                                                                context,
+                                                                ref,
+                                                                eventId,
+                                                                shift['id']
+                                                                    as String),
+                                                        icon: const Icon(Icons
+                                                            .how_to_reg_outlined),
+                                                        label: const Text(
+                                                            'Availability responses')),
+                                                  if (canWrite &&
+                                                      state == 'PUBLISHED' &&
+                                                      attendance ==
+                                                          'NOT_STARTED')
+                                                    TextButton(
+                                                        onPressed: () =>
+                                                            _runShiftCommand(
+                                                                context,
+                                                                ref,
+                                                                eventId,
+                                                                shift['id']
+                                                                    as String,
+                                                                'cancel'),
+                                                        child: const Text(
+                                                            'Cancel shift')),
+                                                  if (canWrite &&
+                                                      attendance !=
+                                                          'NOT_STARTED')
+                                                    OutlinedButton(
+                                                        onPressed: () =>
+                                                            _correctAttendance(
+                                                                context,
+                                                                ref,
+                                                                eventId,
+                                                                shift),
+                                                        child: const Text(
+                                                            'Correct attendance')),
+                                                  if (shift['assignedSubject'] ==
+                                                          null &&
+                                                      state == 'PUBLISHED')
+                                                    FilledButton(
+                                                        onPressed: () =>
+                                                            _runShiftCommand(
+                                                                context,
+                                                                ref,
+                                                                eventId,
+                                                                shift['id']
+                                                                    as String,
+                                                                'claim'),
+                                                        child: const Text(
+                                                            'Claim shift')),
+                                                  if (assignedToMe &&
+                                                      state == 'PUBLISHED' &&
+                                                      response ==
+                                                          'PENDING') ...[
+                                                    FilledButton(
+                                                        onPressed: () =>
+                                                            _respondToShift(
+                                                                context,
+                                                                ref,
+                                                                eventId,
+                                                                shift['id']
+                                                                    as String,
+                                                                'ACKNOWLEDGED'),
+                                                        child: const Text(
+                                                            'Acknowledge')),
+                                                    TextButton(
+                                                        onPressed: () =>
+                                                            _respondToShift(
+                                                                context,
+                                                                ref,
+                                                                eventId,
+                                                                shift['id']
+                                                                    as String,
+                                                                'DECLINED'),
+                                                        child: const Text(
+                                                            'Decline')),
+                                                  ],
+                                                  if (assignedToMe &&
+                                                      state == 'PUBLISHED' &&
+                                                      response ==
+                                                          'ACKNOWLEDGED' &&
+                                                      !currentResponse)
+                                                    FilledButton(
+                                                        onPressed: () =>
+                                                            _respondToShift(
+                                                                context,
+                                                                ref,
+                                                                eventId,
+                                                                shift['id']
+                                                                    as String,
+                                                                'ACKNOWLEDGED'),
+                                                        child: const Text(
+                                                            'Review changes')),
+                                                  if (assignedToMe &&
+                                                      state == 'PUBLISHED' &&
+                                                      response ==
+                                                          'ACKNOWLEDGED' &&
+                                                      currentResponse &&
+                                                      attendance ==
+                                                          'NOT_STARTED')
+                                                    if (hasPendingCheckIn &&
+                                                        hasPendingCheckOut)
+                                                      const Text(
+                                                          'Check-out time is waiting for sync and supervisor review.')
+                                                    else if (hasPendingCheckIn)
+                                                      OutlinedButton(
+                                                          onPressed: () =>
+                                                              _recordShiftAttendance(
+                                                                  context,
+                                                                  ref,
+                                                                  eventId,
+                                                                  shift['id']
+                                                                      as String,
+                                                                  'CHECK_OUT',
+                                                                  queueForReview:
+                                                                      true),
+                                                          child: const Text(
+                                                              'Queue check-out time'))
+                                                    else
+                                                      FilledButton(
+                                                          onPressed: () =>
+                                                              _recordShiftAttendance(
+                                                                  context,
+                                                                  ref,
+                                                                  eventId,
+                                                                  shift['id']
+                                                                      as String,
+                                                                  'CHECK_IN'),
+                                                          child: const Text(
+                                                              'Check in')),
+                                                  if (assignedToMe &&
+                                                      attendance ==
+                                                          'CHECKED_IN')
+                                                    if (hasPendingCheckOut)
+                                                      const Text(
+                                                          'Check-out time is awaiting supervisor review.')
+                                                    else if (activeBreak !=
+                                                        null)
+                                                      FilledButton.tonal(
+                                                          onPressed: () =>
+                                                              _runShiftCommand(
+                                                                  context,
+                                                                  ref,
+                                                                  eventId,
+                                                                  shift['id']
+                                                                      as String,
+                                                                  'break/end'),
+                                                          child: const Text(
+                                                              'End break'))
+                                                    else ...[
+                                                      OutlinedButton(
+                                                          onPressed: () =>
+                                                              _runShiftCommand(
+                                                                  context,
+                                                                  ref,
+                                                                  eventId,
+                                                                  shift['id']
+                                                                      as String,
+                                                                  'break/start',
+                                                                  data: {
+                                                                    'kind':
+                                                                        'REST'
+                                                                  }),
+                                                          child: const Text(
+                                                              'Start rest break')),
+                                                      OutlinedButton(
+                                                          onPressed: () =>
+                                                              _runShiftCommand(
+                                                                  context,
+                                                                  ref,
+                                                                  eventId,
+                                                                  shift['id']
+                                                                      as String,
+                                                                  'break/start',
+                                                                  data: {
+                                                                    'kind':
+                                                                        'MEAL'
+                                                                  }),
+                                                          child: const Text(
+                                                              'Start meal break')),
+                                                      FilledButton(
+                                                          onPressed: () =>
+                                                              _recordShiftAttendance(
+                                                                  context,
+                                                                  ref,
+                                                                  eventId,
+                                                                  shift['id']
+                                                                      as String,
+                                                                  'CHECK_OUT'),
+                                                          child: const Text(
+                                                              'Check out')),
+                                                    ],
+                                                ]),
+                                          ),
+                                        ]),
+                                  ),
+                                );
+                              },
+                            )),
+            ]);
+          },
+        );
   }
 }
 
@@ -2268,51 +3614,73 @@ class _MyAvailabilityChecksPanel extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) =>
       ref.watch(myAvailabilityChecksProvider).when(
-        loading: () => const SizedBox.shrink(),
-        error: (error, _) => Card(child: ListTile(
-          leading: const Icon(Icons.sync_problem_outlined),
-          title: const Text('Availability requests unavailable'),
-          subtitle: Text('$error'),
-          trailing: IconButton(tooltip: 'Retry', onPressed: () => ref.invalidate(myAvailabilityChecksProvider), icon: const Icon(Icons.refresh)),
-        )),
-        data: (raw) {
-          final checks = raw.whereType<Map>().map((row) => Map<String, dynamic>.from(row)).toList();
-          if (checks.isEmpty) return const SizedBox.shrink();
-          return Card(
-            child: Column(children: [
-              const ListTile(
-                leading: Icon(Icons.how_to_reg_outlined),
-                title: Text('Availability requests'),
-                subtitle: Text('Your response helps managers plan. It does not assign you to a shift.'),
-              ),
-              for (final check in checks)
-                ListTile(
-                  title: Text('${check['shift']?['role'] ?? 'Event shift'} · ${check['shift']?['event']?['name'] ?? 'Event'}'),
-                  subtitle: Text(_shiftTimeLabel(
-                    DateTime.tryParse(check['shift']?['startsAt'] as String? ?? '')?.toLocal(),
-                    DateTime.tryParse(check['shift']?['endsAt'] as String? ?? '')?.toLocal(),
-                  )),
-                  trailing: Wrap(spacing: 4, children: [
-                    TextButton(onPressed: () => _respondToAvailabilityCheck(context, ref, check, 'UNAVAILABLE'), child: const Text('Unavailable')),
-                    FilledButton(onPressed: () => _respondToAvailabilityCheck(context, ref, check, 'AVAILABLE'), child: const Text('Available')),
-                  ]),
-                ),
-            ]),
+            loading: () => const SizedBox.shrink(),
+            error: (error, _) => Card(
+                child: ListTile(
+              leading: const Icon(Icons.sync_problem_outlined),
+              title: const Text('Availability requests unavailable'),
+              subtitle: Text('$error'),
+              trailing: IconButton(
+                  tooltip: 'Retry',
+                  onPressed: () => ref.invalidate(myAvailabilityChecksProvider),
+                  icon: const Icon(Icons.refresh)),
+            )),
+            data: (raw) {
+              final checks = raw
+                  .whereType<Map>()
+                  .map((row) => Map<String, dynamic>.from(row))
+                  .toList();
+              if (checks.isEmpty) return const SizedBox.shrink();
+              return Card(
+                child: Column(children: [
+                  const ListTile(
+                    leading: Icon(Icons.how_to_reg_outlined),
+                    title: Text('Availability requests'),
+                    subtitle: Text(
+                        'Your response helps managers plan. It does not assign you to a shift.'),
+                  ),
+                  for (final check in checks)
+                    ListTile(
+                      title: Text(
+                          '${check['shift']?['role'] ?? 'Event shift'} · ${check['shift']?['event']?['name'] ?? 'Event'}'),
+                      subtitle: Text(_shiftTimeLabel(
+                        DateTime.tryParse(
+                                check['shift']?['startsAt'] as String? ?? '')
+                            ?.toLocal(),
+                        DateTime.tryParse(
+                                check['shift']?['endsAt'] as String? ?? '')
+                            ?.toLocal(),
+                      )),
+                      trailing: Wrap(spacing: 4, children: [
+                        TextButton(
+                            onPressed: () => _respondToAvailabilityCheck(
+                                context, ref, check, 'UNAVAILABLE'),
+                            child: const Text('Unavailable')),
+                        FilledButton(
+                            onPressed: () => _respondToAvailabilityCheck(
+                                context, ref, check, 'AVAILABLE'),
+                            child: const Text('Available')),
+                      ]),
+                    ),
+                ]),
+              );
+            },
           );
-        },
-      );
 }
 
 class _TeamAvailabilityPanel extends ConsumerStatefulWidget {
-  const _TeamAvailabilityPanel({required this.eventId, required this.initialDate});
+  const _TeamAvailabilityPanel(
+      {required this.eventId, required this.initialDate});
   final String eventId;
   final DateTime initialDate;
 
   @override
-  ConsumerState<_TeamAvailabilityPanel> createState() => _TeamAvailabilityPanelState();
+  ConsumerState<_TeamAvailabilityPanel> createState() =>
+      _TeamAvailabilityPanelState();
 }
 
-class _TeamAvailabilityPanelState extends ConsumerState<_TeamAvailabilityPanel> {
+class _TeamAvailabilityPanelState
+    extends ConsumerState<_TeamAvailabilityPanel> {
   late DateTime _weekStart = _monday(widget.initialDate);
   bool _expanded = false;
 
@@ -2320,28 +3688,48 @@ class _TeamAvailabilityPanelState extends ConsumerState<_TeamAvailabilityPanel> 
   Widget build(BuildContext context) {
     final weekEnd = _weekStart.add(const Duration(days: 7));
     final request = (eventId: widget.eventId, from: _weekStart, to: weekEnd);
-    final availability = _expanded ? ref.watch(teamAvailabilityProvider(request)) : null;
+    final availability =
+        _expanded ? ref.watch(teamAvailabilityProvider(request)) : null;
     return Card(
       child: ExpansionTile(
         leading: const Icon(Icons.calendar_view_week_outlined),
         title: const Text('Team availability'),
-        subtitle: Text('${_weekLabel(_weekStart, weekEnd)} · assigned roster only'),
+        subtitle:
+            Text('${_weekLabel(_weekStart, weekEnd)} · assigned roster only'),
         onExpansionChanged: (value) => setState(() => _expanded = value),
         children: [
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-              IconButton(tooltip: 'Previous week', onPressed: () => setState(() => _weekStart = _weekStart.subtract(const Duration(days: 7))), icon: const Icon(Icons.chevron_left)),
-              Text(_weekLabel(_weekStart, weekEnd), style: Theme.of(context).textTheme.titleSmall),
-              IconButton(tooltip: 'Next week', onPressed: () => setState(() => _weekStart = _weekStart.add(const Duration(days: 7))), icon: const Icon(Icons.chevron_right)),
-            ]),
+            child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  IconButton(
+                      tooltip: 'Previous week',
+                      onPressed: () => setState(() => _weekStart =
+                          _weekStart.subtract(const Duration(days: 7))),
+                      icon: const Icon(Icons.chevron_left)),
+                  Text(_weekLabel(_weekStart, weekEnd),
+                      style: Theme.of(context).textTheme.titleSmall),
+                  IconButton(
+                      tooltip: 'Next week',
+                      onPressed: () => setState(() =>
+                          _weekStart = _weekStart.add(const Duration(days: 7))),
+                      icon: const Icon(Icons.chevron_right)),
+                ]),
           ),
           if (availability != null)
             availability.when(
-              loading: () => const Padding(padding: EdgeInsets.all(20), child: LinearProgressIndicator()),
-              error: (error, _) => ListTile(title: const Text('Team availability unavailable'), subtitle: Text('$error')),
+              loading: () => const Padding(
+                  padding: EdgeInsets.all(20),
+                  child: LinearProgressIndicator()),
+              error: (error, _) => ListTile(
+                  title: const Text('Team availability unavailable'),
+                  subtitle: Text('$error')),
               data: (items) => items.isEmpty
-                  ? const Padding(padding: EdgeInsets.fromLTRB(16, 4, 16, 16), child: Text('No one on this roster has recorded unavailable time this week.'))
+                  ? const Padding(
+                      padding: EdgeInsets.fromLTRB(16, 4, 16, 16),
+                      child: Text(
+                          'No one on this roster has recorded unavailable time this week.'))
                   : SizedBox(
                       height: 190,
                       child: ListView(
@@ -2352,35 +3740,89 @@ class _TeamAvailabilityPanelState extends ConsumerState<_TeamAvailabilityPanel> 
                           final nextDay = day.add(const Duration(days: 1));
                           final matches = items.where((raw) {
                             final item = Map<String, dynamic>.from(raw as Map);
-                            final start = DateTime.tryParse(item['startsAt'] as String? ?? '')?.toLocal();
-                            final end = DateTime.tryParse(item['endsAt'] as String? ?? '')?.toLocal();
-                            return start != null && end != null && start.isBefore(nextDay) && end.isAfter(day);
+                            final start = DateTime.tryParse(
+                                    item['startsAt'] as String? ?? '')
+                                ?.toLocal();
+                            final end = DateTime.tryParse(
+                                    item['endsAt'] as String? ?? '')
+                                ?.toLocal();
+                            return start != null &&
+                                end != null &&
+                                start.isBefore(nextDay) &&
+                                end.isAfter(day);
                           }).toList();
                           return SizedBox(
                             width: 124,
-                            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                              Text('${_weekdayName(day.weekday)} ${day.month}/${day.day}', style: Theme.of(context).textTheme.labelLarge),
-                              const Divider(height: 12),
-                              Expanded(child: matches.isEmpty
-                                  ? const Text('No block recorded', style: TextStyle(color: Colors.grey))
-                                  : ListView.builder(
-                                      itemCount: matches.length,
-                                      itemBuilder: (context, rowIndex) {
-                                        final item = Map<String, dynamic>.from(matches[rowIndex] as Map);
-                                        final start = DateTime.parse(item['startsAt'] as String).toLocal();
-                                        final end = DateTime.parse(item['endsAt'] as String).toLocal();
-                                        return Container(
-                                          margin: const EdgeInsets.only(bottom: 6),
-                                          padding: const EdgeInsets.all(7),
-                                          decoration: BoxDecoration(color: Theme.of(context).colorScheme.errorContainer, borderRadius: BorderRadius.circular(10)),
-                                          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                                            Text(item['displayName'] as String? ?? 'Roster member', maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700)),
-                                            Text(_shiftTimeLabel(start, end), style: Theme.of(context).textTheme.bodySmall),
-                                          ]),
-                                        );
-                                      },
-                                    )),
-                            ]),
+                            child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                      '${_weekdayName(day.weekday)} ${day.month}/${day.day}',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .labelLarge),
+                                  const Divider(height: 12),
+                                  Expanded(
+                                      child: matches.isEmpty
+                                          ? const Text('No block recorded',
+                                              style:
+                                                  TextStyle(color: Colors.grey))
+                                          : ListView.builder(
+                                              itemCount: matches.length,
+                                              itemBuilder: (context, rowIndex) {
+                                                final item =
+                                                    Map<String, dynamic>.from(
+                                                        matches[rowIndex]
+                                                            as Map);
+                                                final start = DateTime.parse(
+                                                        item['startsAt']
+                                                            as String)
+                                                    .toLocal();
+                                                final end = DateTime.parse(
+                                                        item['endsAt']
+                                                            as String)
+                                                    .toLocal();
+                                                return Container(
+                                                  margin: const EdgeInsets.only(
+                                                      bottom: 6),
+                                                  padding:
+                                                      const EdgeInsets.all(7),
+                                                  decoration: BoxDecoration(
+                                                      color: Theme.of(context)
+                                                          .colorScheme
+                                                          .errorContainer,
+                                                      borderRadius:
+                                                          BorderRadius.circular(
+                                                              10)),
+                                                  child: Column(
+                                                      crossAxisAlignment:
+                                                          CrossAxisAlignment
+                                                              .start,
+                                                      children: [
+                                                        Text(
+                                                            item['displayName']
+                                                                    as String? ??
+                                                                'Roster member',
+                                                            maxLines: 2,
+                                                            overflow:
+                                                                TextOverflow
+                                                                    .ellipsis,
+                                                            style: const TextStyle(
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w700)),
+                                                        Text(
+                                                            _shiftTimeLabel(
+                                                                start, end),
+                                                            style: Theme.of(
+                                                                    context)
+                                                                .textTheme
+                                                                .bodySmall),
+                                                      ]),
+                                                );
+                                              },
+                                            )),
+                                ]),
                           );
                         }),
                       ),
@@ -2397,7 +3839,8 @@ DateTime _monday(DateTime value) {
   return day.subtract(Duration(days: day.weekday - DateTime.monday));
 }
 
-String _weekdayName(int weekday) => const ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][weekday - 1];
+String _weekdayName(int weekday) =>
+    const ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][weekday - 1];
 
 String _weekLabel(DateTime start, DateTime end) {
   final last = end.subtract(const Duration(days: 1));
@@ -2413,39 +3856,68 @@ class _MyUnavailabilityPanel extends ConsumerWidget {
           ListTile(
             title: const Text('My unavailable time'),
             subtitle: const Text('Tell schedulers which days you cannot work.'),
-            trailing: TextButton(onPressed: () async {
-              final now = DateTime.now();
-              final day = await showDatePicker(context: context, initialDate: now.add(const Duration(days: 1)), firstDate: now, lastDate: now.add(const Duration(days: 730)));
-              if (day == null || !context.mounted) return;
-              try {
-                await ref.read(operationsApiProvider).createUnavailability(DateTime(day.year, day.month, day.day), DateTime(day.year, day.month, day.day).add(const Duration(days: 1)));
-                ref.invalidate(myUnavailabilityProvider);
-              } catch (error) {
-                if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not save unavailable time: $error')));
-              }
-            }, child: const Text('Block a day')),
-          ),
-          ref.watch(myUnavailabilityProvider).when(
-            loading: () => const LinearProgressIndicator(),
-            error: (error, _) => ListTile(title: const Text('Availability could not be loaded'), subtitle: Text('$error')),
-            data: (rows) => Column(children: rows.map((item) {
-              final row = Map<String, dynamic>.from(item as Map);
-              final start = DateTime.tryParse(row['startsAt'] as String? ?? '')?.toLocal();
-              return ListTile(
-                dense: true,
-                leading: const Icon(Icons.event_busy_outlined),
-                title: Text(start == null ? 'Unavailable time' : '${start.month}/${start.day}'),
-                trailing: IconButton(tooltip: 'Remove unavailable time', icon: const Icon(Icons.delete_outline), onPressed: () async {
+            trailing: TextButton(
+                onPressed: () async {
+                  final now = DateTime.now();
+                  final day = await showDatePicker(
+                      context: context,
+                      initialDate: now.add(const Duration(days: 1)),
+                      firstDate: now,
+                      lastDate: now.add(const Duration(days: 730)));
+                  if (day == null || !context.mounted) return;
                   try {
-                    await ref.read(operationsApiProvider).deleteUnavailability(row['id'] as String);
+                    await ref.read(operationsApiProvider).createUnavailability(
+                        DateTime(day.year, day.month, day.day),
+                        DateTime(day.year, day.month, day.day)
+                            .add(const Duration(days: 1)));
                     ref.invalidate(myUnavailabilityProvider);
                   } catch (error) {
-                    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not remove unavailable time: $error')));
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                          content:
+                              Text('Could not save unavailable time: $error')));
+                    }
                   }
-                }),
-              );
-            }).toList()),
+                },
+                child: const Text('Block a day')),
           ),
+          ref.watch(myUnavailabilityProvider).when(
+                loading: () => const LinearProgressIndicator(),
+                error: (error, _) => ListTile(
+                    title: const Text('Availability could not be loaded'),
+                    subtitle: Text('$error')),
+                data: (rows) => Column(
+                    children: rows.map((item) {
+                  final row = Map<String, dynamic>.from(item as Map);
+                  final start =
+                      DateTime.tryParse(row['startsAt'] as String? ?? '')
+                          ?.toLocal();
+                  return ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.event_busy_outlined),
+                    title: Text(start == null
+                        ? 'Unavailable time'
+                        : '${start.month}/${start.day}'),
+                    trailing: IconButton(
+                        tooltip: 'Remove unavailable time',
+                        icon: const Icon(Icons.delete_outline),
+                        onPressed: () async {
+                          try {
+                            await ref
+                                .read(operationsApiProvider)
+                                .deleteUnavailability(row['id'] as String);
+                            ref.invalidate(myUnavailabilityProvider);
+                          } catch (error) {
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                                  content: Text(
+                                      'Could not remove unavailable time: $error')));
+                            }
+                          }
+                        }),
+                  );
+                }).toList()),
+              ),
         ]),
       );
 }
@@ -2456,6 +3928,7 @@ String _shiftTimeLabel(DateTime? start, DateTime? end) {
     final hour = value.hour % 12 == 0 ? 12 : value.hour % 12;
     return '$hour:${value.minute.toString().padLeft(2, '0')} ${value.hour < 12 ? 'AM' : 'PM'}';
   }
+
   return '${start.month}/${start.day} · ${time(start)}–${time(end)}';
 }
 
@@ -2466,13 +3939,19 @@ String _clockLabel(DateTime? value) {
 }
 
 String _attendanceTimeLabel(Map<String, dynamic> shift) {
-  final checkedIn = DateTime.tryParse(shift['checkedInAt'] as String? ?? '')?.toLocal();
-  final checkedOut = DateTime.tryParse(shift['checkedOutAt'] as String? ?? '')?.toLocal();
+  final checkedIn =
+      DateTime.tryParse(shift['checkedInAt'] as String? ?? '')?.toLocal();
+  final checkedOut =
+      DateTime.tryParse(shift['checkedOutAt'] as String? ?? '')?.toLocal();
   return 'In ${_clockLabel(checkedIn)}${checkedOut == null ? '' : ' · Out ${_clockLabel(checkedOut)}'}';
 }
 
 class _CoveragePlanningPanel extends ConsumerWidget {
-  const _CoveragePlanningPanel({required this.eventId, required this.venueId, required this.initialDate, required this.locations});
+  const _CoveragePlanningPanel(
+      {required this.eventId,
+      required this.venueId,
+      required this.initialDate,
+      required this.locations});
   final String eventId;
   final String venueId;
   final DateTime initialDate;
@@ -2480,174 +3959,324 @@ class _CoveragePlanningPanel extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) => Card(
-    child: Column(children: [
-      ListTile(
-        leading: const Icon(Icons.groups_2_outlined),
-        title: const Text('Coverage plan'),
-        subtitle: const Text('Set role demand, see scheduled capacity, and create draft open shifts for gaps.'),
-        trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-          IconButton(tooltip: 'Suggest from past event plans', onPressed: () => _forecast(context, ref), icon: const Icon(Icons.auto_graph_outlined)),
-          IconButton(tooltip: 'Add coverage requirement', onPressed: () => _add(context, ref), icon: const Icon(Icons.add_circle_outline)),
-        ]),
-      ),
-      ref.watch(staffingCoverageProvider(eventId)).when(
-        loading: () => const LinearProgressIndicator(),
-        error: (error, _) => ListTile(title: Text('Coverage unavailable: $error')),
-        data: (rows) => rows.isEmpty
-          ? const Padding(padding: EdgeInsets.fromLTRB(16, 0, 16, 12), child: Align(alignment: Alignment.centerLeft, child: Text('No coverage requirements yet. Add a role and target to see gaps.')))
-          : ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 210),
-              child: ListView.builder(
-                shrinkWrap: true,
-                itemCount: rows.length,
-                itemBuilder: (context, index) {
-                  final row = Map<String, dynamic>.from(rows[index] as Map);
-                  final remaining = row['unfilledHeadcount'] as int? ?? 0;
-                  final published = row['publishedHeadcount'] as int? ?? 0;
-                  final scheduled = row['scheduledHeadcount'] as int? ?? 0;
-                  final confirmed = row['confirmedHeadcount'] as int? ?? 0;
-                  final unconfirmed = row['unconfirmedHeadcount'] as int? ?? 0;
-                  final vendorRequested = row['vendorRequestedHeadcount'] as int? ?? 0;
-                  final vendorCommitted = row['vendorCommittedHeadcount'] as int? ?? 0;
-                  final locationId = row['locationId'] as String?;
-                  final matches = locations.where((location) => location['id'] == locationId);
-                  final area = matches.isEmpty ? 'All areas' : matches.first['name'] as String? ?? 'Area';
-                  final start = DateTime.tryParse(row['startsAt'] as String? ?? '')?.toLocal();
-                  final end = DateTime.tryParse(row['endsAt'] as String? ?? '')?.toLocal();
-                  return ListTile(
-                    dense: true,
-                    title: Text('${row['role']} · $area'),
-                    subtitle: Text('${_shiftTimeLabel(start, end)} · $confirmed/${row['requiredHeadcount']} acknowledged · $scheduled/${row['requiredHeadcount']} scheduled ($published published)${remaining > 0 ? ' · $remaining unreserved slots' : ''}${unconfirmed > 0 ? ' · $unconfirmed need assignment or worker confirmation' : ''}${vendorCommitted > 0 ? ' · $vendorCommitted vendor committed (not named on roster)' : ''}${vendorRequested > vendorCommitted ? ' · ${vendorRequested - vendorCommitted} vendor requested, awaiting commitment' : ''}'),
-                    trailing: Column(mainAxisSize: MainAxisSize.min, children: [
-                      IconButton(tooltip: 'Adjust demand target', onPressed: () => _adjustTarget(context, ref, row), icon: const Icon(Icons.edit_outlined)),
-                      if (remaining > 0)
-                        TextButton(onPressed: () => _generate(context, ref, row['id'] as String), child: Text('Fill $remaining'))
-                      else
-                        Icon(unconfirmed > 0 ? Icons.pending_actions_outlined : Icons.check_circle_outline, color: unconfirmed > 0 ? _brass : _pine),
-                    ]),
-                  );
-                },
+        child: Column(children: [
+          ListTile(
+            leading: const Icon(Icons.groups_2_outlined),
+            title: const Text('Coverage plan'),
+            subtitle: const Text(
+                'Set role demand, see scheduled capacity, and create draft open shifts for gaps.'),
+            trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+              IconButton(
+                  tooltip: 'Suggest from past event plans',
+                  onPressed: () => _forecast(context, ref),
+                  icon: const Icon(Icons.auto_graph_outlined)),
+              IconButton(
+                  tooltip: 'Add coverage requirement',
+                  onPressed: () => _add(context, ref),
+                  icon: const Icon(Icons.add_circle_outline)),
+            ]),
+          ),
+          ref.watch(staffingCoverageProvider(eventId)).when(
+                loading: () => const LinearProgressIndicator(),
+                error: (error, _) =>
+                    ListTile(title: Text('Coverage unavailable: $error')),
+                data: (rows) => rows.isEmpty
+                    ? const Padding(
+                        padding: EdgeInsets.fromLTRB(16, 0, 16, 12),
+                        child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                                'No coverage requirements yet. Add a role and target to see gaps.')))
+                    : ConstrainedBox(
+                        constraints: const BoxConstraints(maxHeight: 210),
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: rows.length,
+                          itemBuilder: (context, index) {
+                            final row =
+                                Map<String, dynamic>.from(rows[index] as Map);
+                            final remaining =
+                                row['unfilledHeadcount'] as int? ?? 0;
+                            final published =
+                                row['publishedHeadcount'] as int? ?? 0;
+                            final scheduled =
+                                row['scheduledHeadcount'] as int? ?? 0;
+                            final confirmed =
+                                row['confirmedHeadcount'] as int? ?? 0;
+                            final unconfirmed =
+                                row['unconfirmedHeadcount'] as int? ?? 0;
+                            final vendorRequested =
+                                row['vendorRequestedHeadcount'] as int? ?? 0;
+                            final vendorCommitted =
+                                row['vendorCommittedHeadcount'] as int? ?? 0;
+                            final locationId = row['locationId'] as String?;
+                            final matches = locations.where(
+                                (location) => location['id'] == locationId);
+                            final area = matches.isEmpty
+                                ? 'All areas'
+                                : matches.first['name'] as String? ?? 'Area';
+                            final start = DateTime.tryParse(
+                                    row['startsAt'] as String? ?? '')
+                                ?.toLocal();
+                            final end = DateTime.tryParse(
+                                    row['endsAt'] as String? ?? '')
+                                ?.toLocal();
+                            return ListTile(
+                              dense: true,
+                              title: Text('${row['role']} · $area'),
+                              subtitle: Text(
+                                  '${_shiftTimeLabel(start, end)} · $confirmed/${row['requiredHeadcount']} acknowledged · $scheduled/${row['requiredHeadcount']} scheduled ($published published)${remaining > 0 ? ' · $remaining unreserved slots' : ''}${unconfirmed > 0 ? ' · $unconfirmed need assignment or worker confirmation' : ''}${vendorCommitted > 0 ? ' · $vendorCommitted vendor committed (not named on roster)' : ''}${vendorRequested > vendorCommitted ? ' · ${vendorRequested - vendorCommitted} vendor requested, awaiting commitment' : ''}'),
+                              trailing: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    IconButton(
+                                        tooltip: 'Adjust demand target',
+                                        onPressed: () =>
+                                            _adjustTarget(context, ref, row),
+                                        icon: const Icon(Icons.edit_outlined)),
+                                    if (remaining > 0)
+                                      TextButton(
+                                          onPressed: () => _generate(context,
+                                              ref, row['id'] as String),
+                                          child: Text('Fill $remaining'))
+                                    else
+                                      Icon(
+                                          unconfirmed > 0
+                                              ? Icons.pending_actions_outlined
+                                              : Icons.check_circle_outline,
+                                          color:
+                                              unconfirmed > 0 ? _brass : _pine),
+                                  ]),
+                            );
+                          },
+                        ),
+                      ),
               ),
-            ),
-      ),
-    ]),
-  );
+        ]),
+      );
 
   Future<void> _forecast(BuildContext context, WidgetRef ref) async {
     try {
-      final rows = await ref.read(operationsApiProvider).coverageForecast(eventId);
+      final rows =
+          await ref.read(operationsApiProvider).coverageForecast(eventId);
       if (!context.mounted) return;
       if (rows.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No earlier event plans are available to forecast this venue yet.')));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text(
+                'No earlier event plans are available to forecast this venue yet.')));
         return;
       }
       final selected = await showDialog<Map<String, dynamic>>(
         context: context,
         builder: (dialogContext) => AlertDialog(
           title: const Text('Planning history'),
-          content: SizedBox(width: 480, height: 360, child: Column(children: [
-            const Text('These suggestions summarize prior staffing plans. They are not forecasts from attendance, ticket sales, or live venue data.'),
-            const SizedBox(height: 8),
-            Expanded(child: ListView(children: rows.map((raw) {
-              final row = Map<String, dynamic>.from(raw as Map);
-              final start = initialDate.add(Duration(minutes: row['startsOffsetMinutes'] as int));
-              final end = initialDate.add(Duration(minutes: row['endsOffsetMinutes'] as int));
-              final area = locations.where((item) => item['id'] == row['locationId']).firstOrNull;
-              final areaName = area?['name'] as String? ?? 'All areas';
-              return ListTile(
-                leading: const Icon(Icons.history),
-                title: Text('${row['role']} · $areaName · ${row['requiredHeadcount']} staff'),
-                subtitle: Text('${_shiftTimeLabel(start, end)} · ${row['sampleCount']} plans across ${row['sampleEventCount']} earlier events · ${row['confidence'] == 'LIMITED_HISTORY' ? 'limited history' : 'historical baseline'}'),
-                onTap: () => Navigator.pop(dialogContext, row),
-              );
-            }).toList())),
-          ])),
-          actions: [TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel'))],
+          content: SizedBox(
+              width: 480,
+              height: 360,
+              child: Column(children: [
+                const Text(
+                    'These suggestions summarize prior staffing plans. They are not forecasts from attendance, ticket sales, or live venue data.'),
+                const SizedBox(height: 8),
+                Expanded(
+                    child: ListView(
+                        children: rows.map((raw) {
+                  final row = Map<String, dynamic>.from(raw as Map);
+                  final start = initialDate.add(
+                      Duration(minutes: row['startsOffsetMinutes'] as int));
+                  final end = initialDate
+                      .add(Duration(minutes: row['endsOffsetMinutes'] as int));
+                  final area = locations
+                      .where((item) => item['id'] == row['locationId'])
+                      .firstOrNull;
+                  final areaName = area?['name'] as String? ?? 'All areas';
+                  return ListTile(
+                    leading: const Icon(Icons.history),
+                    title: Text(
+                        '${row['role']} · $areaName · ${row['requiredHeadcount']} staff'),
+                    subtitle: Text(
+                        '${_shiftTimeLabel(start, end)} · ${row['sampleCount']} plans across ${row['sampleEventCount']} earlier events · ${row['confidence'] == 'LIMITED_HISTORY' ? 'limited history' : 'historical baseline'}'),
+                    onTap: () => Navigator.pop(dialogContext, row),
+                  );
+                }).toList())),
+              ])),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Cancel'))
+          ],
         ),
       );
-      if (selected != null && context.mounted) await _add(context, ref, forecast: selected);
+      if (selected != null && context.mounted) {
+        await _add(context, ref, forecast: selected);
+      }
     } catch (error) {
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not load planning history: $error')));
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not load planning history: $error')));
+      }
     }
   }
 
-  Future<void> _add(BuildContext context, WidgetRef ref, {Map<String, dynamic>? forecast}) async {
-    final role = TextEditingController(text: forecast?['role'] as String? ?? '');
-    final headcount = TextEditingController(text: '${forecast?['requiredHeadcount'] ?? 1}');
-    DateTime startsAt = initialDate.add(Duration(minutes: forecast?['startsOffsetMinutes'] as int? ?? 0));
+  Future<void> _add(BuildContext context, WidgetRef ref,
+      {Map<String, dynamic>? forecast}) async {
+    final role =
+        TextEditingController(text: forecast?['role'] as String? ?? '');
+    final headcount =
+        TextEditingController(text: '${forecast?['requiredHeadcount'] ?? 1}');
+    DateTime startsAt = initialDate
+        .add(Duration(minutes: forecast?['startsOffsetMinutes'] as int? ?? 0));
     DateTime endsAt = forecast == null
         ? initialDate.add(const Duration(hours: 4))
-        : initialDate.add(Duration(minutes: forecast['endsOffsetMinutes'] as int));
+        : initialDate
+            .add(Duration(minutes: forecast['endsOffsetMinutes'] as int));
     String? locationId = forecast?['locationId'] as String?;
     final demand = await showDialog<Map<String, Object?>>(
       context: context,
-      builder: (dialogContext) => StatefulBuilder(builder: (context, setState) => AlertDialog(
-        title: const Text('Set staffing demand'),
-        content: SizedBox(width: 440, child: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextField(controller: role, maxLength: 120, decoration: const InputDecoration(labelText: 'Role', hintText: 'e.g. Concourse usher')),
-          TextField(controller: headcount, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'People required')),
-          if (forecast != null) ...[
-            const SizedBox(height: 8),
-            Text('Suggested from ${forecast['sampleEventCount']} earlier event plans. Review and adjust before saving.'),
-            if ((forecast['requiredQualificationCodes'] as List? ?? const []).isNotEmpty)
-              Text('Common qualifications: ${(forecast['requiredQualificationCodes'] as List).join(', ')}'),
-          ],
-          const SizedBox(height: 8),
-          DropdownButtonFormField<String?>(
-            initialValue: locationId,
-            decoration: const InputDecoration(labelText: 'Area'),
-            items: [const DropdownMenuItem<String?>(value: null, child: Text('All areas')), ...locations.map((row) => DropdownMenuItem<String?>(value: row['id'] as String, child: Text(row['name'] as String? ?? 'Area')))],
-            onChanged: (value) => setState(() => locationId = value),
-          ),
-          ListTile(contentPadding: EdgeInsets.zero, title: const Text('Coverage starts'), subtitle: Text(_shiftTimeLabel(startsAt, startsAt)), trailing: const Icon(Icons.edit_calendar), onTap: () async {
-            final value = await _pickAttendanceDateTime(context, startsAt);
-            if (value != null) setState(() { startsAt = value; if (!endsAt.isAfter(startsAt)) endsAt = startsAt.add(const Duration(hours: 4)); });
-          }),
-          ListTile(contentPadding: EdgeInsets.zero, title: const Text('Coverage ends'), subtitle: Text(_shiftTimeLabel(endsAt, endsAt)), trailing: const Icon(Icons.edit_calendar), onTap: () async {
-            final value = await _pickAttendanceDateTime(context, endsAt);
-            if (value != null) setState(() => endsAt = value);
-          }),
-        ]))),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
-          FilledButton(onPressed: () {
-            final count = int.tryParse(headcount.text.trim());
-            if (role.text.trim().length < 2 || count == null || count < 1 || count > 500 || !endsAt.isAfter(startsAt)) return;
-            Navigator.pop(dialogContext, {
-              'venueId': venueId,
-              if (locationId != null) 'locationId': locationId,
-              'role': role.text.trim(), 'startsAt': startsAt.toUtc().toIso8601String(),
-              'endsAt': endsAt.toUtc().toIso8601String(), 'requiredHeadcount': count,
-              if (forecast != null && (forecast['requiredQualificationCodes'] as List? ?? const []).isNotEmpty)
-                'requiredQualificationCodes': List<String>.from(forecast['requiredQualificationCodes'] as List),
-            });
-          }, child: const Text('Save target')),
-        ],
-      )),
+      builder: (dialogContext) => StatefulBuilder(
+          builder: (context, setState) => AlertDialog(
+                title: const Text('Set staffing demand'),
+                content: SizedBox(
+                    width: 440,
+                    child: SingleChildScrollView(
+                        child:
+                            Column(mainAxisSize: MainAxisSize.min, children: [
+                      TextField(
+                          controller: role,
+                          maxLength: 120,
+                          decoration: const InputDecoration(
+                              labelText: 'Role',
+                              hintText: 'e.g. Concourse usher')),
+                      TextField(
+                          controller: headcount,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(
+                              labelText: 'People required')),
+                      if (forecast != null) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                            'Suggested from ${forecast['sampleEventCount']} earlier event plans. Review and adjust before saving.'),
+                        if ((forecast['requiredQualificationCodes'] as List? ??
+                                const [])
+                            .isNotEmpty)
+                          Text(
+                              'Common qualifications: ${(forecast['requiredQualificationCodes'] as List).join(', ')}'),
+                      ],
+                      const SizedBox(height: 8),
+                      DropdownButtonFormField<String?>(
+                        initialValue: locationId,
+                        decoration: const InputDecoration(labelText: 'Area'),
+                        items: [
+                          const DropdownMenuItem<String?>(
+                              value: null, child: Text('All areas')),
+                          ...locations.map((row) => DropdownMenuItem<String?>(
+                              value: row['id'] as String,
+                              child: Text(row['name'] as String? ?? 'Area')))
+                        ],
+                        onChanged: (value) =>
+                            setState(() => locationId = value),
+                      ),
+                      ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('Coverage starts'),
+                          subtitle: Text(_shiftTimeLabel(startsAt, startsAt)),
+                          trailing: const Icon(Icons.edit_calendar),
+                          onTap: () async {
+                            final value = await _pickAttendanceDateTime(
+                                context, startsAt);
+                            if (value != null) {
+                              setState(() {
+                                startsAt = value;
+                                if (!endsAt.isAfter(startsAt)) {
+                                  endsAt =
+                                      startsAt.add(const Duration(hours: 4));
+                                }
+                              });
+                            }
+                          }),
+                      ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('Coverage ends'),
+                          subtitle: Text(_shiftTimeLabel(endsAt, endsAt)),
+                          trailing: const Icon(Icons.edit_calendar),
+                          onTap: () async {
+                            final value =
+                                await _pickAttendanceDateTime(context, endsAt);
+                            if (value != null) setState(() => endsAt = value);
+                          }),
+                    ]))),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(dialogContext),
+                      child: const Text('Cancel')),
+                  FilledButton(
+                      onPressed: () {
+                        final count = int.tryParse(headcount.text.trim());
+                        if (role.text.trim().length < 2 ||
+                            count == null ||
+                            count < 1 ||
+                            count > 500 ||
+                            !endsAt.isAfter(startsAt)) {
+                          return;
+                        }
+                        Navigator.pop(dialogContext, {
+                          'venueId': venueId,
+                          if (locationId != null) 'locationId': locationId,
+                          'role': role.text.trim(),
+                          'startsAt': startsAt.toUtc().toIso8601String(),
+                          'endsAt': endsAt.toUtc().toIso8601String(),
+                          'requiredHeadcount': count,
+                          if (forecast != null &&
+                              (forecast['requiredQualificationCodes']
+                                          as List? ??
+                                      const [])
+                                  .isNotEmpty)
+                            'requiredQualificationCodes': List<String>.from(
+                                forecast['requiredQualificationCodes'] as List),
+                        });
+                      },
+                      child: const Text('Save target')),
+                ],
+              )),
     );
     role.dispose();
     headcount.dispose();
     if (demand == null) return;
     try {
-      await ref.read(operationsApiProvider).createCoverageRequirement(eventId, demand);
+      await ref
+          .read(operationsApiProvider)
+          .createCoverageRequirement(eventId, demand);
       ref.invalidate(staffingCoverageProvider(eventId));
     } catch (error) {
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not save coverage: $error')));
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not save coverage: $error')));
+      }
     }
   }
 
-  Future<void> _generate(BuildContext context, WidgetRef ref, String demandId) async {
+  Future<void> _generate(
+      BuildContext context, WidgetRef ref, String demandId) async {
     try {
-      final result = await ref.read(operationsApiProvider).generateCoverageShifts(eventId, demandId);
+      final result = await ref
+          .read(operationsApiProvider)
+          .generateCoverageShifts(eventId, demandId);
       ref.invalidate(staffingCoverageProvider(eventId));
       ref.invalidate(eventShiftsProvider(eventId));
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Created ${(result['createdShifts'] as List? ?? const []).length} draft open shifts. Assign and publish them from the schedule.')));
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(
+                'Created ${(result['createdShifts'] as List? ?? const []).length} draft open shifts. Assign and publish them from the schedule.')));
+      }
     } catch (error) {
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not generate draft shifts: $error')));
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not generate draft shifts: $error')));
+      }
     }
   }
 
-  Future<void> _adjustTarget(BuildContext context, WidgetRef ref, Map<String, dynamic> row) async {
+  Future<void> _adjustTarget(
+      BuildContext context, WidgetRef ref, Map<String, dynamic> row) async {
     final target = TextEditingController(text: '${row['requiredHeadcount']}');
     final reason = TextEditingController();
     final values = await showDialog<Map<String, Object?>>(
@@ -2655,16 +4284,36 @@ class _CoveragePlanningPanel extends ConsumerWidget {
       builder: (dialogContext) => AlertDialog(
         title: const Text('Adjust coverage target'),
         content: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextField(controller: target, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'People required (1–500)')),
-          TextField(controller: reason, maxLength: 500, minLines: 2, maxLines: 3, decoration: const InputDecoration(labelText: 'Reason', border: OutlineInputBorder())),
+          TextField(
+              controller: target,
+              keyboardType: TextInputType.number,
+              decoration:
+                  const InputDecoration(labelText: 'People required (1–500)')),
+          TextField(
+              controller: reason,
+              maxLength: 500,
+              minLines: 2,
+              maxLines: 3,
+              decoration: const InputDecoration(
+                  labelText: 'Reason', border: OutlineInputBorder())),
         ]),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
-          FilledButton(onPressed: () {
-            final count = int.tryParse(target.text.trim());
-            if (count == null || count < 1 || count > 500 || reason.text.trim().length < 3) return;
-            Navigator.pop(dialogContext, {'requiredHeadcount': count, 'reason': reason.text.trim()});
-          }, child: const Text('Save target')),
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () {
+                final count = int.tryParse(target.text.trim());
+                if (count == null ||
+                    count < 1 ||
+                    count > 500 ||
+                    reason.text.trim().length < 3) {
+                  return;
+                }
+                Navigator.pop(dialogContext,
+                    {'requiredHeadcount': count, 'reason': reason.text.trim()});
+              },
+              child: const Text('Save target')),
         ],
       ),
     );
@@ -2672,287 +4321,563 @@ class _CoveragePlanningPanel extends ConsumerWidget {
     reason.dispose();
     if (values == null) return;
     try {
-      await ref.read(operationsApiProvider).updateCoverageRequirement(eventId, row['id'] as String, values);
+      await ref
+          .read(operationsApiProvider)
+          .updateCoverageRequirement(eventId, row['id'] as String, values);
       ref.invalidate(staffingCoverageProvider(eventId));
     } catch (error) {
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not update demand target: $error')));
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not update demand target: $error')));
+      }
     }
   }
 }
 
-Future<DateTime?> _pickAttendanceDateTime(BuildContext context, DateTime initial) async {
-  final date = await showDatePicker(context: context, initialDate: initial, firstDate: DateTime(initial.year - 2), lastDate: DateTime.now().add(const Duration(days: 2)));
+Future<DateTime?> _pickAttendanceDateTime(
+    BuildContext context, DateTime initial) async {
+  final date = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: DateTime(initial.year - 2),
+      lastDate: DateTime.now().add(const Duration(days: 2)));
   if (date == null || !context.mounted) return null;
-  final time = await showTimePicker(context: context, initialTime: TimeOfDay.fromDateTime(initial));
+  final time = await showTimePicker(
+      context: context, initialTime: TimeOfDay.fromDateTime(initial));
   if (time == null) return null;
   return DateTime(date.year, date.month, date.day, time.hour, time.minute);
 }
 
-Future<void> _correctAttendance(BuildContext context, WidgetRef ref, String eventId, Map<String, dynamic> shift) async {
-  DateTime? checkedInAt = DateTime.tryParse(shift['checkedInAt'] as String? ?? '')?.toLocal();
-  DateTime? checkedOutAt = DateTime.tryParse(shift['checkedOutAt'] as String? ?? '')?.toLocal();
+Future<void> _correctAttendance(BuildContext context, WidgetRef ref,
+    String eventId, Map<String, dynamic> shift) async {
+  DateTime? checkedInAt =
+      DateTime.tryParse(shift['checkedInAt'] as String? ?? '')?.toLocal();
+  DateTime? checkedOutAt =
+      DateTime.tryParse(shift['checkedOutAt'] as String? ?? '')?.toLocal();
   final reason = TextEditingController();
   final correction = await showDialog<Map<String, Object?>>(
     context: context,
-    builder: (dialogContext) => StatefulBuilder(builder: (context, setState) => AlertDialog(
-      title: const Text('Correct attendance'),
-      content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('The original times remain in the audit history. Add the reason for this correction.'),
-        ListTile(contentPadding: EdgeInsets.zero, title: const Text('Check-in'), subtitle: Text(_shiftTimeLabel(checkedInAt, checkedInAt)), trailing: const Icon(Icons.edit_calendar), onTap: () async {
-          final value = await _pickAttendanceDateTime(context, checkedInAt ?? DateTime.now());
-          if (value != null) setState(() => checkedInAt = value);
-        }),
-        if (checkedOutAt != null) ListTile(contentPadding: EdgeInsets.zero, title: const Text('Check-out'), subtitle: Text(_shiftTimeLabel(checkedOutAt, checkedOutAt)), trailing: const Icon(Icons.edit_calendar), onTap: () async {
-          final value = await _pickAttendanceDateTime(context, checkedOutAt ?? DateTime.now());
-          if (value != null) setState(() => checkedOutAt = value);
-        }),
-        TextField(controller: reason, maxLength: 500, minLines: 2, maxLines: 4, decoration: const InputDecoration(labelText: 'Reason', border: OutlineInputBorder())),
-      ]),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
-        FilledButton(onPressed: () {
-          if (reason.text.trim().length < 3 || checkedInAt == null) return;
-          Navigator.pop(dialogContext, {
-            'checkedInAt': checkedInAt!.toUtc().toIso8601String(),
-            if (checkedOutAt != null) 'checkedOutAt': checkedOutAt!.toUtc().toIso8601String(),
-            'reason': reason.text.trim(),
-          });
-        }, child: const Text('Save correction')),
-      ],
-    )),
+    builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+              title: const Text('Correct attendance'),
+              content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                        'The original times remain in the audit history. Add the reason for this correction.'),
+                    ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('Check-in'),
+                        subtitle:
+                            Text(_shiftTimeLabel(checkedInAt, checkedInAt)),
+                        trailing: const Icon(Icons.edit_calendar),
+                        onTap: () async {
+                          final value = await _pickAttendanceDateTime(
+                              context, checkedInAt ?? DateTime.now());
+                          if (value != null) {
+                            setState(() => checkedInAt = value);
+                          }
+                        }),
+                    if (checkedOutAt != null)
+                      ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('Check-out'),
+                          subtitle:
+                              Text(_shiftTimeLabel(checkedOutAt, checkedOutAt)),
+                          trailing: const Icon(Icons.edit_calendar),
+                          onTap: () async {
+                            final value = await _pickAttendanceDateTime(
+                                context, checkedOutAt ?? DateTime.now());
+                            if (value != null) {
+                              setState(() => checkedOutAt = value);
+                            }
+                          }),
+                    TextField(
+                        controller: reason,
+                        maxLength: 500,
+                        minLines: 2,
+                        maxLines: 4,
+                        decoration: const InputDecoration(
+                            labelText: 'Reason', border: OutlineInputBorder())),
+                  ]),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(dialogContext),
+                    child: const Text('Cancel')),
+                FilledButton(
+                    onPressed: () {
+                      if (reason.text.trim().length < 3 ||
+                          checkedInAt == null) {
+                        return;
+                      }
+                      Navigator.pop(dialogContext, {
+                        'checkedInAt': checkedInAt!.toUtc().toIso8601String(),
+                        if (checkedOutAt != null)
+                          'checkedOutAt':
+                              checkedOutAt!.toUtc().toIso8601String(),
+                        'reason': reason.text.trim(),
+                      });
+                    },
+                    child: const Text('Save correction')),
+              ],
+            )),
   );
   reason.dispose();
   if (correction == null) return;
   try {
-    await ref.read(operationsApiProvider).correctAttendance(eventId, shift['id'] as String, correction);
+    await ref
+        .read(operationsApiProvider)
+        .correctAttendance(eventId, shift['id'] as String, correction);
     ref.invalidate(eventShiftsProvider(eventId));
   } catch (error) {
-    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not correct attendance: $error')));
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not correct attendance: $error')));
+    }
   }
 }
 
-Future<void> _runShiftCommand(BuildContext context, WidgetRef ref, String eventId, String shiftId, String action, {Map<String, Object?>? data}) async {
+Future<void> _runShiftCommand(BuildContext context, WidgetRef ref,
+    String eventId, String shiftId, String action,
+    {Map<String, Object?>? data}) async {
   try {
-    await ref.read(operationsApiProvider).shiftCommand(eventId, shiftId, action, data: data);
+    await ref
+        .read(operationsApiProvider)
+        .shiftCommand(eventId, shiftId, action, data: data);
     ref.invalidate(eventShiftsProvider(eventId));
   } catch (error) {
-    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not $action shift: $error')));
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not $action shift: $error')));
+    }
   }
 }
 
-Future<void> _recordShiftAttendance(BuildContext context, WidgetRef ref, String eventId, String shiftId, String action, {bool queueForReview = false}) async {
+Future<void> _recordShiftAttendance(BuildContext context, WidgetRef ref,
+    String eventId, String shiftId, String action,
+    {bool queueForReview = false}) async {
   try {
-    final queued = await ref.read(staffAttendanceOutboxProvider.notifier).record(eventId, shiftId, action, queueForReview: queueForReview);
+    final queued = await ref
+        .read(staffAttendanceOutboxProvider.notifier)
+        .record(eventId, shiftId, action, queueForReview: queueForReview);
     if (!queued) ref.invalidate(eventShiftsProvider(eventId));
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(queued
-        ? 'Saved on this device. It will sync as unverified attendance for supervisor review.'
-        : '${action == 'CHECK_IN' ? 'Checked in' : 'Checked out'} with server time.')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(queued
+              ? 'Saved on this device. It will sync as unverified attendance for supervisor review.'
+              : '${action == 'CHECK_IN' ? 'Checked in' : 'Checked out'} with server time.')));
     }
   } catch (error) {
-    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not record attendance: $error')));
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not record attendance: $error')));
+    }
   }
 }
 
-Future<void> _syncStaffAttendance(BuildContext context, WidgetRef ref, String eventId) async {
+Future<void> _syncStaffAttendance(
+    BuildContext context, WidgetRef ref, String eventId) async {
   await ref.read(staffAttendanceOutboxProvider.notifier).synchronize();
   ref.invalidate(eventShiftsProvider(eventId));
-  if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Attendance sync attempted. Any device-recorded times still need supervisor review.')));
+  if (context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text(
+            'Attendance sync attempted. Any device-recorded times still need supervisor review.')));
+  }
 }
 
-Future<void> _reviewAttendanceClaim(BuildContext context, WidgetRef ref, String eventId, String claimId, String decision) async {
+Future<void> _reviewAttendanceClaim(BuildContext context, WidgetRef ref,
+    String eventId, String claimId, String decision) async {
   final reasonController = TextEditingController();
   final result = await showDialog<Map<String, String>>(
     context: context,
     builder: (dialogContext) => AlertDialog(
-      title: Text(decision == 'ACCEPTED' ? 'Accept offline time?' : 'Reject offline time?'),
-      content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('This timestamp came from the worker device. Record why you are reviewing it this way.'),
-        const SizedBox(height: 12),
-        TextField(controller: reasonController, autofocus: true, maxLength: 500, minLines: 2, maxLines: 4, decoration: const InputDecoration(labelText: 'Review reason', border: OutlineInputBorder())),
-      ]),
+      title: Text(decision == 'ACCEPTED'
+          ? 'Accept offline time?'
+          : 'Reject offline time?'),
+      content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+                'This timestamp came from the worker device. Record why you are reviewing it this way.'),
+            const SizedBox(height: 12),
+            TextField(
+                controller: reasonController,
+                autofocus: true,
+                maxLength: 500,
+                minLines: 2,
+                maxLines: 4,
+                decoration: const InputDecoration(
+                    labelText: 'Review reason', border: OutlineInputBorder())),
+          ]),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
-        FilledButton(onPressed: () {
-          final reason = reasonController.text.trim();
-          if (reason.length < 3) return;
-          Navigator.pop(dialogContext, {'decision': decision, 'reason': reason});
-        }, child: Text(decision == 'ACCEPTED' ? 'Accept time' : 'Reject')),
+        TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel')),
+        FilledButton(
+            onPressed: () {
+              final reason = reasonController.text.trim();
+              if (reason.length < 3) return;
+              Navigator.pop(
+                  dialogContext, {'decision': decision, 'reason': reason});
+            },
+            child: Text(decision == 'ACCEPTED' ? 'Accept time' : 'Reject')),
       ],
     ),
   );
   reasonController.dispose();
   if (result == null) return;
   try {
-    await ref.read(operationsApiProvider).decideOfflineAttendance(eventId, claimId, result['decision']!, result['reason']!);
+    await ref.read(operationsApiProvider).decideOfflineAttendance(
+        eventId, claimId, result['decision']!, result['reason']!);
     ref.invalidate(eventShiftsProvider(eventId));
   } catch (error) {
-    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not review attendance: $error')));
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not review attendance: $error')));
+    }
   }
 }
 
-Future<void> _respondToShift(BuildContext context, WidgetRef ref, String eventId, String shiftId, String response) async {
+Future<void> _respondToShift(BuildContext context, WidgetRef ref,
+    String eventId, String shiftId, String response) async {
   try {
-    await ref.read(operationsApiProvider).respondToShift(eventId, shiftId, response);
+    await ref
+        .read(operationsApiProvider)
+        .respondToShift(eventId, shiftId, response);
     ref.invalidate(eventShiftsProvider(eventId));
   } catch (error) {
-    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not update shift response: $error')));
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not update shift response: $error')));
+    }
   }
 }
 
-Future<void> _respondToAvailabilityCheck(BuildContext context, WidgetRef ref, Map<String, dynamic> check, String response) async {
+Future<void> _respondToAvailabilityCheck(BuildContext context, WidgetRef ref,
+    Map<String, dynamic> check, String response) async {
   try {
-    await ref.read(operationsApiProvider).respondToAvailabilityCheck(check['id'] as String, response);
+    await ref
+        .read(operationsApiProvider)
+        .respondToAvailabilityCheck(check['id'] as String, response);
     ref.invalidate(myAvailabilityChecksProvider);
     ref.invalidate(userNotificationsProvider);
-    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(response == 'AVAILABLE' ? 'Availability confirmed for this draft shift.' : 'Unavailable response sent to the manager.')));
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(response == 'AVAILABLE'
+              ? 'Availability confirmed for this draft shift.'
+              : 'Unavailable response sent to the manager.')));
+    }
   } catch (error) {
-    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not send availability response: $error')));
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Could not send availability response: $error')));
+    }
   }
 }
 
-Future<void> _createStockPurchaseOrder(BuildContext context, WidgetRef ref, String eventId, String venueId, {String? locationId, String? locationName}) async {
-    try {
-      final api = ref.read(operationsApiProvider);
-      final items = await api.inventoryItems(venueId, locationId: locationId);
-      if (items.isEmpty) {
-        if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Add active inventory items at ${locationName ?? 'the venue'} before requesting a purchase.')));
-        return;
+Future<void> _createStockPurchaseOrder(
+    BuildContext context, WidgetRef ref, String eventId, String venueId,
+    {String? locationId, String? locationName}) async {
+  try {
+    final api = ref.read(operationsApiProvider);
+    final items = await api.inventoryItems(venueId, locationId: locationId);
+    if (items.isEmpty) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(
+                'Add active inventory items at ${locationName ?? 'the venue'} before requesting a purchase.')));
       }
-      if (!context.mounted) return;
-      final request = await showDialog<Map<String, Object?>>(
-        context: context,
-        builder: (_) => _StockPurchaseOrderComposer(items: items, locationName: locationName ?? 'Venue stock'),
-      );
-      if (request == null) return;
-      await api.createStockPurchaseOrder(
-        eventId, venueId, locationId,
-        request['supplierName'] as String,
-        request['supplierReference'] as String?,
-        request['note'] as String?,
-        (request['lines'] as List).cast<Map<String, Object?>>(),
-      );
-      ref.invalidate(eventStockPurchaseOrdersProvider(eventId));
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Purchase request submitted for independent approval.')));
-    } catch (error) {
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not create purchase request: $error')));
+      return;
     }
-  }
-
-Future<void> _stockPurchaseOrderAction(BuildContext context, WidgetRef ref, String eventId, String orderId, String action) async {
-    try {
-      await ref.read(operationsApiProvider).stockPurchaseOrderAction(eventId, orderId, action);
-      ref.invalidate(eventStockPurchaseOrdersProvider(eventId));
-    } catch (error) {
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not $action purchase request: $error')));
-    }
-  }
-
-  Future<void> _receiveStockPurchaseOrder(BuildContext context, WidgetRef ref, String eventId, Map<String, dynamic> order) async {
-    final lines = (order['lines'] as List? ?? const []).whereType<Map>().map((line) => Map<String, dynamic>.from(line)).toList();
-    final received = <String, TextEditingController>{};
-    for (final line in lines) {
-      final remaining = (double.tryParse('${line['orderedQuantity']}') ?? 0) - (double.tryParse('${line['receivedQuantity']}') ?? 0);
-      received[line['id'] as String] = TextEditingController(text: remaining > 0 ? '$remaining' : '');
-    }
-    final note = TextEditingController();
-    final result = await showDialog<Map<String, Object?>>(context: context, builder: (dialogContext) => AlertDialog(
-      title: const Text('Receive purchase order'),
-      content: SizedBox(width: 480, child: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
-        for (final line in lines) TextField(controller: received[line['id'] as String], keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: InputDecoration(labelText: '${line['name']} · remaining ${((double.tryParse('${line['orderedQuantity']}') ?? 0) - (double.tryParse('${line['receivedQuantity']}') ?? 0)).toStringAsFixed(3)} ${line['unit']}')),
-        TextField(controller: note, maxLength: 500, decoration: const InputDecoration(labelText: 'Receiving note (optional)')),
-      ]))),
-      actions: [TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')), FilledButton(onPressed: () {
-        final quantities = <Map<String, Object?>>[];
-        for (final line in lines) {
-          final value = double.tryParse(received[line['id'] as String]!.text.trim()) ?? 0;
-          if (value > 0) quantities.add({'lineId': line['id'], 'quantity': value});
-        }
-        Navigator.pop(dialogContext, quantities.isEmpty ? null : {'lines': quantities, 'note': note.text.trim()});
-      }, child: const Text('Save receipt'))],
-    ));
-    for (final controller in received.values) { controller.dispose(); }
-    note.dispose();
-    if (result == null || !context.mounted) return;
-    try {
-      await ref.read(operationsApiProvider).stockPurchaseOrderAction(eventId, order['id'] as String, 'receive', lines: (result['lines'] as List).cast<Map<String, Object?>>(), note: result['note'] as String?);
-      ref.invalidate(eventStockPurchaseOrdersProvider(eventId));
-      ref.invalidate(eventInventoryCountsProvider(eventId));
-    } catch (error) {
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not record purchase receipt: $error')));
-    }
-  }
-
-  Future<void> _closeShortStockPurchaseOrder(BuildContext context, WidgetRef ref, String eventId, String orderId) async {
-    final reason = TextEditingController();
-    final close = await showDialog<bool>(context: context, builder: (dialogContext) => AlertDialog(
-      title: const Text('Close purchase order short'),
-      content: TextField(controller: reason, minLines: 2, maxLines: 4, maxLength: 500, decoration: const InputDecoration(labelText: 'Explain the remaining quantity')),
-      actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Back')), FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Close with reason'))],
-    ));
-    if (close != true) { reason.dispose(); return; }
-    try {
-      await ref.read(operationsApiProvider).stockPurchaseOrderAction(eventId, orderId, 'close-short', reason: reason.text.trim());
-      ref.invalidate(eventStockPurchaseOrdersProvider(eventId));
-    } catch (error) {
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not close purchase order: $error')));
-    } finally { reason.dispose(); }
-  }
-Future<void> _showAvailabilityChecks(BuildContext context, WidgetRef ref, String eventId, String shiftId) async {
-  try {
-    final rows = await ref.read(operationsApiProvider).availabilityChecksForShift(eventId, shiftId);
     if (!context.mounted) return;
-    await showDialog<void>(context: context, builder: (dialogContext) => AlertDialog(
-      title: const Text('Availability responses'),
-      content: SizedBox(
-        width: 420,
-        child: rows.isEmpty
-            ? const Text('No availability requests have been sent for this draft shift.')
-            : Column(mainAxisSize: MainAxisSize.min, children: rows.map((raw) {
-                final row = Map<String, dynamic>.from(raw as Map);
-                final current = row['current'] == true;
-                final response = row['response'] as String? ?? 'PENDING';
-                return ListTile(
-                  title: Text(row['displayName'] as String? ?? 'Roster member'),
-                  subtitle: Text(!current ? 'Stale · shift changed after request' : response == 'AVAILABLE' ? 'Confirmed available for this shift' : response == 'UNAVAILABLE' ? 'Unavailable' : 'Waiting for response'),
-                  trailing: Icon(current && response == 'AVAILABLE' ? Icons.check_circle : response == 'UNAVAILABLE' ? Icons.cancel_outlined : Icons.schedule, color: current && response == 'AVAILABLE' ? Colors.green : response == 'UNAVAILABLE' ? Theme.of(context).colorScheme.error : null),
-                );
-              }).toList()),
-      ),
-      actions: [TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Close'))],
-    ));
+    final request = await showDialog<Map<String, Object?>>(
+      context: context,
+      builder: (_) => _StockPurchaseOrderComposer(
+          items: items, locationName: locationName ?? 'Venue stock'),
+    );
+    if (request == null) return;
+    await api.createStockPurchaseOrder(
+      eventId,
+      venueId,
+      locationId,
+      request['supplierName'] as String,
+      request['supplierReference'] as String?,
+      request['note'] as String?,
+      (request['lines'] as List).cast<Map<String, Object?>>(),
+    );
+    ref.invalidate(eventStockPurchaseOrdersProvider(eventId));
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content:
+              Text('Purchase request submitted for independent approval.')));
+    }
   } catch (error) {
-    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not load availability responses: $error')));
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not create purchase request: $error')));
+    }
   }
 }
 
-Future<void> _cancelStockPurchaseOrder(BuildContext context, WidgetRef ref, String eventId, String orderId) async {
-  final reason = TextEditingController();
-  final confirmed = await showDialog<bool>(context: context, builder: (dialogContext) => AlertDialog(
-    title: const Text('Cancel purchase request'),
-    content: TextField(controller: reason, minLines: 2, maxLines: 4, maxLength: 500, decoration: const InputDecoration(labelText: 'Reason')),
-    actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Keep request')), FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Cancel request'))],
-  ));
-  if (confirmed != true) { reason.dispose(); return; }
+Future<void> _stockPurchaseOrderAction(BuildContext context, WidgetRef ref,
+    String eventId, String orderId, String action) async {
   try {
-    await ref.read(operationsApiProvider).stockPurchaseOrderAction(eventId, orderId, 'cancel', reason: reason.text.trim());
+    await ref
+        .read(operationsApiProvider)
+        .stockPurchaseOrderAction(eventId, orderId, action);
     ref.invalidate(eventStockPurchaseOrdersProvider(eventId));
   } catch (error) {
-    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not cancel purchase order: $error')));
-  } finally { reason.dispose(); }
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Could not $action purchase request: $error')));
+    }
+  }
 }
 
-Future<void> _suggestShiftAssignee(BuildContext context, WidgetRef ref, String eventId, Map<String, dynamic> shift) async {
+Future<void> _receiveStockPurchaseOrder(BuildContext context, WidgetRef ref,
+    String eventId, Map<String, dynamic> order) async {
+  final lines = (order['lines'] as List? ?? const [])
+      .whereType<Map>()
+      .map((line) => Map<String, dynamic>.from(line))
+      .toList();
+  final received = <String, TextEditingController>{};
+  for (final line in lines) {
+    final remaining = (double.tryParse('${line['orderedQuantity']}') ?? 0) -
+        (double.tryParse('${line['receivedQuantity']}') ?? 0);
+    received[line['id'] as String] =
+        TextEditingController(text: remaining > 0 ? '$remaining' : '');
+  }
+  final note = TextEditingController();
+  final result = await showDialog<Map<String, Object?>>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+            title: const Text('Receive purchase order'),
+            content: SizedBox(
+                width: 480,
+                child: SingleChildScrollView(
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  for (final line in lines)
+                    TextField(
+                        controller: received[line['id'] as String],
+                        keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true),
+                        decoration: InputDecoration(
+                            labelText:
+                                '${line['name']} · remaining ${((double.tryParse('${line['orderedQuantity']}') ?? 0) - (double.tryParse('${line['receivedQuantity']}') ?? 0)).toStringAsFixed(3)} ${line['unit']}')),
+                  TextField(
+                      controller: note,
+                      maxLength: 500,
+                      decoration: const InputDecoration(
+                          labelText: 'Receiving note (optional)')),
+                ]))),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('Cancel')),
+              FilledButton(
+                  onPressed: () {
+                    final quantities = <Map<String, Object?>>[];
+                    for (final line in lines) {
+                      final value = double.tryParse(
+                              received[line['id'] as String]!.text.trim()) ??
+                          0;
+                      if (value > 0) {
+                        quantities
+                            .add({'lineId': line['id'], 'quantity': value});
+                      }
+                    }
+                    Navigator.pop(
+                        dialogContext,
+                        quantities.isEmpty
+                            ? null
+                            : {'lines': quantities, 'note': note.text.trim()});
+                  },
+                  child: const Text('Save receipt'))
+            ],
+          ));
+  for (final controller in received.values) {
+    controller.dispose();
+  }
+  note.dispose();
+  if (result == null || !context.mounted) return;
   try {
-    final result = await ref.read(operationsApiProvider).shiftAssignmentSuggestions(eventId, shift['id'] as String);
+    await ref.read(operationsApiProvider).stockPurchaseOrderAction(
+        eventId, order['id'] as String, 'receive',
+        lines: (result['lines'] as List).cast<Map<String, Object?>>(),
+        note: result['note'] as String?);
+    ref.invalidate(eventStockPurchaseOrdersProvider(eventId));
+    ref.invalidate(eventInventoryCountsProvider(eventId));
+  } catch (error) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not record purchase receipt: $error')));
+    }
+  }
+}
+
+Future<void> _closeShortStockPurchaseOrder(
+    BuildContext context, WidgetRef ref, String eventId, String orderId) async {
+  final reason = TextEditingController();
+  final close = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+            title: const Text('Close purchase order short'),
+            content: TextField(
+                controller: reason,
+                minLines: 2,
+                maxLines: 4,
+                maxLength: 500,
+                decoration: const InputDecoration(
+                    labelText: 'Explain the remaining quantity')),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(dialogContext, false),
+                  child: const Text('Back')),
+              FilledButton(
+                  onPressed: () => Navigator.pop(dialogContext, true),
+                  child: const Text('Close with reason'))
+            ],
+          ));
+  if (close != true) {
+    reason.dispose();
+    return;
+  }
+  try {
+    await ref.read(operationsApiProvider).stockPurchaseOrderAction(
+        eventId, orderId, 'close-short',
+        reason: reason.text.trim());
+    ref.invalidate(eventStockPurchaseOrdersProvider(eventId));
+  } catch (error) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not close purchase order: $error')));
+    }
+  } finally {
+    reason.dispose();
+  }
+}
+
+Future<void> _showAvailabilityChecks(
+    BuildContext context, WidgetRef ref, String eventId, String shiftId) async {
+  try {
+    final rows = await ref
+        .read(operationsApiProvider)
+        .availabilityChecksForShift(eventId, shiftId);
+    if (!context.mounted) return;
+    await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+              title: const Text('Availability responses'),
+              content: SizedBox(
+                width: 420,
+                child: rows.isEmpty
+                    ? const Text(
+                        'No availability requests have been sent for this draft shift.')
+                    : Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: rows.map((raw) {
+                          final row = Map<String, dynamic>.from(raw as Map);
+                          final current = row['current'] == true;
+                          final response =
+                              row['response'] as String? ?? 'PENDING';
+                          return ListTile(
+                            title: Text(row['displayName'] as String? ??
+                                'Roster member'),
+                            subtitle: Text(!current
+                                ? 'Stale · shift changed after request'
+                                : response == 'AVAILABLE'
+                                    ? 'Confirmed available for this shift'
+                                    : response == 'UNAVAILABLE'
+                                        ? 'Unavailable'
+                                        : 'Waiting for response'),
+                            trailing: Icon(
+                                current && response == 'AVAILABLE'
+                                    ? Icons.check_circle
+                                    : response == 'UNAVAILABLE'
+                                        ? Icons.cancel_outlined
+                                        : Icons.schedule,
+                                color: current && response == 'AVAILABLE'
+                                    ? Colors.green
+                                    : response == 'UNAVAILABLE'
+                                        ? Theme.of(context).colorScheme.error
+                                        : null),
+                          );
+                        }).toList()),
+              ),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(dialogContext),
+                    child: const Text('Close'))
+              ],
+            ));
+  } catch (error) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Could not load availability responses: $error')));
+    }
+  }
+}
+
+Future<void> _cancelStockPurchaseOrder(
+    BuildContext context, WidgetRef ref, String eventId, String orderId) async {
+  final reason = TextEditingController();
+  final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+            title: const Text('Cancel purchase request'),
+            content: TextField(
+                controller: reason,
+                minLines: 2,
+                maxLines: 4,
+                maxLength: 500,
+                decoration: const InputDecoration(labelText: 'Reason')),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(dialogContext, false),
+                  child: const Text('Keep request')),
+              FilledButton(
+                  onPressed: () => Navigator.pop(dialogContext, true),
+                  child: const Text('Cancel request'))
+            ],
+          ));
+  if (confirmed != true) {
+    reason.dispose();
+    return;
+  }
+  try {
+    await ref.read(operationsApiProvider).stockPurchaseOrderAction(
+        eventId, orderId, 'cancel',
+        reason: reason.text.trim());
+    ref.invalidate(eventStockPurchaseOrdersProvider(eventId));
+  } catch (error) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not cancel purchase order: $error')));
+    }
+  } finally {
+    reason.dispose();
+  }
+}
+
+Future<void> _suggestShiftAssignee(BuildContext context, WidgetRef ref,
+    String eventId, Map<String, dynamic> shift) async {
+  try {
+    final result = await ref
+        .read(operationsApiProvider)
+        .shiftAssignmentSuggestions(eventId, shift['id'] as String);
     final recommendations = (result['recommendations'] as List? ?? const [])
         .whereType<Map>()
         .map((item) => Map<String, dynamic>.from(item))
         .toList();
     if (!context.mounted) return;
     if (recommendations.isEmpty) {
-      final message = result['message'] as String? ?? 'No eligible workers were found.';
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+      final message =
+          result['message'] as String? ?? 'No eligible workers were found.';
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(message)));
       return;
     }
     final selected = await showDialog<Map<String, dynamic>>(
@@ -2963,45 +4888,71 @@ Future<void> _suggestShiftAssignee(BuildContext context, WidgetRef ref, String e
           width: 460,
           height: MediaQuery.sizeOf(context).height * 0.55,
           child: Column(children: [
-              const Text('Ranked by scheduled workload after conflict and qualification checks. A worker marked confirmed has explicitly replied; no recorded conflict alone is not confirmation.'),
+            const Text(
+                'Ranked by scheduled workload after conflict and qualification checks. A worker marked confirmed has explicitly replied; no recorded conflict alone is not confirmation.'),
             const SizedBox(height: 8),
-            Expanded(child: ListView.builder(
+            Expanded(
+                child: ListView.builder(
               itemCount: recommendations.length,
               itemBuilder: (context, index) {
                 final candidate = recommendations[index];
                 final minutes = candidate['eventAssignedMinutes'] as int? ?? 0;
                 final shifts = candidate['eventAssignedShifts'] as int? ?? 0;
                 return ListTile(
-                  leading: const CircleAvatar(child: Icon(Icons.person_outline)),
-                  title: Text(candidate['displayName'] as String? ?? 'Roster member'),
-                  subtitle: Text('${(minutes / 60).toStringAsFixed(1)} scheduled hours · $shifts event shifts · ${candidate['availabilitySignal'] == 'CONFIRMED_AVAILABLE' ? 'confirmed available' : 'no schedule conflict recorded; not confirmed'}'),
-                  onTap: () => Navigator.pop(dialogContext, {'action': 'assign', 'candidate': candidate}),
+                  leading:
+                      const CircleAvatar(child: Icon(Icons.person_outline)),
+                  title: Text(
+                      candidate['displayName'] as String? ?? 'Roster member'),
+                  subtitle: Text(
+                      '${(minutes / 60).toStringAsFixed(1)} scheduled hours · $shifts event shifts · ${candidate['availabilitySignal'] == 'CONFIRMED_AVAILABLE' ? 'confirmed available' : 'no schedule conflict recorded; not confirmed'}'),
+                  onTap: () => Navigator.pop(dialogContext,
+                      {'action': 'assign', 'candidate': candidate}),
                   trailing: IconButton(
                     tooltip: 'Ask this worker to confirm availability',
                     icon: const Icon(Icons.how_to_reg_outlined),
-                    onPressed: () => Navigator.pop(dialogContext, {'action': 'request', 'candidate': candidate}),
+                    onPressed: () => Navigator.pop(dialogContext,
+                        {'action': 'request', 'candidate': candidate}),
                   ),
                 );
               },
             )),
           ]),
         ),
-        actions: [TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel'))],
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'))
+        ],
       ),
     );
     if (selected == null || !context.mounted) return;
     final candidate = Map<String, dynamic>.from(selected['candidate'] as Map);
     if (selected['action'] == 'request') {
-      await ref.read(operationsApiProvider).requestShiftAvailability(eventId, shift['id'] as String, [candidate['subject'] as String]);
+      await ref.read(operationsApiProvider).requestShiftAvailability(
+          eventId, shift['id'] as String, [candidate['subject'] as String]);
       ref.invalidate(eventShiftsProvider(eventId));
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Availability request sent to ${candidate['displayName']}.')));
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(
+                'Availability request sent to ${candidate['displayName']}.')));
+      }
       return;
     }
-    await ref.read(operationsApiProvider).updateShift(eventId, shift['id'] as String, {'assignedSubject': candidate['subject'] as String});
+    await ref.read(operationsApiProvider).updateShift(
+        eventId,
+        shift['id'] as String,
+        {'assignedSubject': candidate['subject'] as String});
     ref.invalidate(eventShiftsProvider(eventId));
-    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${candidate['displayName']} assigned to the draft. Publish it when ready.')));
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(
+              '${candidate['displayName']} assigned to the draft. Publish it when ready.')));
+    }
   } catch (error) {
-    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not suggest or assign staff: $error')));
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not suggest or assign staff: $error')));
+    }
   }
 }
 
@@ -3016,81 +4967,189 @@ Future<void> _newLiveShift(
   final role = TextEditingController();
   final instructions = TextEditingController();
   final qualificationCodes = TextEditingController();
-  final eventStart = DateTime.tryParse(event['startsAt'] as String? ?? '')?.toLocal() ?? DateTime.now();
+  final eventStart =
+      DateTime.tryParse(event['startsAt'] as String? ?? '')?.toLocal() ??
+          DateTime.now();
   var startsAt = eventStart;
   var endsAt = eventStart.add(const Duration(hours: 4));
   var locationId = <Map<String, dynamic>>[];
   var assignedSubject = <Map<String, dynamic>>[];
   final venueId = event['venueId'] as String;
-  final locations = allLocations.where((item) => item['venueId'] == venueId).toList();
-  final assignablePeople = allPeople.where((item) => assignableUserIds.contains(item['externalSubject'])).toList();
+  final locations =
+      allLocations.where((item) => item['venueId'] == venueId).toList();
+  final assignablePeople = allPeople
+      .where((item) => assignableUserIds.contains(item['externalSubject']))
+      .toList();
   Future<DateTime?> pickDateTime(DateTime current) async {
-    final date = await showDatePicker(context: context, initialDate: current, firstDate: DateTime(2000), lastDate: DateTime(2100));
+    final date = await showDatePicker(
+        context: context,
+        initialDate: current,
+        firstDate: DateTime(2000),
+        lastDate: DateTime(2100));
     if (date == null || !context.mounted) return null;
-    final time = await showTimePicker(context: context, initialTime: TimeOfDay.fromDateTime(current));
+    final time = await showTimePicker(
+        context: context, initialTime: TimeOfDay.fromDateTime(current));
     if (time == null) return null;
     return DateTime(date.year, date.month, date.day, time.hour, time.minute);
   }
+
   final input = await showDialog<Map<String, Object?>>(
     context: context,
-    builder: (context) => StatefulBuilder(builder: (context, setState) => AlertDialog(
-      title: const Text('Schedule a shift'),
-      content: SizedBox(width: 480, child: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
-        TextField(controller: role, autofocus: true, decoration: const InputDecoration(labelText: 'Role', hintText: 'Guest services')),
-        const SizedBox(height: 8),
-        DropdownButtonFormField<String?>(initialValue: locationId.isEmpty ? null : locationId.first['id'] as String, decoration: const InputDecoration(labelText: 'Area'), items: [
-          const DropdownMenuItem<String?>(value: null, child: Text('All areas')),
-          ...locations.map((item) => DropdownMenuItem<String?>(value: item['id'] as String, child: Text(item['name'] as String? ?? 'Area'))),
-        ], onChanged: (value) => setState(() => locationId = value == null ? [] : [locations.firstWhere((item) => item['id'] == value)])),
-        const SizedBox(height: 8),
-        DropdownButtonFormField<String?>(initialValue: assignedSubject.isEmpty ? null : assignedSubject.first['externalSubject'] as String, decoration: const InputDecoration(labelText: 'Assigned worker'), items: [
-          const DropdownMenuItem<String?>(value: null, child: Text('Leave as open shift')),
-          ...assignablePeople.map((item) => DropdownMenuItem<String?>(value: item['externalSubject'] as String, child: Text(item['displayName'] as String? ?? 'Worker'))),
-        ], onChanged: (value) => setState(() => assignedSubject = value == null ? [] : [assignablePeople.firstWhere((item) => item['externalSubject'] == value)])),
-        const SizedBox(height: 8),
-        ListTile(contentPadding: EdgeInsets.zero, title: const Text('Starts'), subtitle: Text(_shiftTimeLabel(startsAt, startsAt)), trailing: const Icon(Icons.edit_calendar), onTap: () async { final value = await pickDateTime(startsAt); if (value != null) setState(() => startsAt = value); }),
-        ListTile(contentPadding: EdgeInsets.zero, title: const Text('Ends'), subtitle: Text(_shiftTimeLabel(endsAt, endsAt)), trailing: const Icon(Icons.edit_calendar), onTap: () async { final value = await pickDateTime(endsAt); if (value != null) setState(() => endsAt = value); }),
-        TextField(controller: qualificationCodes, decoration: const InputDecoration(labelText: 'Required qualification codes (optional)', hintText: 'FOOD_HANDLER, ALCOHOL_SERVICE', helperText: 'Codes must match active credentials in the tenant roster.')),
-        TextField(controller: instructions, decoration: const InputDecoration(labelText: 'Instructions (optional)'), minLines: 1, maxLines: 3),
-      ]))),
-      actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')), FilledButton(onPressed: () {
-        if (role.text.trim().length < 2 || endsAt.isBefore(startsAt) || endsAt.isAtSameMomentAs(startsAt)) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Add a role and make sure the end is after the start.')));
-          return;
-        }
-        Navigator.pop(context, {
-          'venueId': venueId,
-          if (locationId.isNotEmpty) 'locationId': locationId.first['id'] as String,
-          if (assignedSubject.isNotEmpty) 'assignedSubject': assignedSubject.first['externalSubject'] as String,
-          'role': role.text.trim(),
-          'instructions': instructions.text.trim(),
-          if (qualificationCodes.text.trim().isNotEmpty) 'requiredQualificationCodes': qualificationCodes.text.split(',').map((code) => code.trim().toUpperCase()).where((code) => code.isNotEmpty).toSet().toList(),
-          'startsAt': startsAt.toUtc().toIso8601String(),
-          'endsAt': endsAt.toUtc().toIso8601String(),
-        });
-      }, child: const Text('Save draft'))],
-    )),
+    builder: (context) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+              title: const Text('Schedule a shift'),
+              content: SizedBox(
+                  width: 480,
+                  child: SingleChildScrollView(
+                      child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    TextField(
+                        controller: role,
+                        autofocus: true,
+                        decoration: const InputDecoration(
+                            labelText: 'Role', hintText: 'Guest services')),
+                    const SizedBox(height: 8),
+                    DropdownButtonFormField<String?>(
+                        initialValue: locationId.isEmpty
+                            ? null
+                            : locationId.first['id'] as String,
+                        decoration: const InputDecoration(labelText: 'Area'),
+                        items: [
+                          const DropdownMenuItem<String?>(
+                              value: null, child: Text('All areas')),
+                          ...locations.map((item) => DropdownMenuItem<String?>(
+                              value: item['id'] as String,
+                              child: Text(item['name'] as String? ?? 'Area'))),
+                        ],
+                        onChanged: (value) => setState(() => locationId =
+                            value == null
+                                ? []
+                                : [
+                                    locations.firstWhere(
+                                        (item) => item['id'] == value)
+                                  ])),
+                    const SizedBox(height: 8),
+                    DropdownButtonFormField<String?>(
+                        initialValue: assignedSubject.isEmpty
+                            ? null
+                            : assignedSubject.first['externalSubject']
+                                as String,
+                        decoration:
+                            const InputDecoration(labelText: 'Assigned worker'),
+                        items: [
+                          const DropdownMenuItem<String?>(
+                              value: null, child: Text('Leave as open shift')),
+                          ...assignablePeople.map((item) =>
+                              DropdownMenuItem<String?>(
+                                  value: item['externalSubject'] as String,
+                                  child: Text(item['displayName'] as String? ??
+                                      'Worker'))),
+                        ],
+                        onChanged: (value) => setState(() => assignedSubject =
+                            value == null
+                                ? []
+                                : [
+                                    assignablePeople.firstWhere((item) =>
+                                        item['externalSubject'] == value)
+                                  ])),
+                    const SizedBox(height: 8),
+                    ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('Starts'),
+                        subtitle: Text(_shiftTimeLabel(startsAt, startsAt)),
+                        trailing: const Icon(Icons.edit_calendar),
+                        onTap: () async {
+                          final value = await pickDateTime(startsAt);
+                          if (value != null) setState(() => startsAt = value);
+                        }),
+                    ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('Ends'),
+                        subtitle: Text(_shiftTimeLabel(endsAt, endsAt)),
+                        trailing: const Icon(Icons.edit_calendar),
+                        onTap: () async {
+                          final value = await pickDateTime(endsAt);
+                          if (value != null) setState(() => endsAt = value);
+                        }),
+                    TextField(
+                        controller: qualificationCodes,
+                        decoration: const InputDecoration(
+                            labelText:
+                                'Required qualification codes (optional)',
+                            hintText: 'FOOD_HANDLER, ALCOHOL_SERVICE',
+                            helperText:
+                                'Codes must match active credentials in the tenant roster.')),
+                    TextField(
+                        controller: instructions,
+                        decoration: const InputDecoration(
+                            labelText: 'Instructions (optional)'),
+                        minLines: 1,
+                        maxLines: 3),
+                  ]))),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Cancel')),
+                FilledButton(
+                    onPressed: () {
+                      if (role.text.trim().length < 2 ||
+                          endsAt.isBefore(startsAt) ||
+                          endsAt.isAtSameMomentAs(startsAt)) {
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                            content: Text(
+                                'Add a role and make sure the end is after the start.')));
+                        return;
+                      }
+                      Navigator.pop(context, {
+                        'venueId': venueId,
+                        if (locationId.isNotEmpty)
+                          'locationId': locationId.first['id'] as String,
+                        if (assignedSubject.isNotEmpty)
+                          'assignedSubject': assignedSubject
+                              .first['externalSubject'] as String,
+                        'role': role.text.trim(),
+                        'instructions': instructions.text.trim(),
+                        if (qualificationCodes.text.trim().isNotEmpty)
+                          'requiredQualificationCodes': qualificationCodes.text
+                              .split(',')
+                              .map((code) => code.trim().toUpperCase())
+                              .where((code) => code.isNotEmpty)
+                              .toSet()
+                              .toList(),
+                        'startsAt': startsAt.toUtc().toIso8601String(),
+                        'endsAt': endsAt.toUtc().toIso8601String(),
+                      });
+                    },
+                    child: const Text('Save draft'))
+              ],
+            )),
   );
   role.dispose();
   instructions.dispose();
   qualificationCodes.dispose();
   if (input == null) return;
   try {
-    await ref.read(operationsApiProvider).createShift(event['id'] as String, input);
+    await ref
+        .read(operationsApiProvider)
+        .createShift(event['id'] as String, input);
     ref.invalidate(eventShiftsProvider(event['id'] as String));
   } catch (error) {
-    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not save shift: $error')));
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not save shift: $error')));
+    }
   }
 }
 
 class _TenantSetupPage extends StatelessWidget {
   const _TenantSetupPage(
-      {required this.venues,
+      {required this.organization,
+      required this.venues,
       required this.locations,
       required this.events,
       required this.people,
       required this.api,
       required this.onSaved});
+  final Map<String, dynamic> organization;
   final List<Map<String, dynamic>> venues;
   final List<Map<String, dynamic>> locations;
   final List<Map<String, dynamic>> events;
@@ -3105,7 +5164,22 @@ class _TenantSetupPage extends StatelessWidget {
                 .headlineSmall
                 ?.copyWith(fontWeight: FontWeight.w800)),
         const SizedBox(height: 8),
-        const Text('Create the real venue structure used by event operations.'),
+        const Text(
+            'Your organization identity comes from the verified sign-in tenant. Staff profiles come from Okta, Microsoft Entra ID, or SCIM; first sign-in provisions a profile automatically.'),
+        const SizedBox(height: 12),
+        Card(
+            child: ListTile(
+          leading: const Icon(Icons.business_outlined),
+          title: Text(organization['name'] as String? ?? 'Organization'),
+          subtitle: Text(
+              'Organization display name · ${organization['slug'] ?? 'Managed by identity configuration'}'),
+          trailing: IconButton(
+              tooltip: 'Edit organization display name',
+              icon: const Icon(Icons.edit_outlined),
+              onPressed: () => _editOrganization(context)),
+        )),
+        const SizedBox(height: 8),
+        const Text('Configure the venue structure used by event operations.'),
         const SizedBox(height: 8),
         OutlinedButton.icon(
             onPressed: () => showModalBottomSheet<void>(
@@ -3116,35 +5190,81 @@ class _TenantSetupPage extends StatelessWidget {
             icon: const Icon(Icons.history),
             label: const Text('View audit history')),
         const SizedBox(height: 16),
-        ...venues.map((v) => Card(child: ListTile(
-            leading: const Icon(Icons.stadium_outlined),
-            title: Text(v['name'] as String? ?? 'Venue'),
-            trailing: IconButton(tooltip: 'Edit venue', icon: const Icon(Icons.edit_outlined), onPressed: () => _editVenue(context, v))))),
+        ...venues.map((v) {
+          final state = v['lifecycleState'] as String? ?? 'DRAFT';
+          final timeZone = v['timeZone'] as String?;
+          return Card(
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+            ListTile(
+                leading: const Icon(Icons.stadium_outlined),
+                title: Text(v['name'] as String? ?? 'Venue'),
+                subtitle: Text(
+                    '${timeZone ?? 'Time zone required'} · ${state.toLowerCase()}'),
+                trailing: IconButton(
+                    tooltip: 'Edit venue',
+                    icon: const Icon(Icons.edit_outlined),
+                    onPressed: () => _editVenue(context, v))),
+            Align(
+                alignment: AlignmentDirectional.centerEnd,
+                child: TextButton.icon(
+                    onPressed: () => _reviewVenue(context, v),
+                    icon: const Icon(Icons.fact_check_outlined),
+                    label: Text(state == 'ACTIVE'
+                        ? 'Review / suspend'
+                        : 'Review readiness'))),
+          ]));
+        }),
         if (locations.isNotEmpty) ...[
           const SizedBox(height: 8),
-          Text('Locations', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+          Text('Locations',
+              style: Theme.of(context)
+                  .textTheme
+                  .titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w800)),
           ...locations.map((location) {
-            final venue = venues.where((item) => item['id'] == location['venueId']).firstOrNull;
-            return Card(child: ListTile(
+            final venue = venues
+                .where((item) => item['id'] == location['venueId'])
+                .firstOrNull;
+            return Card(
+                child: ListTile(
               leading: const Icon(Icons.place_outlined),
               title: Text(location['name'] as String? ?? 'Location'),
-              subtitle: venue == null ? null : Text(venue['name'] as String? ?? ''),
-              trailing: IconButton(tooltip: 'Edit location', icon: const Icon(Icons.edit_outlined), onPressed: () => _editLocation(context, location)),
+              subtitle:
+                  venue == null ? null : Text(venue['name'] as String? ?? ''),
+              trailing: IconButton(
+                  tooltip: 'Edit location',
+                  icon: const Icon(Icons.edit_outlined),
+                  onPressed: () => _editLocation(context, location)),
             ));
           }),
         ],
         if (events.isNotEmpty) ...[
           const SizedBox(height: 8),
-          Text('Events', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+          Text('Events',
+              style: Theme.of(context)
+                  .textTheme
+                  .titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w800)),
           ...events.map((event) {
-            final venue = venues.where((item) => item['id'] == event['venueId']).firstOrNull;
-            final startsAt = DateTime.tryParse(event['startsAt'] as String? ?? '')?.toLocal();
+            final venue = venues
+                .where((item) => item['id'] == event['venueId'])
+                .firstOrNull;
+            final startsAt =
+                DateTime.tryParse(event['startsAt'] as String? ?? '')
+                    ?.toLocal();
             final closed = (event['closeout'] as Map?)?['state'] == 'CLOSED';
-            return Card(child: ListTile(
+            return Card(
+                child: ListTile(
               leading: const Icon(Icons.event_outlined),
               title: Text(event['name'] as String? ?? 'Event'),
-              subtitle: Text('${venue?['name'] ?? 'Venue'}${startsAt == null ? '' : ' · ${MaterialLocalizations.of(context).formatMediumDate(startsAt)} ${MaterialLocalizations.of(context).formatTimeOfDay(TimeOfDay.fromDateTime(startsAt))}'}${closed ? ' · Closed' : ''}'),
-              trailing: IconButton(tooltip: closed ? 'Finalized events cannot be edited' : 'Edit event', icon: const Icon(Icons.edit_outlined), onPressed: closed ? null : () => _editEvent(context, event)),
+              subtitle: Text(
+                  '${venue?['name'] ?? 'Venue'}${startsAt == null ? '' : ' · ${MaterialLocalizations.of(context).formatMediumDate(startsAt)} ${MaterialLocalizations.of(context).formatTimeOfDay(TimeOfDay.fromDateTime(startsAt))}'}${closed ? ' · Closed' : ''}'),
+              trailing: IconButton(
+                  tooltip: closed
+                      ? 'Finalized events cannot be edited'
+                      : 'Edit event',
+                  icon: const Icon(Icons.edit_outlined),
+                  onPressed: closed ? null : () => _editEvent(context, event)),
             ));
           }),
         ],
@@ -3160,8 +5280,9 @@ class _TenantSetupPage extends StatelessWidget {
               icon: const Icon(Icons.place_outlined),
               label: const Text('Add location')),
           OutlinedButton.icon(
-              onPressed:
-                  venues.isEmpty ? null : () => _create(context, 'event'),
+              onPressed: venues.any((v) => v['lifecycleState'] == 'ACTIVE')
+                  ? () => _create(context, 'event')
+                  : null,
               icon: const Icon(Icons.event_outlined),
               label: const Text('Add event')),
           OutlinedButton.icon(
@@ -3183,124 +5304,429 @@ class _TenantSetupPage extends StatelessWidget {
           final qualifications = (person['qualifications'] as List? ?? const [])
               .map((item) => Map<String, dynamic>.from(item as Map))
               .toList();
-          return Card(child: Column(children: [
+          return Card(
+              child: Column(children: [
             ListTile(
               leading: const Icon(Icons.person_outline),
               title: Text(person['displayName'] as String? ?? 'Person'),
-              subtitle: Text('${person['email'] as String? ?? ''}${person['active'] == false ? ' · Deactivated' : ''}'),
+              subtitle: Text(
+                  '${person['email'] as String? ?? ''}${person['active'] == false ? ' · Deactivated' : ''}'),
               trailing: PopupMenuButton<String>(
                 tooltip: 'Manage person',
                 onSelected: (action) {
-                  if (action == 'qualification') _grantQualification(context, person);
-                  if (action == 'activate' || action == 'deactivate') _setPersonActive(context, person, action == 'activate');
+                  if (action == 'qualification') {
+                    _grantQualification(context, person);
+                  }
+                  if (action == 'activate' || action == 'deactivate') {
+                    _setPersonActive(context, person, action == 'activate');
+                  }
                 },
                 itemBuilder: (_) => [
-                  const PopupMenuItem(value: 'qualification', child: ListTile(leading: Icon(Icons.workspace_premium_outlined), title: Text('Grant qualification'))),
+                  const PopupMenuItem(
+                      value: 'qualification',
+                      child: ListTile(
+                          leading: Icon(Icons.workspace_premium_outlined),
+                          title: Text('Grant qualification'))),
                   if (person['provisioningSource'] == 'scim')
-                    const PopupMenuItem(enabled: false, child: ListTile(leading: Icon(Icons.sync_lock_outlined), title: Text('Status managed by SCIM')))
+                    const PopupMenuItem(
+                        enabled: false,
+                        child: ListTile(
+                            leading: Icon(Icons.sync_lock_outlined),
+                            title: Text('Status managed by SCIM')))
                   else if (person['provisioningSource'] == 'unknown')
-                    const PopupMenuItem(enabled: false, child: ListTile(leading: Icon(Icons.help_outline), title: Text('Roster source needs review')))
+                    const PopupMenuItem(
+                        enabled: false,
+                        child: ListTile(
+                            leading: Icon(Icons.help_outline),
+                            title: Text('Roster source needs review')))
                   else
-                    PopupMenuItem(value: person['active'] == false ? 'activate' : 'deactivate', child: ListTile(leading: Icon(person['active'] == false ? Icons.person_add_alt : Icons.person_off_outlined), title: Text(person['active'] == false ? 'Reactivate account' : 'Deactivate account'))),
+                    PopupMenuItem(
+                        value: person['active'] == false
+                            ? 'activate'
+                            : 'deactivate',
+                        child: ListTile(
+                            leading: Icon(person['active'] == false
+                                ? Icons.person_add_alt
+                                : Icons.person_off_outlined),
+                            title: Text(person['active'] == false
+                                ? 'Reactivate account'
+                                : 'Deactivate account'))),
                 ],
               ),
             ),
             ...qualifications.map((qualification) {
-              final expiry = DateTime.tryParse(qualification['expiresAt'] as String? ?? '');
+              final expiry = DateTime.tryParse(
+                  qualification['expiresAt'] as String? ?? '');
               final expired = expiry != null && expiry.isBefore(DateTime.now());
-              final evidenceStatus = qualification['evidenceStatus'] as String? ?? 'NONE';
+              final evidenceStatus =
+                  qualification['evidenceStatus'] as String? ?? 'NONE';
               return Column(children: [
                 ListTile(
                   dense: true,
-                  leading: Icon(expired || evidenceStatus == 'REJECTED' ? Icons.warning_amber : evidenceStatus == 'VERIFIED' ? Icons.verified : evidenceStatus == 'PENDING_REVIEW' ? Icons.pending_outlined : Icons.workspace_premium_outlined),
-                  title: Text('${qualification['name']} · ${qualification['code']}'),
-                  subtitle: Text('${expiry == null ? 'No expiry recorded' : '${expired ? 'Expired' : 'Valid through'} ${expiry.month}/${expiry.day}/${expiry.year}'} · Evidence: ${evidenceStatus.replaceAll('_', ' ').toLowerCase()}${qualification['evidenceFileName'] == null ? '' : '\n${qualification['evidenceFileName']}'}${qualification['evidenceReviewReason'] == null ? '' : '\nReview: ${qualification['evidenceReviewReason']}'}'),
-                  trailing: IconButton(tooltip: 'Revoke qualification', icon: const Icon(Icons.remove_circle_outline), onPressed: () async {
-                    try {
-                      await api.revokeQualification(qualification['id'] as String);
-                      onSaved();
-                    } catch (error) {
-                      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not revoke credential: $error')));
-                    }
-                  }),
+                  leading: Icon(expired || evidenceStatus == 'REJECTED'
+                      ? Icons.warning_amber
+                      : evidenceStatus == 'VERIFIED'
+                          ? Icons.verified
+                          : evidenceStatus == 'PENDING_REVIEW'
+                              ? Icons.pending_outlined
+                              : Icons.workspace_premium_outlined),
+                  title: Text(
+                      '${qualification['name']} · ${qualification['code']}'),
+                  subtitle: Text(
+                      '${expiry == null ? 'No expiry recorded' : '${expired ? 'Expired' : 'Valid through'} ${expiry.month}/${expiry.day}/${expiry.year}'} · Evidence: ${evidenceStatus.replaceAll('_', ' ').toLowerCase()}${qualification['evidenceFileName'] == null ? '' : '\n${qualification['evidenceFileName']}'}${qualification['evidenceReviewReason'] == null ? '' : '\nReview: ${qualification['evidenceReviewReason']}'}'),
+                  trailing: IconButton(
+                      tooltip: 'Revoke qualification',
+                      icon: const Icon(Icons.remove_circle_outline),
+                      onPressed: () async {
+                        try {
+                          await api.revokeQualification(
+                              qualification['id'] as String);
+                          onSaved();
+                        } catch (error) {
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                                content: Text(
+                                    'Could not revoke credential: $error')));
+                          }
+                        }
+                      }),
                 ),
-                Align(alignment: Alignment.centerLeft, child: Wrap(spacing: 4, children: [
-                  if (evidenceStatus == 'NONE' || evidenceStatus == 'UPLOADING' || evidenceStatus == 'REJECTED') TextButton.icon(onPressed: () => _uploadQualificationEvidence(context, qualification), icon: const Icon(Icons.upload_file_outlined), label: Text(evidenceStatus == 'UPLOADING' ? 'Retry upload' : 'Upload photo')),
-                  if (evidenceStatus == 'PENDING_REVIEW' || evidenceStatus == 'VERIFIED' || evidenceStatus == 'REJECTED') TextButton.icon(onPressed: () => _openQualificationEvidence(context, qualification), icon: const Icon(Icons.open_in_new), label: const Text('Open evidence')),
-                  if (evidenceStatus == 'PENDING_REVIEW') FilledButton.tonalIcon(onPressed: () => _reviewQualificationEvidence(context, qualification), icon: const Icon(Icons.fact_check_outlined), label: const Text('Review')),
-                ])),
+                Align(
+                    alignment: Alignment.centerLeft,
+                    child: Wrap(spacing: 4, children: [
+                      if (evidenceStatus == 'NONE' ||
+                          evidenceStatus == 'UPLOADING' ||
+                          evidenceStatus == 'REJECTED')
+                        TextButton.icon(
+                            onPressed: () => _uploadQualificationEvidence(
+                                context, qualification),
+                            icon: const Icon(Icons.upload_file_outlined),
+                            label: Text(evidenceStatus == 'UPLOADING'
+                                ? 'Retry upload'
+                                : 'Upload photo')),
+                      if (evidenceStatus == 'PENDING_REVIEW' ||
+                          evidenceStatus == 'VERIFIED' ||
+                          evidenceStatus == 'REJECTED')
+                        TextButton.icon(
+                            onPressed: () => _openQualificationEvidence(
+                                context, qualification),
+                            icon: const Icon(Icons.open_in_new),
+                            label: const Text('Open evidence')),
+                      if (evidenceStatus == 'PENDING_REVIEW')
+                        FilledButton.tonalIcon(
+                            onPressed: () => _reviewQualificationEvidence(
+                                context, qualification),
+                            icon: const Icon(Icons.fact_check_outlined),
+                            label: const Text('Review')),
+                    ])),
               ]);
             }),
           ]));
         })
       ]);
-  Future<void> _setPersonActive(BuildContext context, Map<String, dynamic> person, bool active) async {
+  Future<void> _setPersonActive(
+      BuildContext context, Map<String, dynamic> person, bool active) async {
     final name = person['displayName'] as String? ?? 'this person';
     if (!active) {
-      final confirmed = await showDialog<bool>(context: context, builder: (dialogContext) => AlertDialog(
-        title: const Text('Deactivate account?'),
-        content: Text('$name will lose access on their next API request. This does not disable their identity-provider account.'),
-        actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')), FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Deactivate'))],
-      ));
+      final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+                title: const Text('Deactivate account?'),
+                content: Text(
+                    '$name will lose access on their next API request. This does not disable their identity-provider account.'),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(dialogContext, false),
+                      child: const Text('Cancel')),
+                  FilledButton(
+                      onPressed: () => Navigator.pop(dialogContext, true),
+                      child: const Text('Deactivate'))
+                ],
+              ));
       if (confirmed != true) return;
     }
     try {
       await api.setPersonActive(person['id'] as String, active);
       onSaved();
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(active ? 'Account reactivated' : 'Account deactivated')));
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content:
+                Text(active ? 'Account reactivated' : 'Account deactivated')));
+      }
     } catch (error) {
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not update account status: $error')));
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not update account status: $error')));
+      }
     }
   }
-  Future<void> _editVenue(BuildContext context, Map<String, dynamic> venue) => _editName(context, title: 'Edit venue', initialName: venue['name'] as String? ?? '', save: (name) => api.updateVenue(venue['id'] as String, name));
-  Future<void> _editLocation(BuildContext context, Map<String, dynamic> location) => _editName(context, title: 'Edit location', initialName: location['name'] as String? ?? '', save: (name) => api.updateLocation(location['id'] as String, name));
-  Future<void> _editName(BuildContext context, {required String title, required String initialName, required Future<void> Function(String) save}) async {
+
+  Future<void> _reviewVenue(
+      BuildContext context, Map<String, dynamic> venue) async {
+    final venueId = venue['id'] as String;
+    try {
+      final readiness = await api.venueReadiness(venueId);
+      if (!context.mounted) return;
+      final checks = (readiness['checks'] as List<dynamic>? ?? const [])
+          .whereType<Map>()
+          .map((check) => Map<String, dynamic>.from(check))
+          .toList();
+      final active = readiness['lifecycleState'] == 'ACTIVE';
+      final ready = readiness['ready'] == true;
+      final action = await showDialog<String>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+                title: Text('${venue['name'] ?? 'Venue'} readiness'),
+                content: Column(mainAxisSize: MainAxisSize.min, children: [
+                  ...checks.map((check) => ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(check['passed'] == true
+                            ? Icons.check_circle_outline
+                            : Icons.error_outline),
+                        title: Text(check['label'] as String? ?? 'Setup check'),
+                        subtitle: Text(check['detail'] as String? ?? ''),
+                      )),
+                  if (active)
+                    const Text(
+                        'Suspending this venue prevents new events from being created.'),
+                ]),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(dialogContext),
+                      child: const Text('Close')),
+                  if (active)
+                    OutlinedButton(
+                        onPressed: () =>
+                            Navigator.pop(dialogContext, 'suspend'),
+                        child: const Text('Suspend venue'))
+                  else if (ready)
+                    FilledButton(
+                        onPressed: () =>
+                            Navigator.pop(dialogContext, 'activate'),
+                        child: const Text('Activate venue')),
+                ],
+              ));
+      if (action == null) return;
+      await api.updateVenueLifecycle(venueId, action);
+      onSaved();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(
+                action == 'activate' ? 'Venue activated' : 'Venue suspended')));
+      }
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not update venue: $error')));
+      }
+    }
+  }
+
+  Future<void> _editOrganization(BuildContext context) async {
+    final name =
+        TextEditingController(text: organization['name'] as String? ?? '');
+    try {
+      final accepted = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+                title: const Text('Organization display name'),
+                content: TextField(
+                    controller: name,
+                    autofocus: true,
+                    maxLength: 160,
+                    decoration:
+                        const InputDecoration(labelText: 'Organization name')),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(dialogContext, false),
+                      child: const Text('Cancel')),
+                  FilledButton(
+                      onPressed: () => Navigator.pop(dialogContext, true),
+                      child: const Text('Save')),
+                ],
+              ));
+      if (accepted == true) {
+        await api.updateOrganizationName(name.text);
+        onSaved();
+      }
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not update organization: $error')));
+      }
+    } finally {
+      name.dispose();
+    }
+  }
+
+  Future<void> _editVenue(
+      BuildContext context, Map<String, dynamic> venue) async {
+    final name = TextEditingController(text: venue['name'] as String? ?? '');
+    final timeZone =
+        TextEditingController(text: venue['timeZone'] as String? ?? '');
+    try {
+      final accepted = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+                title: const Text('Edit venue'),
+                content: Column(mainAxisSize: MainAxisSize.min, children: [
+                  TextField(
+                      controller: name,
+                      maxLength: 120,
+                      decoration:
+                          const InputDecoration(labelText: 'Venue name')),
+                  TextField(
+                      controller: timeZone,
+                      maxLength: 64,
+                      decoration: const InputDecoration(
+                          labelText: 'IANA time zone',
+                          hintText: 'America/Chicago')),
+                ]),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(dialogContext, false),
+                      child: const Text('Cancel')),
+                  FilledButton(
+                      onPressed: () => Navigator.pop(dialogContext, true),
+                      child: const Text('Save')),
+                ],
+              ));
+      if (accepted == true) {
+        await api.updateVenue(venue['id'] as String, name.text, timeZone.text);
+        onSaved();
+      }
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not save venue: $error')));
+      }
+    } finally {
+      name.dispose();
+      timeZone.dispose();
+    }
+  }
+
+  Future<void> _editLocation(
+          BuildContext context, Map<String, dynamic> location) =>
+      _editName(context,
+          title: 'Edit location',
+          initialName: location['name'] as String? ?? '',
+          save: (name) => api.updateLocation(location['id'] as String, name));
+  Future<void> _editName(BuildContext context,
+      {required String title,
+      required String initialName,
+      required Future<void> Function(String) save}) async {
     final name = TextEditingController(text: initialName);
     try {
-      final accepted = await showDialog<bool>(context: context, builder: (dialogContext) => AlertDialog(
-        title: Text(title),
-        content: TextField(controller: name, autofocus: true, maxLength: 160, decoration: const InputDecoration(labelText: 'Name')),
-        actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')), FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Save'))],
-      ));
+      final accepted = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+                title: Text(title),
+                content: TextField(
+                    controller: name,
+                    autofocus: true,
+                    maxLength: 160,
+                    decoration: const InputDecoration(labelText: 'Name')),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(dialogContext, false),
+                      child: const Text('Cancel')),
+                  FilledButton(
+                      onPressed: () => Navigator.pop(dialogContext, true),
+                      child: const Text('Save'))
+                ],
+              ));
       if (accepted == true) {
         await save(name.text.trim());
         onSaved();
-        if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Changes saved')));
+        if (context.mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('Changes saved')));
+        }
       }
     } catch (error) {
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not save changes: $error')));
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not save changes: $error')));
+      }
     } finally {
       name.dispose();
     }
   }
-  Future<void> _editEvent(BuildContext context, Map<String, dynamic> event) async {
+
+  Future<void> _editEvent(
+      BuildContext context, Map<String, dynamic> event) async {
     final name = TextEditingController(text: event['name'] as String? ?? '');
-    var startsAt = DateTime.tryParse(event['startsAt'] as String? ?? '')?.toLocal() ?? DateTime.now();
+    var startsAt =
+        DateTime.tryParse(event['startsAt'] as String? ?? '')?.toLocal() ??
+            DateTime.now();
     try {
-      final accepted = await showDialog<bool>(context: context, builder: (dialogContext) => StatefulBuilder(builder: (context, setDialogState) => AlertDialog(
-        title: const Text('Edit event'),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextField(controller: name, autofocus: true, maxLength: 160, decoration: const InputDecoration(labelText: 'Event name')),
-          ListTile(contentPadding: EdgeInsets.zero, leading: const Icon(Icons.schedule_outlined), title: const Text('Event start'), subtitle: Text('${MaterialLocalizations.of(context).formatMediumDate(startsAt)} · ${MaterialLocalizations.of(context).formatTimeOfDay(TimeOfDay.fromDateTime(startsAt))}'), onTap: () async {
-            final date = await showDatePicker(context: context, initialDate: startsAt, firstDate: DateTime(2000), lastDate: DateTime(2100));
-            if (date == null || !context.mounted) return;
-            final time = await showTimePicker(context: context, initialTime: TimeOfDay.fromDateTime(startsAt));
-            if (time != null) setDialogState(() => startsAt = DateTime(date.year, date.month, date.day, time.hour, time.minute));
-          }),
-        ]),
-        actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')), FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Save'))],
-      )));
+      final accepted = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => StatefulBuilder(
+              builder: (context, setDialogState) => AlertDialog(
+                    title: const Text('Edit event'),
+                    content: Column(mainAxisSize: MainAxisSize.min, children: [
+                      TextField(
+                          controller: name,
+                          autofocus: true,
+                          maxLength: 160,
+                          decoration:
+                              const InputDecoration(labelText: 'Event name')),
+                      ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: const Icon(Icons.schedule_outlined),
+                          title: const Text('Event start'),
+                          subtitle: Text(
+                              '${MaterialLocalizations.of(context).formatMediumDate(startsAt)} · ${MaterialLocalizations.of(context).formatTimeOfDay(TimeOfDay.fromDateTime(startsAt))}'),
+                          onTap: () async {
+                            final date = await showDatePicker(
+                                context: context,
+                                initialDate: startsAt,
+                                firstDate: DateTime(2000),
+                                lastDate: DateTime(2100));
+                            if (date == null || !context.mounted) return;
+                            final time = await showTimePicker(
+                                context: context,
+                                initialTime: TimeOfDay.fromDateTime(startsAt));
+                            if (time != null) {
+                              setDialogState(() => startsAt = DateTime(
+                                  date.year,
+                                  date.month,
+                                  date.day,
+                                  time.hour,
+                                  time.minute));
+                            }
+                          }),
+                    ]),
+                    actions: [
+                      TextButton(
+                          onPressed: () => Navigator.pop(dialogContext, false),
+                          child: const Text('Cancel')),
+                      FilledButton(
+                          onPressed: () => Navigator.pop(dialogContext, true),
+                          child: const Text('Save'))
+                    ],
+                  )));
       if (accepted == true) {
-        await api.updateEvent(event['id'] as String, name: name.text.trim(), startsAt: startsAt);
+        await api.updateEvent(event['id'] as String,
+            name: name.text.trim(), startsAt: startsAt);
         onSaved();
-        if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Event updated')));
+        if (context.mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('Event updated')));
+        }
       }
     } catch (error) {
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not update event: $error')));
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not update event: $error')));
+      }
     } finally {
       name.dispose();
     }
   }
+
   Future<void> _configureRestPolicy(BuildContext context) async {
     final controller = TextEditingController();
     try {
@@ -3308,118 +5734,266 @@ class _TenantSetupPage extends StatelessWidget {
       final existing = policy['minimumRestMinutes'] as int?;
       controller.text = existing?.toString() ?? '';
       if (!context.mounted) return;
-      final saved = await showDialog<bool>(context: context, builder: (dialogContext) => AlertDialog(
-        title: const Text('Minimum rest between shifts'),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          Text(existing == null ? 'Not configured. Scheduling an assigned worker is blocked until a rule is set.' : existing == 0 ? 'Configured with no additional rest gap; overlapping shifts remain blocked.' : 'Current rule: $existing minutes between a worker’s shifts.'),
-          TextField(controller: controller, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Minutes (0–1440)', hintText: 'e.g. 600')),
-        ]),
-        actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')), FilledButton(onPressed: () {
-          final value = int.tryParse(controller.text.trim());
-          if (value == null || value < 0 || value > 1440) {
-            ScaffoldMessenger.of(dialogContext).showSnackBar(const SnackBar(content: Text('Enter a whole number from 0 to 1440.')));
-            return;
-          }
-          Navigator.pop(dialogContext, true);
-        }, child: const Text('Save policy'))],
-      ));
+      final saved = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+                title: const Text('Minimum rest between shifts'),
+                content: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Text(existing == null
+                      ? 'Not configured. Scheduling an assigned worker is blocked until a rule is set.'
+                      : existing == 0
+                          ? 'Configured with no additional rest gap; overlapping shifts remain blocked.'
+                          : 'Current rule: $existing minutes between a worker’s shifts.'),
+                  TextField(
+                      controller: controller,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                          labelText: 'Minutes (0–1440)', hintText: 'e.g. 600')),
+                ]),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(dialogContext, false),
+                      child: const Text('Cancel')),
+                  FilledButton(
+                      onPressed: () {
+                        final value = int.tryParse(controller.text.trim());
+                        if (value == null || value < 0 || value > 1440) {
+                          ScaffoldMessenger.of(dialogContext).showSnackBar(
+                              const SnackBar(
+                                  content: Text(
+                                      'Enter a whole number from 0 to 1440.')));
+                          return;
+                        }
+                        Navigator.pop(dialogContext, true);
+                      },
+                      child: const Text('Save policy'))
+                ],
+              ));
       if (saved == true) {
         final minutes = int.parse(controller.text.trim());
         await api.updateMinimumRestMinutes(minutes);
         onSaved();
       }
     } catch (error) {
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not load or save staffing policy: $error')));
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Could not load or save staffing policy: $error')));
+      }
     } finally {
       controller.dispose();
     }
   }
-  Future<void> _grantQualification(BuildContext context, Map<String, dynamic> person) async {
+
+  Future<void> _grantQualification(
+      BuildContext context, Map<String, dynamic> person) async {
     final code = TextEditingController();
     final name = TextEditingController();
     DateTime? expiresAt;
-    final saved = await showDialog<bool>(context: context, builder: (dialogContext) => StatefulBuilder(builder: (context, setState) => AlertDialog(
-      title: Text('Grant qualification to ${person['displayName']}'),
-      content: Column(mainAxisSize: MainAxisSize.min, children: [
-        TextField(controller: code, decoration: const InputDecoration(labelText: 'Code', hintText: 'FOOD_HANDLER')),
-        TextField(controller: name, decoration: const InputDecoration(labelText: 'Credential name')),
-        ListTile(contentPadding: EdgeInsets.zero, title: const Text('Valid through'), subtitle: Text(expiresAt == null ? 'No expiry' : '${expiresAt!.month}/${expiresAt!.day}/${expiresAt!.year}'), trailing: const Icon(Icons.event), onTap: () async {
-          final today = DateTime.now();
-          final date = await showDatePicker(context: context, initialDate: expiresAt ?? today.add(const Duration(days: 365)), firstDate: DateTime(today.year - 30), lastDate: DateTime(today.year + 30));
-          if (date != null) setState(() => expiresAt = date);
-        }),
-        TextButton(onPressed: () => setState(() => expiresAt = null), child: const Text('Clear expiry')),
-      ]),
-      actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')), FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Grant'))],
-    )));
+    final saved = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(
+            builder: (context, setState) => AlertDialog(
+                  title:
+                      Text('Grant qualification to ${person['displayName']}'),
+                  content: Column(mainAxisSize: MainAxisSize.min, children: [
+                    TextField(
+                        controller: code,
+                        decoration: const InputDecoration(
+                            labelText: 'Code', hintText: 'FOOD_HANDLER')),
+                    TextField(
+                        controller: name,
+                        decoration: const InputDecoration(
+                            labelText: 'Credential name')),
+                    ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('Valid through'),
+                        subtitle: Text(expiresAt == null
+                            ? 'No expiry'
+                            : '${expiresAt!.month}/${expiresAt!.day}/${expiresAt!.year}'),
+                        trailing: const Icon(Icons.event),
+                        onTap: () async {
+                          final today = DateTime.now();
+                          final date = await showDatePicker(
+                              context: context,
+                              initialDate: expiresAt ??
+                                  today.add(const Duration(days: 365)),
+                              firstDate: DateTime(today.year - 30),
+                              lastDate: DateTime(today.year + 30));
+                          if (date != null) setState(() => expiresAt = date);
+                        }),
+                    TextButton(
+                        onPressed: () => setState(() => expiresAt = null),
+                        child: const Text('Clear expiry')),
+                  ]),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(dialogContext, false),
+                        child: const Text('Cancel')),
+                    FilledButton(
+                        onPressed: () => Navigator.pop(dialogContext, true),
+                        child: const Text('Grant'))
+                  ],
+                )));
     if (saved == true && context.mounted) {
       try {
-        await api.grantQualification(person['id'] as String, code.text, name.text, expiresAt: expiresAt == null ? null : '${expiresAt!.year.toString().padLeft(4, '0')}-${expiresAt!.month.toString().padLeft(2, '0')}-${expiresAt!.day.toString().padLeft(2, '0')}');
+        await api.grantQualification(
+            person['id'] as String, code.text, name.text,
+            expiresAt: expiresAt == null
+                ? null
+                : '${expiresAt!.year.toString().padLeft(4, '0')}-${expiresAt!.month.toString().padLeft(2, '0')}-${expiresAt!.day.toString().padLeft(2, '0')}');
         onSaved();
       } catch (error) {
-        if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not grant credential: $error')));
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Could not grant credential: $error')));
+        }
       }
     }
     code.dispose();
     name.dispose();
   }
-  Future<void> _uploadQualificationEvidence(BuildContext context, Map<String, dynamic> qualification) async {
-    final source = await showModalBottomSheet<ImageSource>(context: context, builder: (context) => SafeArea(child: Wrap(children: [
-      ListTile(leading: const Icon(Icons.photo_library_outlined), title: const Text('Choose certification photo'), onTap: () => Navigator.pop(context, ImageSource.gallery)),
-      if (ApiConfiguration.allowCameraEvidence)
-        ListTile(leading: const Icon(Icons.photo_camera_outlined), title: const Text('Take certification photo'), onTap: () => Navigator.pop(context, ImageSource.camera)),
-    ])));
+
+  Future<void> _uploadQualificationEvidence(
+      BuildContext context, Map<String, dynamic> qualification) async {
+    final source = await showModalBottomSheet<ImageSource>(
+        context: context,
+        builder: (context) => SafeArea(
+                child: Wrap(children: [
+              ListTile(
+                  leading: const Icon(Icons.photo_library_outlined),
+                  title: const Text('Choose certification photo'),
+                  onTap: () => Navigator.pop(context, ImageSource.gallery)),
+              if (ApiConfiguration.allowCameraEvidence)
+                ListTile(
+                    leading: const Icon(Icons.photo_camera_outlined),
+                    title: const Text('Take certification photo'),
+                    onTap: () => Navigator.pop(context, ImageSource.camera)),
+            ])));
     if (source == null || !context.mounted) return;
     try {
-      final file = await ImagePicker().pickImage(source: source, imageQuality: 90);
+      final file =
+          await ImagePicker().pickImage(source: source, imageQuality: 90);
       if (file == null) return;
       final bytes = await file.readAsBytes();
       final ext = file.name.split('.').last.toLowerCase();
-      final contentType = switch (ext) { 'png' => 'image/png', 'webp' => 'image/webp', 'heic' || 'heif' => 'image/heic', 'jpg' || 'jpeg' => 'image/jpeg', _ => throw StateError('Choose a JPEG, PNG, WebP, or HEIC certification image.') };
-      await api.uploadQualificationEvidence(qualification['id'] as String, file.name, contentType, bytes);
+      final contentType = switch (ext) {
+        'png' => 'image/png',
+        'webp' => 'image/webp',
+        'heic' || 'heif' => 'image/heic',
+        'jpg' || 'jpeg' => 'image/jpeg',
+        _ => throw StateError(
+            'Choose a JPEG, PNG, WebP, or HEIC certification image.')
+      };
+      await api.uploadQualificationEvidence(
+          qualification['id'] as String, file.name, contentType, bytes);
       onSaved();
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Certification uploaded. It must be reviewed before staffing can rely on it.')));
-    } catch (error) {
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not upload certification: $error')));
-    }
-  }
-  Future<void> _openQualificationEvidence(BuildContext context, Map<String, dynamic> qualification) async {
-    try {
-      final url = await api.qualificationEvidenceDownload(qualification['id'] as String);
-      final uri = Uri.parse(url);
-      if (uri.scheme != 'https' || uri.host.isEmpty) throw StateError('The evidence API returned an invalid private link.');
-      if (kIsWeb) {
-        await Clipboard.setData(ClipboardData(text: url));
-        if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Private download link copied. It expires in five minutes; paste it into a browser to review the document.')));
-      } else {
-        await const MethodChannel('app.venuewranglerenterprise/external_url').invokeMethod<void>('openUrl', url);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text(
+                'Certification uploaded. It must be reviewed before staffing can rely on it.')));
       }
     } catch (error) {
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not open certification evidence: $error')));
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not upload certification: $error')));
+      }
     }
   }
-  Future<void> _reviewQualificationEvidence(BuildContext context, Map<String, dynamic> qualification) async {
+
+  Future<void> _openQualificationEvidence(
+      BuildContext context, Map<String, dynamic> qualification) async {
+    try {
+      final url = await api
+          .qualificationEvidenceDownload(qualification['id'] as String);
+      final uri = Uri.parse(url);
+      if (uri.scheme != 'https' || uri.host.isEmpty) {
+        throw StateError('The evidence API returned an invalid private link.');
+      }
+      if (kIsWeb) {
+        await Clipboard.setData(ClipboardData(text: url));
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text(
+                  'Private download link copied. It expires in five minutes; paste it into a browser to review the document.')));
+        }
+      } else {
+        await const MethodChannel('app.venuewranglerenterprise/external_url')
+            .invokeMethod<void>('openUrl', url);
+      }
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Could not open certification evidence: $error')));
+      }
+    }
+  }
+
+  Future<void> _reviewQualificationEvidence(
+      BuildContext context, Map<String, dynamic> qualification) async {
     final reason = TextEditingController();
-    final decision = await showDialog<String>(context: context, builder: (dialogContext) => AlertDialog(
-      title: Text('Review ${qualification['name']} evidence'),
-      content: Column(mainAxisSize: MainAxisSize.min, children: [
-        const Text('Open the evidence first. Record the basis for accepting or rejecting this document.'),
-        TextField(controller: reason, minLines: 2, maxLines: 4, decoration: const InputDecoration(labelText: 'Review rationale (required)', hintText: 'Issuer and expiry checked…')),
-      ]),
-      actions: [TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')), TextButton(onPressed: () { if (reason.text.trim().length < 3) { ScaffoldMessenger.of(dialogContext).showSnackBar(const SnackBar(content: Text('Enter a review rationale of at least 3 characters.'))); return; } Navigator.pop(dialogContext, 'REJECTED'); }, child: const Text('Reject')), FilledButton(onPressed: () { if (reason.text.trim().length < 3) { ScaffoldMessenger.of(dialogContext).showSnackBar(const SnackBar(content: Text('Enter a review rationale of at least 3 characters.'))); return; } Navigator.pop(dialogContext, 'VERIFIED'); }, child: const Text('Verify'))],
-    ));
+    final decision = await showDialog<String>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+              title: Text('Review ${qualification['name']} evidence'),
+              content: Column(mainAxisSize: MainAxisSize.min, children: [
+                const Text(
+                    'Open the evidence first. Record the basis for accepting or rejecting this document.'),
+                TextField(
+                    controller: reason,
+                    minLines: 2,
+                    maxLines: 4,
+                    decoration: const InputDecoration(
+                        labelText: 'Review rationale (required)',
+                        hintText: 'Issuer and expiry checked…')),
+              ]),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(dialogContext),
+                    child: const Text('Cancel')),
+                TextButton(
+                    onPressed: () {
+                      if (reason.text.trim().length < 3) {
+                        ScaffoldMessenger.of(dialogContext).showSnackBar(
+                            const SnackBar(
+                                content: Text(
+                                    'Enter a review rationale of at least 3 characters.')));
+                        return;
+                      }
+                      Navigator.pop(dialogContext, 'REJECTED');
+                    },
+                    child: const Text('Reject')),
+                FilledButton(
+                    onPressed: () {
+                      if (reason.text.trim().length < 3) {
+                        ScaffoldMessenger.of(dialogContext).showSnackBar(
+                            const SnackBar(
+                                content: Text(
+                                    'Enter a review rationale of at least 3 characters.')));
+                        return;
+                      }
+                      Navigator.pop(dialogContext, 'VERIFIED');
+                    },
+                    child: const Text('Verify'))
+              ],
+            ));
     if (decision != null) {
       try {
-        await api.reviewQualificationEvidence(qualification['id'] as String, decision, reason.text);
+        await api.reviewQualificationEvidence(
+            qualification['id'] as String, decision, reason.text);
         onSaved();
       } catch (error) {
-        if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not save credential review: $error')));
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text('Could not save credential review: $error')));
+        }
       }
     }
     reason.dispose();
   }
+
   Future<void> _create(BuildContext context, String type) async {
     final name = TextEditingController();
+    final timeZone = TextEditingController(text: 'America/Chicago');
     final email = TextEditingController();
     final subject = TextEditingController();
     final ok = await showDialog<bool>(
@@ -3432,6 +6006,15 @@ class _TenantSetupPage extends StatelessWidget {
                       decoration: InputDecoration(
                           labelText:
                               type == 'person' ? 'Display name' : 'Name')),
+                  if (type == 'venue')
+                    TextField(
+                        controller: timeZone,
+                        decoration: const InputDecoration(
+                            labelText: 'IANA time zone',
+                            hintText: 'America/Chicago')),
+                  if (type == 'person')
+                    const Text(
+                        'Use Okta, Microsoft Entra ID, or SCIM as the source of staff identity. SSO provisions profiles on first sign-in. Create a manual roster record only when you have the exact issuer|subject from the identity provider.'),
                   if (type == 'person')
                     TextField(
                         controller: email,
@@ -3440,7 +6023,8 @@ class _TenantSetupPage extends StatelessWidget {
                     TextField(
                         controller: subject,
                         decoration: const InputDecoration(
-                            labelText: 'Canonical subject (issuer|sub)'))
+                            labelText:
+                                'Verified canonical subject (issuer|sub)'))
                 ]),
                 actions: [
                   TextButton(
@@ -3452,7 +6036,9 @@ class _TenantSetupPage extends StatelessWidget {
                 ]));
     if (ok != true || !context.mounted) return;
     try {
-      if (type == 'venue') await api.createVenue(name.text.trim());
+      if (type == 'venue') {
+        await api.createVenue(name.text.trim(), timeZone.text.trim());
+      }
       if (type == 'location') {
         if (!context.mounted) return;
         final venue = await _chooseVenue(context);
@@ -3462,7 +6048,7 @@ class _TenantSetupPage extends StatelessWidget {
       }
       if (type == 'event') {
         if (!context.mounted) return;
-        final venue = await _chooseVenue(context);
+        final venue = await _chooseVenue(context, activeOnly: true);
         if (venue != null && context.mounted) {
           final date = await showDatePicker(
               context: context,
@@ -3498,12 +6084,14 @@ class _TenantSetupPage extends StatelessWidget {
     }
   }
 
-  Future<Map<String, dynamic>?> _chooseVenue(BuildContext context) =>
+  Future<Map<String, dynamic>?> _chooseVenue(BuildContext context,
+          {bool activeOnly = false}) =>
       showDialog<Map<String, dynamic>>(
           context: context,
           builder: (context) => SimpleDialog(
               title: const Text('Choose venue'),
               children: venues
+                  .where((v) => !activeOnly || v['lifecycleState'] == 'ACTIVE')
                   .map((v) => SimpleDialogOption(
                       onPressed: () => Navigator.pop(context, v),
                       child: Text(v['name'] as String? ?? 'Venue')))
@@ -3672,28 +6260,28 @@ Future<void> _newLiveIssue(BuildContext context, WidgetRef ref,
                             const InputDecoration(labelText: 'What happened?')),
                     Row(children: [
                       if (ApiConfiguration.allowCameraEvidence)
-                      OutlinedButton.icon(
-                        onPressed: () async {
-                          if (evidence.length >= 5) return;
-                          try {
-                            final photo = await ref
-                                .read(secureEvidenceStoreProvider)
-                                .capturePhoto();
-                            if (photo != null) {
-                              setState(() => evidence.add(photo));
+                        OutlinedButton.icon(
+                          onPressed: () async {
+                            if (evidence.length >= 5) return;
+                            try {
+                              final photo = await ref
+                                  .read(secureEvidenceStoreProvider)
+                                  .capturePhoto();
+                              if (photo != null) {
+                                setState(() => evidence.add(photo));
+                              }
+                            } catch (error) {
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                        content: Text(
+                                            'Could not save photo: $error')));
+                              }
                             }
-                          } catch (error) {
-                            if (context.mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                      content: Text(
-                                          'Could not save photo: $error')));
-                            }
-                          }
-                        },
-                        icon: const Icon(Icons.camera_alt_outlined),
-                        label: Text('Add photo (${evidence.length}/5)'),
-                      ),
+                          },
+                          icon: const Icon(Icons.camera_alt_outlined),
+                          label: Text('Add photo (${evidence.length}/5)'),
+                        ),
                       if (evidence.isNotEmpty) ...[
                         const SizedBox(width: 8),
                         Text('${evidence.length} attached'),
@@ -3716,21 +6304,31 @@ Future<void> _newLiveIssue(BuildContext context, WidgetRef ref,
                             .toList(),
                       ),
                     if (ApiConfiguration.allowLocationEvidence)
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: OutlinedButton.icon(
-                        onPressed: () async {
-                          try {
-                            final position = await _captureIssueLocation();
-                            if (position != null) setState(() => locationEvidence = position);
-                          } catch (error) {
-                            if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not capture location: $error')));
-                          }
-                        },
-                        icon: Icon(locationEvidence == null ? Icons.add_location_alt_outlined : Icons.location_on),
-                        label: Text(locationEvidence == null ? 'Add device location (optional)' : 'Location attached · ±${locationEvidence!.accuracy.toStringAsFixed(0)} m'),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: OutlinedButton.icon(
+                          onPressed: () async {
+                            try {
+                              final position = await _captureIssueLocation();
+                              if (position != null) {
+                                setState(() => locationEvidence = position);
+                              }
+                            } catch (error) {
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                                    content: Text(
+                                        'Could not capture location: $error')));
+                              }
+                            }
+                          },
+                          icon: Icon(locationEvidence == null
+                              ? Icons.add_location_alt_outlined
+                              : Icons.location_on),
+                          label: Text(locationEvidence == null
+                              ? 'Add device location (optional)'
+                              : 'Location attached · ±${locationEvidence!.accuracy.toStringAsFixed(0)} m'),
+                        ),
                       ),
-                    ),
                     DropdownButtonFormField<String?>(
                         initialValue: locationId,
                         decoration:
@@ -3771,21 +6369,36 @@ Future<void> _newLiveIssue(BuildContext context, WidgetRef ref,
     return;
   }
   final venueId = event['venueId'] as String;
-  await ref.read(issueSyncProvider.notifier).submit(PendingIssueReport(
-      idempotencyKey: const Uuid().v4(),
-      eventId: event['id'] as String,
-      venueId: venueId,
-      locationId: locationId,
-      latitude: locationEvidence?.latitude,
-      longitude: locationEvidence?.longitude,
-      locationAccuracyMeters: locationEvidence?.accuracy,
-      locationCapturedAt: locationEvidence?.timestamp,
-      title: title.text.trim(),
-      description: description.text.trim(),
-      category: 'Operations',
-      severity: 'MODERATE',
-      createdAt: DateTime.now(),
-      evidence: List.unmodifiable(evidence)));
+  try {
+    await ref.read(issueSyncProvider.notifier).submit(PendingIssueReport(
+        idempotencyKey: const Uuid().v4(),
+        eventId: event['id'] as String,
+        venueId: venueId,
+        locationId: locationId,
+        latitude: locationEvidence?.latitude,
+        longitude: locationEvidence?.longitude,
+        locationAccuracyMeters: locationEvidence?.accuracy,
+        locationCapturedAt: locationEvidence?.timestamp,
+        title: title.text.trim(),
+        description: description.text.trim(),
+        category: 'Operations',
+        severity: 'MODERATE',
+        createdAt: DateTime.now(),
+        evidence: List.unmodifiable(evidence)));
+  } catch (_) {
+    for (final photo in evidence) {
+      try {
+        await ref.read(secureEvidenceStoreProvider).delete(photo);
+      } catch (_) {
+        // The report was not queued; cleanup must not hide the save failure.
+      }
+    }
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Could not save this report securely. Try again.')));
+    }
+    return;
+  }
   if (!context.mounted) return;
   ref.invalidate(eventIssuesProvider(event['id'] as String));
   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -3800,12 +6413,17 @@ Future<Position?> _captureIssueLocation() async {
     throw StateError('Turn on device location services, then try again.');
   }
   var permission = await Geolocator.checkPermission();
-  if (permission == LocationPermission.denied) permission = await Geolocator.requestPermission();
-  if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
-    throw StateError('Allow location access while using the app to attach location evidence.');
+  if (permission == LocationPermission.denied) {
+    permission = await Geolocator.requestPermission();
+  }
+  if (permission == LocationPermission.denied ||
+      permission == LocationPermission.deniedForever) {
+    throw StateError(
+        'Allow location access while using the app to attach location evidence.');
   }
   return Geolocator.getCurrentPosition(
-    locationSettings: const LocationSettings(accuracy: LocationAccuracy.medium, timeLimit: Duration(seconds: 15)),
+    locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.medium, timeLimit: Duration(seconds: 15)),
   );
 }
 
@@ -3835,6 +6453,10 @@ Future<void> _newLiveTask(
                           DropdownMenuItem(value: 'PLAN', child: Text('Plan')),
                           DropdownMenuItem(
                               value: 'STAFFING', child: Text('Staffing')),
+                          DropdownMenuItem(
+                              value: 'SERVICE', child: Text('Service')),
+                          DropdownMenuItem(
+                              value: 'STOCK', child: Text('Stock')),
                         ],
                         onChanged: (v) => setState(() => kind = v ?? kind)),
                     DropdownButtonFormField<String?>(

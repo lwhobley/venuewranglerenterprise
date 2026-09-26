@@ -17,6 +17,7 @@ function harness(order: Record<string, unknown> = {}, orgSettings: Record<string
     $queryRaw: vi.fn().mockResolvedValue([]),
     commandReceipt: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
     event: { findFirst: vi.fn().mockResolvedValue({ id: eventId, venueId }) },
+    $executeRaw: vi.fn().mockResolvedValue(1),
     venue: { findFirst: vi.fn().mockResolvedValue({ id: venueId, organizationId: tenantId }) },
     location: { findFirst: vi.fn().mockResolvedValue({ id: 'loc-1' }) },
     person: { findFirst: vi.fn().mockResolvedValue({ id: 'person-1' }) },
@@ -40,8 +41,14 @@ function harness(order: Record<string, unknown> = {}, orgSettings: Record<string
     },
     hospitalityOrderAudit: { create: vi.fn().mockResolvedValue({}) },
     hospitalityOrderLine: { update: vi.fn().mockResolvedValue({}) },
-    hospitalityOrderFulfillment: { create: vi.fn().mockResolvedValue({}) },
+    hospitalityOrderFulfillment: { create: vi.fn().mockResolvedValue({ id: 'fulfillment-1' }) },
+    hospitalityMenuRecipeLine: {
+      findMany: vi.fn().mockResolvedValue([]),
+      deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      createMany: vi.fn().mockResolvedValue({ count: 0 }),
+    },
     hospitalityDeliveryReceipt: { create: vi.fn().mockResolvedValue({ id: 'receipt-1' }) },
+    hospitalityDeliveryEvidence: { findFirst: vi.fn().mockResolvedValue(null) },
     userNotification: { create: vi.fn().mockResolvedValue({ id: 'notice-1', kind: 'hospitality.order.submitted', recipientSubject: 'kitchen-1' }) },
   };
   const prisma = { withTenant: vi.fn((_identity: Identity, action: (transaction: never) => Promise<unknown>) => action(tx as never)) } as unknown as PrismaService;
@@ -229,10 +236,104 @@ describe('hospitality order lifecycle', () => {
     expect(tx.hospitalityDeliveryReceipt.create).not.toHaveBeenCalled();
   });
 
+  it('attaches only a verified receiver photo uploaded by the pickup actor', async () => {
+    const { service, tx } = harness({ state: 'DISTRIBUTED', lines: [{ id: 'line-1', itemName: 'Water', quantity: 1, fulfilledQuantity: 1, unit: 'case', fulfillments: [] }] });
+    tx.hospitalityDeliveryEvidence.findFirst.mockResolvedValue({ id: 'photo-1' });
+    await service.act(requester, eventId, 'order-1', {
+      action: 'pickup', receivedByName: 'Jordan Lee', receiverAcknowledged: true,
+      receiverSignature: JSON.stringify([[{ x: 0.1, y: 0.2 }, { x: 0.8, y: 0.7 }]]),
+      receiverPhotoEvidenceId: 'photo-1',
+    }, 'hospitality-pickup-photo-key-01');
+    expect(tx.hospitalityDeliveryEvidence.findFirst).toHaveBeenCalledWith({ where: {
+      id: 'photo-1', orderId: 'order-1', eventId, organizationId: tenantId,
+      uploadedBy: requester.subject, status: 'READY',
+    } });
+    expect(tx.hospitalityDeliveryReceipt.create).toHaveBeenCalledWith({ data: expect.objectContaining({ photoEvidenceId: 'photo-1' }) });
+  });
+
+  it('rejects receipt photo evidence that has not completed upload verification', async () => {
+    const { service, tx } = harness({ state: 'DISTRIBUTED', lines: [{ id: 'line-1', itemName: 'Water', quantity: 1, fulfilledQuantity: 1, unit: 'case', fulfillments: [] }] });
+    await expect(service.act(requester, eventId, 'order-1', {
+      action: 'pickup', receivedByName: 'Jordan Lee', receiverAcknowledged: true,
+      receiverSignature: JSON.stringify([[{ x: 0.1, y: 0.2 }, { x: 0.8, y: 0.7 }]]),
+      receiverPhotoEvidenceId: 'photo-pending',
+    }, 'hospitality-pickup-photo-key-02')).rejects.toBeInstanceOf(ConflictException);
+    expect(tx.hospitalityDeliveryReceipt.create).not.toHaveBeenCalled();
+  });
+
   it('requires a reason when kitchen rejects an order', async () => {
     const { service, tx } = harness();
     await expect(service.act(kitchen, eventId, '00000000-0000-0000-0000-000000000099', { action: 'reject' }, 'hospitality-action-key-0003'))
       .rejects.toBeInstanceOf(ConflictException);
+    expect(tx.hospitalityOrder.update).not.toHaveBeenCalled();
+  });
+
+  it('saves an audited recipe scoped to an active stock item at the same venue', async () => {
+    const { service, tx } = harness();
+    tx.hospitalityMenuItem.findFirst.mockResolvedValueOnce({ id: 'menu-1', name: 'Coffee urn', defaultUnit: 'urn' });
+    tx.$queryRaw.mockResolvedValueOnce([]).mockResolvedValueOnce([]).mockResolvedValueOnce([{ id: 'stock-1' }]);
+    const result = await service.setMenuRecipe(requester, venueId, 'menu-1', {
+      lines: [{ stockItemId: 'stock-1', quantityPerMenuUnit: 0.125 }],
+    }, 'hospitality-recipe-set-key-001');
+    expect(result).toMatchObject({ menuItem: { id: 'menu-1' } });
+    expect(tx.hospitalityMenuRecipeLine.deleteMany).toHaveBeenCalledWith({
+      where: { organizationId: tenantId, venueId, menuItemId: 'menu-1' },
+    });
+    expect(tx.hospitalityMenuRecipeLine.createMany).toHaveBeenCalledWith({
+      data: [{ organizationId: tenantId, venueId, menuItemId: 'menu-1', stockItemId: 'stock-1', quantityPerMenuUnit: expect.anything() }],
+    });
+    expect(tx.tenantSetupAuditEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ resourceType: 'hospitality_menu_recipe', changedFields: ['recipe'] }),
+    }));
+  });
+
+  it('rejects recipe ingredients from another venue', async () => {
+    const { service, tx } = harness();
+    tx.hospitalityMenuItem.findFirst.mockResolvedValueOnce({ id: 'menu-1', name: 'Coffee urn' });
+    tx.$queryRaw.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    await expect(service.setMenuRecipe(requester, venueId, 'menu-1', {
+      lines: [{ stockItemId: 'foreign-stock', quantityPerMenuUnit: 0.125 }],
+    }, 'hospitality-recipe-cross-venue')).rejects.toThrow('Every recipe ingredient must be an active stock item at this venue.');
+    expect(tx.hospitalityMenuRecipeLine.createMany).not.toHaveBeenCalled();
+  });
+
+  it('does not expose recipe stock levels to hospitality fulfillment-only users', async () => {
+    const { service, tx } = harness();
+    const fulfillmentOnly = { ...kitchen, capabilities: ['hospitality:fulfill'] };
+    await expect(service.getMenuRecipe(fulfillmentOnly, venueId, 'menu-1')).rejects.toBeInstanceOf(ForbiddenException);
+    expect(tx.hospitalityMenuItem.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('depletes recipe ingredients atomically and writes an immutable stock movement for fulfillment', async () => {
+    const line = { id: 'line-1', menuItemId: 'menu-1', itemName: 'Coffee urn', quantity: 2, fulfilledQuantity: 0, unit: 'urn', fulfillments: [] };
+    const { service, tx } = harness({ state: 'READY', lines: [line] });
+    tx.$queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ stockItemId: 'stock-1', stockItemName: 'Ground coffee', stockUnit: 'kg', quantityPerMenuUnit: '0.125000', active: true }])
+      .mockResolvedValueOnce([{ id: 'stock-1' }]);
+    await service.act(kitchen, eventId, 'order-1', {
+      action: 'fulfill', fulfillments: [{ lineId: 'line-1', quantity: 2 }],
+    }, 'hospitality-recipe-fulfill-key');
+    expect(tx.hospitalityOrderFulfillment.create).toHaveBeenCalled();
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(tx.$executeRaw.mock.calls[0][0].join('')).toContain('HOSPITALITY_CONSUMPTION');
+  });
+
+  it('blocks recipe fulfillment when ingredient stock is insufficient', async () => {
+    const line = { id: 'line-1', menuItemId: 'menu-1', itemName: 'Coffee urn', quantity: 2, fulfilledQuantity: 0, unit: 'urn', fulfillments: [] };
+    const { service, tx } = harness({ state: 'READY', lines: [line] });
+    tx.$queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ stockItemId: 'stock-1', stockItemName: 'Ground coffee', stockUnit: 'kg', quantityPerMenuUnit: '0.125000', active: true }])
+      .mockResolvedValueOnce([]);
+    await expect(service.act(kitchen, eventId, 'order-1', {
+      action: 'fulfill', fulfillments: [{ lineId: 'line-1', quantity: 2 }],
+    }, 'hospitality-recipe-insufficient-stock')).rejects.toThrow('Insufficient Ground coffee (kg)');
+    expect(tx.$executeRaw).not.toHaveBeenCalled();
     expect(tx.hospitalityOrder.update).not.toHaveBeenCalled();
   });
 

@@ -1,4 +1,4 @@
-import { ConflictException, ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
 import type { Identity } from '../src/auth';
 import { OperationsService } from '../src/operations.service';
@@ -15,6 +15,36 @@ const admin: Identity = {
 };
 
 describe('tenant setup command idempotency', () => {
+  it('updates the tenant organization display name idempotently and audits only the field', async () => {
+    const updated = { id: admin.tenantId, name: 'Northstar Stadium Group' };
+    const tx = setupUpdateTx({ organization: {
+      findUnique: vi.fn().mockResolvedValue({ id: admin.tenantId, name: 'Venue organization' }),
+      update: vi.fn().mockResolvedValue(updated),
+    } });
+    const service = new OperationsService(setupUpdatePrisma(tx));
+
+    const result = await service.updateOrganization(admin, '  Northstar Stadium Group  ', 'organization-name-key-01');
+    const replay = await service.updateOrganization(admin, 'Northstar Stadium Group', 'organization-name-key-01');
+
+    expect(result).toEqual(updated);
+    expect(replay).toEqual(result);
+    expect(tx.organization.update).toHaveBeenCalledOnce();
+    expect(tx.organization.update).toHaveBeenCalledWith({ where: { id: admin.tenantId }, data: { name: 'Northstar Stadium Group' } });
+    expect(tx.tenantSetupAuditEvent.create).toHaveBeenCalledWith({ data: {
+      organizationId: admin.tenantId, actorId: admin.subject, action: 'updated',
+      resourceType: 'organization', resourceId: admin.tenantId, changedFields: ['name'],
+    } });
+  });
+
+  it('does not let a non-admin rename the tenant organization', async () => {
+    const tx = setupUpdateTx({ organization: { update: vi.fn() } });
+    const service = new OperationsService(setupUpdatePrisma(tx));
+
+    await expect(service.updateOrganization({ ...admin, capabilities: ['operations:write'] }, 'Changed name', 'organization-name-key-02'))
+      .rejects.toBeInstanceOf(ForbiddenException);
+    expect(tx.organization.update).not.toHaveBeenCalled();
+  });
+
   it('replays a venue creation receipt instead of creating a duplicate', async () => {
     const receipts = new Map<string, { fingerprint: string; response: unknown }>();
     const createVenue = vi.fn().mockImplementation(({ data }) => ({ id: 'venue-1', ...data }));
@@ -36,8 +66,8 @@ describe('tenant setup command idempotency', () => {
     } as unknown as PrismaService;
     const service = new OperationsService(prisma);
 
-    const first = await service.createVenue(admin, { name: 'North Arena' }, 'venue-create-key-0001');
-    const replay = await service.createVenue(admin, { name: 'North Arena' }, 'venue-create-key-0001');
+    const first = await service.createVenue(admin, { name: 'North Arena', timeZone: 'America/Chicago' }, 'venue-create-key-0001');
+    const replay = await service.createVenue(admin, { name: 'North Arena', timeZone: 'America/Chicago' }, 'venue-create-key-0001');
 
     expect(replay).toEqual(first);
     expect(createVenue).toHaveBeenCalledOnce();
@@ -65,11 +95,20 @@ describe('tenant setup command idempotency', () => {
       withTenant: vi.fn((_identity: Identity, action: (transaction: never) => Promise<unknown>) => action(tx as never)),
     } as unknown as PrismaService;
     const service = new OperationsService(prisma);
-    await service.createVenue(admin, { name: 'North Arena' }, 'venue-create-key-0002');
+    await service.createVenue(admin, { name: 'North Arena', timeZone: 'America/Chicago' }, 'venue-create-key-0002');
 
-    await expect(service.createVenue(admin, { name: 'South Arena' }, 'venue-create-key-0002'))
+    await expect(service.createVenue(admin, { name: 'South Arena', timeZone: 'America/Chicago' }, 'venue-create-key-0002'))
       .rejects.toBeInstanceOf(ConflictException);
     expect(createVenue).toHaveBeenCalledOnce();
+  });
+
+  it('requires a valid IANA timezone when creating a venue', async () => {
+    const tx = setupUpdateTx({ venue: { create: vi.fn() } });
+    const service = new OperationsService(setupUpdatePrisma(tx));
+
+    await expect(service.createVenue(admin, { name: 'North Arena', timeZone: 'Not/A_Timezone' }, 'venue-invalid-zone-01'))
+      .rejects.toBeInstanceOf(BadRequestException);
+    expect(tx.venue.create).not.toHaveBeenCalled();
   });
 
   it('audits tenant-admin roster creation without copying personal values into the audit row', async () => {
@@ -118,9 +157,9 @@ describe('tenant setup command idempotency', () => {
   });
 
   it('updates a venue only within the tenant and audits changed field names', async () => {
-    const updatedVenue = { id: 'venue-1', organizationId: admin.tenantId, name: 'North Pavilion' };
+    const updatedVenue = { id: 'venue-1', organizationId: admin.tenantId, name: 'North Pavilion', timeZone: 'America/Chicago' };
     const tx = setupUpdateTx({ venue: {
-      findFirst: vi.fn().mockResolvedValue({ id: 'venue-1', organizationId: admin.tenantId, name: 'North Arena' }),
+      findFirst: vi.fn().mockResolvedValue({ id: 'venue-1', organizationId: admin.tenantId, name: 'North Arena', timeZone: 'America/Chicago' }),
       update: vi.fn().mockResolvedValue(updatedVenue),
     } });
     const service = new OperationsService(setupUpdatePrisma(tx));
@@ -129,7 +168,7 @@ describe('tenant setup command idempotency', () => {
     const replay = await service.updateVenue(admin, 'venue-1', { name: 'North Pavilion' }, 'venue-update-key-001');
 
     expect(result).toEqual(updatedVenue);
-    expect(replay).toEqual(result);
+    expect(JSON.parse(JSON.stringify(replay))).toEqual(JSON.parse(JSON.stringify(result)));
     expect(tx.venue.findFirst).toHaveBeenCalledOnce();
     expect(tx.venue.findFirst).toHaveBeenCalledWith({ where: { id: 'venue-1', organizationId: admin.tenantId } });
     expect(tx.tenantSetupAuditEvent.create).toHaveBeenCalledOnce();
@@ -137,6 +176,96 @@ describe('tenant setup command idempotency', () => {
       organizationId: admin.tenantId, actorId: admin.subject, action: 'updated',
       resourceType: 'venue', resourceId: 'venue-1', changedFields: ['name'],
     } });
+  });
+
+  it('reports venue readiness and prevents non-admins from reading it', async () => {
+    const tx = setupUpdateTx({ venue: {
+      findFirst: vi.fn().mockResolvedValue({
+        id: 'venue-1', organizationId: admin.tenantId, lifecycleState: 'DRAFT',
+        timeZone: 'America/Chicago', _count: { locations: 1 },
+      }),
+    } });
+    const service = new OperationsService(setupUpdatePrisma(tx));
+
+    await expect(service.venueReadiness(admin, 'venue-1')).resolves.toMatchObject({
+      venueId: 'venue-1', lifecycleState: 'DRAFT', ready: true,
+      checks: [{ key: 'time_zone', passed: true }, { key: 'location', passed: true }],
+    });
+    await expect(service.venueReadiness({ ...admin, capabilities: ['operations:read'] }, 'venue-1'))
+      .rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('activates a ready venue once and records the tenant-admin actor', async () => {
+    const activated = { id: 'venue-1', lifecycleState: 'ACTIVE', activatedAt: new Date(), activatedBy: admin.subject };
+    const tx = setupUpdateTx({ venue: {
+      findFirst: vi.fn().mockResolvedValue({
+        id: 'venue-1', organizationId: admin.tenantId, lifecycleState: 'DRAFT',
+        timeZone: 'America/Chicago', _count: { locations: 1 },
+      }),
+      update: vi.fn().mockResolvedValue(activated),
+    } });
+    const service = new OperationsService(setupUpdatePrisma(tx));
+
+    const result = await service.updateVenueLifecycle(admin, 'venue-1', 'activate', 'venue-activate-key-001');
+    const replay = await service.updateVenueLifecycle(admin, 'venue-1', 'activate', 'venue-activate-key-001');
+
+    expect(result).toMatchObject({ id: 'venue-1', lifecycleState: 'ACTIVE', activatedBy: admin.subject });
+    expect(typeof result.activatedAt).toBe('object');
+    expect(JSON.parse(JSON.stringify(replay))).toEqual(JSON.parse(JSON.stringify(result)));
+    expect(tx.venue.update).toHaveBeenCalledOnce();
+    expect(tx.venue.update).toHaveBeenCalledWith({ where: { id: 'venue-1' }, data: {
+      lifecycleState: 'ACTIVE', activatedAt: expect.any(Date), activatedBy: admin.subject,
+    } });
+    expect(tx.tenantSetupAuditEvent.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+      organizationId: admin.tenantId, actorId: admin.subject, action: 'activated',
+      resourceType: 'venue', resourceId: 'venue-1',
+      changedFields: ['lifecycle_state', 'activated_at', 'activated_by'],
+    }) });
+  });
+
+  it('blocks venue activation until timezone and location checks pass', async () => {
+    const tx = setupUpdateTx({ venue: {
+      findFirst: vi.fn().mockResolvedValue({
+        id: 'venue-1', organizationId: admin.tenantId, lifecycleState: 'DRAFT',
+        timeZone: null, _count: { locations: 0 },
+      }),
+      update: vi.fn(),
+    } });
+    const service = new OperationsService(setupUpdatePrisma(tx));
+
+    await expect(service.updateVenueLifecycle(admin, 'venue-1', 'activate', 'venue-activate-key-002'))
+      .rejects.toThrow('Venue is not ready to activate');
+    expect(tx.venue.update).not.toHaveBeenCalled();
+    expect(tx.tenantSetupAuditEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('allows administrators to add the first location while a venue is still draft', async () => {
+    const location = { id: 'location-1', organizationId: admin.tenantId, venueId: 'venue-1', name: 'North Concourse' };
+    const tx = setupUpdateTx({
+      venue: { findFirst: vi.fn().mockResolvedValue({ id: 'venue-1', lifecycleState: 'DRAFT' }) },
+      location: { create: vi.fn().mockResolvedValue(location) },
+    });
+    const service = new OperationsService(setupUpdatePrisma(tx));
+
+    await expect(service.createLocation(admin, { venueId: 'venue-1', name: 'North Concourse' }, 'location-draft-create-01'))
+      .resolves.toEqual(location);
+    expect(tx.location.create).toHaveBeenCalledWith({ data: {
+      organizationId: admin.tenantId, venueId: 'venue-1', name: 'North Concourse',
+    } });
+  });
+
+  it('rejects event creation at draft or suspended venues', async () => {
+    const tx = setupUpdateTx({ venue: {
+      findFirst: vi.fn().mockResolvedValue({
+        id: 'venue-1', organizationId: admin.tenantId, lifecycleState: 'DRAFT',
+        timeZone: 'America/Chicago',
+      }),
+    } });
+    const service = new OperationsService(setupUpdatePrisma(tx));
+
+    await expect(service.createEvent(admin, {
+      venueId: 'venue-1', name: 'Opening Night', startsAt: '2027-01-01T20:00:00.000Z',
+    }, 'event-create-draft-key-01')).rejects.toThrow('Activate this venue');
   });
 
   it('updates a location without allowing its venue scope to be changed', async () => {
@@ -244,6 +373,7 @@ function setupUpdateTx(resources: Record<string, unknown> = {}) {
       findUnique: vi.fn().mockImplementation(({ where }) => Promise.resolve(receipts.get(where.organizationId_key.key) ?? null)),
       create: vi.fn().mockImplementation(({ data }) => { receipts.set(data.key, data); return Promise.resolve(data); }),
     },
+    organization: { findUnique: vi.fn(), update: vi.fn(), ...(resources.organization as object ?? {}) },
     venue: { findFirst: vi.fn(), update: vi.fn(), ...(resources.venue as object ?? {}) },
     location: { findFirst: vi.fn(), update: vi.fn(), ...(resources.location as object ?? {}) },
     event: { findFirst: vi.fn(), update: vi.fn(), ...(resources.event as object ?? {}) },

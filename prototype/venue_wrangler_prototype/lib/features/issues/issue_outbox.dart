@@ -77,7 +77,7 @@ abstract interface class IssueApi {
   Future<String?> currentScope();
   Future<String> create(PendingIssueReport command);
   Future<void> uploadEvidence(String eventId, String issueId,
-      LocalIssueEvidence evidence, List<int> bytes);
+      LocalIssueEvidence evidence, List<int> bytes, String sessionScope);
 }
 
 abstract interface class ConnectivityMonitor {
@@ -146,7 +146,8 @@ class SecureIssueOutbox implements IssueOutbox {
         'latitude': item.latitude,
         'longitude': item.longitude,
         'locationAccuracyMeters': item.locationAccuracyMeters,
-        'locationCapturedAt': item.locationCapturedAt?.toUtc().toIso8601String(),
+        'locationCapturedAt':
+            item.locationCapturedAt?.toUtc().toIso8601String(),
         'sessionScope': item.sessionScope,
         'title': item.title,
         'description': item.description,
@@ -165,8 +166,11 @@ class SecureIssueOutbox implements IssueOutbox {
         locationId: value['locationId'] as String?,
         latitude: (value['latitude'] as num?)?.toDouble(),
         longitude: (value['longitude'] as num?)?.toDouble(),
-        locationAccuracyMeters: (value['locationAccuracyMeters'] as num?)?.toDouble(),
-        locationCapturedAt: value['locationCapturedAt'] == null ? null : DateTime.parse(value['locationCapturedAt'] as String),
+        locationAccuracyMeters:
+            (value['locationAccuracyMeters'] as num?)?.toDouble(),
+        locationCapturedAt: value['locationCapturedAt'] == null
+            ? null
+            : DateTime.parse(value['locationCapturedAt'] as String),
         sessionScope: value['sessionScope'] as String?,
         title: value['title'] as String,
         description: value['description'] as String,
@@ -189,11 +193,22 @@ class DioIssueApi implements IssueApi {
   @override
   Future<String?> currentScope() => _auth.offlineCacheScope();
 
+  Future<void> _requireScope(String expected) async {
+    if (expected != await _auth.offlineCacheScope()) {
+      throw StateError(
+          'This saved evidence belongs to another signed-in user.');
+    }
+  }
+
   @override
   Future<String> create(PendingIssueReport command) async {
     final token = await _auth.validAccessToken();
     if (token == null || token.isEmpty) {
       throw StateError('Sign in before synchronizing issue reports.');
+    }
+    if (command.sessionScope == null ||
+        command.sessionScope != await _auth.offlineCacheScope()) {
+      throw StateError('This saved report belongs to another signed-in user.');
     }
     final response = await _dio.post<Map<String, dynamic>>(
       '/api/v1/events/${command.eventId}/issues',
@@ -208,7 +223,8 @@ class DioIssueApi implements IssueApi {
           'latitude': command.latitude,
           'longitude': command.longitude,
           'locationAccuracyMeters': command.locationAccuracyMeters,
-          'locationCapturedAt': command.locationCapturedAt?.toUtc().toIso8601String(),
+          'locationCapturedAt':
+              command.locationCapturedAt?.toUtc().toIso8601String(),
         },
       },
       options: Options(headers: {
@@ -225,11 +241,12 @@ class DioIssueApi implements IssueApi {
 
   @override
   Future<void> uploadEvidence(String eventId, String issueId,
-      LocalIssueEvidence evidence, List<int> bytes) async {
+      LocalIssueEvidence evidence, List<int> bytes, String sessionScope) async {
     final token = await _auth.validAccessToken();
     if (token == null || token.isEmpty) {
       throw StateError('Sign in before uploading issue evidence.');
     }
+    await _requireScope(sessionScope);
     final headers = {'Authorization': 'Bearer $token'};
     final response = await _dio.post<Map<String, dynamic>>(
       '/api/v1/events/$eventId/issues/$issueId/evidence',
@@ -249,6 +266,7 @@ class DioIssueApi implements IssueApi {
     }
     final url = data?['uploadUrl'];
     if (url is String && url.isNotEmpty) {
+      await _requireScope(sessionScope);
       final fields =
           Map<String, dynamic>.from(data?['uploadFields'] as Map? ?? const {});
       final form = FormData.fromMap({
@@ -259,6 +277,7 @@ class DioIssueApi implements IssueApi {
       });
       await Dio().post<void>(url, data: form);
     }
+    await _requireScope(sessionScope);
     await _dio.post<void>(
         '/api/v1/events/$eventId/issues/$issueId/evidence/${attachment['id']}/complete',
         options: Options(headers: headers));
@@ -278,6 +297,7 @@ final secureEvidenceStoreProvider =
     Provider((ref) => SecureEvidenceStore(ref.watch(_secureStorageProvider)));
 final issueSyncProvider =
     StateNotifierProvider<IssueSyncController, List<PendingIssueReport>>((ref) {
+  ref.watch(authSessionProvider.select((value) => value.session?.accessToken));
   final controller = IssueSyncController(ref.watch(issueOutboxProvider),
       ref.watch(issueApiProvider), ref.watch(secureEvidenceStoreProvider));
   unawaited(controller.restore());
@@ -298,7 +318,16 @@ class IssueSyncController extends StateNotifier<List<PendingIssueReport>> {
   Future<void>? _syncInFlight;
   bool _wasOnline = false;
 
-  Future<void> restore() async => state = await _outbox.pending();
+  Future<void> restore() async {
+    final scope = await _api.currentScope();
+    final pending = await _outbox.pending();
+    final stillCurrent = scope != null && scope == await _api.currentScope();
+    if (mounted) {
+      state = !stillCurrent
+          ? const []
+          : pending.where((report) => report.sessionScope == scope).toList();
+    }
+  }
 
   void watchConnectivity(ConnectivityMonitor connectivity) {
     _connectivitySubscription =
@@ -314,12 +343,23 @@ class IssueSyncController extends StateNotifier<List<PendingIssueReport>> {
   }
 
   Future<void> submit(PendingIssueReport command) async {
-    final scoped = command.scopedTo(await _api.currentScope());
+    final scope = await _api.currentScope();
+    if (scope == null) {
+      throw StateError('Sign in before saving an issue report.');
+    }
+    final scoped = command.scopedTo(scope);
     await _outbox.enqueue(scoped);
-    state = [...state, scoped];
+    if (mounted) {
+      state = [
+        ...state.where((report) => report.sessionScope == scope),
+        scoped
+      ];
+    }
+    if (_wasOnline) unawaited(synchronize());
   }
 
   Future<void> synchronize() async {
+    if (!mounted) return;
     final activeSync = _syncInFlight;
     if (activeSync != null) {
       await activeSync;
@@ -339,13 +379,12 @@ class IssueSyncController extends StateNotifier<List<PendingIssueReport>> {
       try {
         if (command.sessionScope == null ||
             command.sessionScope != await _api.currentScope()) {
-          await _outbox.markFailed(command.idempotencyKey);
           continue;
         }
         final issueId = await _api.create(command);
         for (final evidence in command.evidence) {
           await _api.uploadEvidence(command.eventId, issueId, evidence,
-              await _evidenceStore.decrypt(evidence));
+              await _evidenceStore.decrypt(evidence), command.sessionScope!);
         }
         // Keep every encrypted source file until all uploads and the durable
         // outbox acknowledgement succeed. A later photo may fail, and retries

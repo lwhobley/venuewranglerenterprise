@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { assertCapability, assertScope, assertTenantAdmin, Identity } from './auth';
 import { PrismaService } from './prisma.service';
@@ -16,6 +16,24 @@ export class InventoryService {
       SELECT id, venue_id AS "venueId", location_id AS "locationId", sku, name, unit, on_hand AS "onHand", active
       FROM stock_items WHERE organization_id = ${identity.tenantId}::uuid AND venue_id = ${venueId}::uuid
       AND location_id IS NOT DISTINCT FROM ${locationId ?? null}::uuid ORDER BY name`);
+  }
+
+  async listVenueItems(identity: Identity, venueId: string) {
+    if (!identity.capabilities.includes('tenant:admin') &&
+        (!identity.capabilities.includes('operations:write') || !identity.venueIds.includes(venueId))) {
+      throw new ForbiddenException('Venue inventory administration access is required.');
+    }
+    return this.prisma.withTenant(identity, async tx => {
+      const venue = await tx.venue.findFirst({ where: { id: venueId, organizationId: identity.tenantId }, select: { id: true } });
+      if (!venue) throw new NotFoundException('Venue not found.');
+      return tx.$queryRaw`
+        SELECT i.id, i.venue_id AS "venueId", i.location_id AS "locationId", l.name AS "locationName",
+          i.sku, i.name, i.unit, i.on_hand AS "onHand", i.active
+        FROM stock_items i
+        LEFT JOIN locations l ON l.id = i.location_id AND l.venue_id = i.venue_id AND l.organization_id = i.organization_id
+        WHERE i.organization_id = ${identity.tenantId}::uuid AND i.venue_id = ${venueId}::uuid
+        ORDER BY i.active DESC, i.name, i.sku`;
+    });
   }
 
   async createItem(identity: Identity, dto: CreateStockItemDto, key: string) {

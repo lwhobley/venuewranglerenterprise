@@ -2,7 +2,7 @@ import { Body, ConflictException, Controller, Delete, Get, Headers, Param, Parse
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { JwtIdentityGuard } from './auth';
-import { CreateEventDto, CreateLocationDto, CreateOperationalTaskDto, CreateVenueDto, SetPersonActiveDto, UpdateEventDto, UpdateLocationDto, UpdateOperationalTaskDto, UpdateVenueDto, UpsertPersonDto } from './operations.dto';
+import { CreateEventDto, CreateLocationDto, CreateOperationalTaskDto, CreateVenueDto, SetPersonActiveDto, UpdateEventDto, UpdateLocationDto, UpdateOperationalTaskDto, UpdateOrganizationDto, UpdateVenueDto, UpdateVenueLifecycleDto, UpsertPersonDto } from './operations.dto';
 import { OperationsService } from './operations.service';
 import { GrantPersonQualificationDto } from './qualification.dto';
 import { UpdateStaffingPolicyDto } from './staffing-policy.dto';
@@ -19,8 +19,11 @@ export class OperationsController {
   @Get('me') bootstrap(@Req() request: Request) {
     return this.operations.bootstrap(request.identity, { email: request.identity.email, name: request.identity.displayName });
   }
+  @Put('admin/organization') updateOrganization(@Req() request: Request, @Body() dto: UpdateOrganizationDto, @Headers('idempotency-key') key: string) { return this.operations.updateOrganization(request.identity, dto.name, this.key(key)); }
   @Post('admin/venues') createVenue(@Req() request: Request, @Body() dto: CreateVenueDto, @Headers('idempotency-key') key: string) { return this.operations.createVenue(request.identity, dto, this.key(key)); }
   @Put('admin/venues/:venueId') updateVenue(@Req() request: Request, @Param('venueId', new ParseUUIDPipe()) venueId: string, @Body() dto: UpdateVenueDto, @Headers('idempotency-key') key: string) { return this.operations.updateVenue(request.identity, venueId, dto, this.key(key)); }
+  @Get('admin/venues/:venueId/readiness') venueReadiness(@Req() request: Request, @Param('venueId', new ParseUUIDPipe()) venueId: string) { return this.operations.venueReadiness(request.identity, venueId); }
+  @Put('admin/venues/:venueId/lifecycle') updateVenueLifecycle(@Req() request: Request, @Param('venueId', new ParseUUIDPipe()) venueId: string, @Body() dto: UpdateVenueLifecycleDto, @Headers('idempotency-key') key: string) { return this.operations.updateVenueLifecycle(request.identity, venueId, dto.action, this.key(key)); }
   @Post('admin/locations') createLocation(@Req() request: Request, @Body() dto: CreateLocationDto, @Headers('idempotency-key') key: string) { return this.operations.createLocation(request.identity, dto, this.key(key)); }
   @Put('admin/locations/:locationId') updateLocation(@Req() request: Request, @Param('locationId', new ParseUUIDPipe()) locationId: string, @Body() dto: UpdateLocationDto, @Headers('idempotency-key') key: string) { return this.operations.updateLocation(request.identity, locationId, dto, this.key(key)); }
   @Post('admin/events') createEvent(@Req() request: Request, @Body() dto: CreateEventDto, @Headers('idempotency-key') key: string) { return this.operations.createEvent(request.identity, dto, this.key(key)); }

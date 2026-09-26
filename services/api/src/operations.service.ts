@@ -1,4 +1,4 @@
-import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { assertScope, assertTenantAdmin, Identity } from './auth';
@@ -63,9 +63,30 @@ export class OperationsService {
     });
   }
 
+  async updateOrganization(identity: Identity, name: string, key: string) {
+    assertTenantAdmin(identity);
+    const input = { name: name.trim() };
+    if (input.name.length < 2) throw new BadRequestException('Organization name must contain at least two non-space characters.');
+    return this.command(identity, key, 'organization.update', input, async (tx) => {
+      const current = await tx.organization.findUnique({ where: { id: identity.tenantId } });
+      if (!current) throw new NotFoundException('Organization setup is required before changing its display name.');
+      if (current.name === input.name) return current;
+      const updated = await tx.organization.update({ where: { id: identity.tenantId }, data: { name: input.name } });
+      await tx.tenantSetupAuditEvent.create({ data: {
+        organizationId: identity.tenantId,
+        actorId: identity.subject,
+        action: 'updated',
+        resourceType: 'organization',
+        resourceId: identity.tenantId,
+        changedFields: ['name'],
+      } });
+      return updated;
+    });
+  }
+
   async createVenue(identity: Identity, dto: CreateVenueDto, key: string) {
     assertTenantAdmin(identity);
-    const input = { name: dto.name.trim() };
+    const input = { name: dto.name.trim(), timeZone: this.requireTimeZone(dto.timeZone) };
     return this.command(identity, key, 'venue.create', input, async (tx) => {
       const venue = await tx.venue.create({ data: { organizationId: identity.tenantId, ...input } });
       await tx.tenantSetupAuditEvent.create({ data: {
@@ -74,7 +95,7 @@ export class OperationsService {
         action: 'created',
         resourceType: 'venue',
         resourceId: venue.id,
-        changedFields: ['name'],
+        changedFields: ['name', 'time_zone', 'lifecycle_state'],
       } });
       return venue;
     });
@@ -82,14 +103,67 @@ export class OperationsService {
 
   async updateVenue(identity: Identity, venueId: string, dto: UpdateVenueDto, key: string) {
     assertTenantAdmin(identity);
-    const input = this.setupPatch({ name: dto.name?.trim() });
+    const input = this.setupPatch({ name: dto.name?.trim(), timeZone: dto.timeZone?.trim() });
+    if (input.timeZone !== undefined) this.requireTimeZone(input.timeZone);
     return this.command(identity, key, 'venue.update', { venueId, ...input }, async (tx) => {
       const current = await tx.venue.findFirst({ where: { id: venueId, organizationId: identity.tenantId } });
       if (!current) throw new NotFoundException('Venue not found in this organization.');
-      const changedFields = Object.keys(input).filter((field) => current[field as keyof typeof current] !== input[field as keyof typeof input]);
+      const changedFields = [
+        ...(input.name !== undefined && current.name !== input.name ? ['name'] : []),
+        ...(input.timeZone !== undefined && current.timeZone !== input.timeZone ? ['time_zone'] : []),
+      ];
       if (changedFields.length === 0) return current;
       const updated = await tx.venue.update({ where: { id: venueId }, data: input });
       await tx.tenantSetupAuditEvent.create({ data: { organizationId: identity.tenantId, actorId: identity.subject, action: 'updated', resourceType: 'venue', resourceId: venueId, changedFields } });
+      return updated;
+    });
+  }
+
+  async venueReadiness(identity: Identity, venueId: string) {
+    assertTenantAdmin(identity);
+    return this.prisma.withTenant(identity, async (tx) => {
+      const venue = await tx.venue.findFirst({
+        where: { id: venueId, organizationId: identity.tenantId },
+        include: { _count: { select: { locations: true } } },
+      });
+      if (!venue) throw new NotFoundException('Venue not found in this organization.');
+      return this.venueReadinessResult(venue);
+    });
+  }
+
+  async updateVenueLifecycle(identity: Identity, venueId: string, action: 'activate' | 'suspend', key: string) {
+    assertTenantAdmin(identity);
+    return this.command(identity, key, `venue.${action}`, { venueId, action }, async (tx) => {
+      await tx.$queryRaw`SELECT id FROM venues WHERE id = ${venueId}::uuid AND organization_id = ${identity.tenantId}::uuid FOR UPDATE`;
+      const venue = await tx.venue.findFirst({
+        where: { id: venueId, organizationId: identity.tenantId },
+        include: { _count: { select: { locations: true } } },
+      });
+      if (!venue) throw new NotFoundException('Venue not found in this organization.');
+      const nextState = action === 'activate' ? 'ACTIVE' : 'SUSPENDED';
+      if (venue.lifecycleState === nextState) return venue;
+      if (action === 'suspend' && venue.lifecycleState !== 'ACTIVE') {
+        throw new ConflictException('Only an active venue can be suspended.');
+      }
+      if (action === 'activate') {
+        const readiness = this.venueReadinessResult(venue);
+        const blockers = readiness.checks.filter((check) => !check.passed).map((check) => check.label);
+        if (blockers.length > 0) throw new ConflictException(`Venue is not ready to activate: ${blockers.join('; ')}.`);
+      }
+      const updated = await tx.venue.update({
+        where: { id: venueId },
+        data: action === 'activate'
+          ? { lifecycleState: nextState, activatedAt: new Date(), activatedBy: identity.subject }
+          : { lifecycleState: nextState, activatedAt: null, activatedBy: null },
+      });
+      await tx.tenantSetupAuditEvent.create({ data: {
+        organizationId: identity.tenantId,
+        actorId: identity.subject,
+        action: action === 'activate' ? 'activated' : 'suspended',
+        resourceType: 'venue',
+        resourceId: venueId,
+        changedFields: ['lifecycle_state', 'activated_at', 'activated_by'],
+      } });
       return updated;
     });
   }
@@ -131,8 +205,14 @@ export class OperationsService {
     assertTenantAdmin(identity);
     const input = { venueId: dto.venueId, name: dto.name.trim(), startsAt: new Date(dto.startsAt).toISOString() };
     return this.command(identity, key, 'event.create', input, async (tx) => {
-      const venue = await tx.venue.findFirst({ where: { id: dto.venueId, organizationId: identity.tenantId } });
+      const venue = await tx.venue.findFirst({
+        where: { id: dto.venueId, organizationId: identity.tenantId },
+        include: { _count: { select: { locations: true } } },
+      });
       if (!venue) throw new NotFoundException('Venue not found in this organization.');
+      if (venue.lifecycleState !== 'ACTIVE' || !this.isValidTimeZone(venue.timeZone) || venue._count.locations === 0) {
+        throw new ConflictException('Activate this venue after adding a location and setting a valid time zone before creating events.');
+      }
       const event = await tx.event.create({ data: { organizationId: identity.tenantId, venueId: venue.id, name: dto.name.trim(), startsAt: new Date(input.startsAt) } });
       await tx.tenantSetupAuditEvent.create({ data: {
         organizationId: identity.tenantId,
@@ -378,6 +458,56 @@ export class OperationsService {
         changedFields,
       },
     });
+  }
+
+  private isValidTimeZone(timeZone: string | null | undefined): boolean {
+    if (!timeZone?.trim()) return false;
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone }).format(new Date(0));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private requireTimeZone(timeZone: string): string {
+    const value = timeZone.trim();
+    if (!this.isValidTimeZone(value)) {
+      throw new BadRequestException('Enter a valid IANA time zone, such as America/Chicago.');
+    }
+    return value;
+  }
+
+  private venueReadinessResult(venue: {
+    id: string;
+    timeZone: string | null;
+    lifecycleState: string;
+    _count: { locations: number };
+  }) {
+    const validTimeZone = this.isValidTimeZone(venue.timeZone);
+    const hasLocation = venue._count.locations > 0;
+    const checks = [
+      {
+        key: 'time_zone',
+        label: 'Venue time zone is valid',
+        passed: validTimeZone,
+        detail: validTimeZone ? venue.timeZone : 'Set a valid IANA time zone, such as America/Chicago.',
+      },
+      {
+        key: 'location',
+        label: 'At least one operational location exists',
+        passed: hasLocation,
+        detail: hasLocation ? `${venue._count.locations} location(s) configured.` : 'Add a location such as a concourse, kitchen, or suite level.',
+      },
+    ];
+    return {
+      venueId: venue.id,
+      lifecycleState: venue.lifecycleState,
+      timeZone: venue.timeZone,
+      locationsCount: venue._count.locations,
+      checks,
+      ready: checks.every((check) => check.passed),
+    };
   }
 
   private title(slug: string) { return slug.split('-').map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' '); }

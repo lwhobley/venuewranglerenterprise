@@ -15,7 +15,10 @@ function service(currentTask: Record<string, unknown> | null = null) {
     $queryRaw: vi.fn().mockResolvedValue([1]),
     event: { findFirst: vi.fn().mockResolvedValue({ id: eventId, venueId }) },
     location: { findFirst: vi.fn().mockResolvedValue({ id: locationId }) },
-    externalIntegrationEvent: { create: vi.fn().mockResolvedValue({ id: 'event-record' }) },
+    externalIntegrationEvent: {
+      create: vi.fn().mockResolvedValue({ id: 'event-record' }),
+      findMany: vi.fn().mockResolvedValue([]),
+    },
     operationalTask: {
       findFirst: vi.fn().mockResolvedValue(currentTask),
       create: vi.fn().mockImplementation(({ data }) => ({ id: 'task-record', ...data })),
@@ -49,6 +52,25 @@ function request(payload: Record<string, unknown>) {
 }
 
 describe('IntegrationService operational task mapping', () => {
+  it('lists event-scoped connector activity without returning imported payloads', async () => {
+    const { service: integration, tx } = service();
+    const result = await integration.list({
+      subject: 'manager-1',
+      tenantId,
+      capabilities: ['operations:read'],
+      eventIds: [eventId],
+      venueIds: [venueId],
+      locationIds: [],
+      assignableUserIds: [],
+    }, eventId);
+
+    expect(result).toEqual([]);
+    expect(tx.externalIntegrationEvent.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ organizationId: tenantId, eventId }),
+      select: expect.not.objectContaining({ payload: true }),
+    }));
+  });
+
   it('creates a tenant-scoped, auditable task from a signed normalized event', async () => {
     const { service: integration, tx } = service();
     const signed = request({
