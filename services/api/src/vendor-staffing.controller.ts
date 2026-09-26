@@ -16,6 +16,10 @@ export class VendorStaffingController {
     return this.vendors.list(req.identity, eventId);
   }
 
+  @Post('escalate-overdue') escalateOverdue(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Headers('idempotency-key') key: string) {
+    return this.vendors.escalateOverdue(req.identity, eventId, this.key(key));
+  }
+
   @Post() create(@Req() req: Request, @Param('eventId', new ParseUUIDPipe()) eventId: string, @Body() dto: CreateVendorStaffingRequestDto, @Headers('idempotency-key') key: string) {
     return this.vendors.create(req.identity, eventId, dto, this.key(key));
   }

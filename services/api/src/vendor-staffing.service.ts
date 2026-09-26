@@ -109,6 +109,29 @@ export class VendorStaffingService {
     }).then(({ value, replayed }) => { if (!replayed) this.deliver(identity, value.notification); return value.updated; });
   }
 
+  async escalateOverdue(identity: Identity, eventId: string, key: string) {
+    assertScope(identity, 'operations:write', eventId);
+    const input = { eventId };
+    const result = await this.command(identity, key, 'vendor-staffing.escalate-overdue', input, async (tx) => {
+      const event = await tx.event.findFirst({ where: { id: eventId, organizationId: identity.tenantId }, select: { id: true, venueId: true } });
+      if (!event) throw new NotFoundException('Event not found.');
+      assertScope(identity, 'operations:write', eventId, event.venueId);
+      const due = await tx.staffingVendorRequest.findMany({ where: { organizationId: identity.tenantId, eventId, state: { in: ['SENT', 'ACKNOWLEDGED'] }, responseDueAt: { lt: new Date() }, escalatedAt: null } });
+      const notices = [];
+      for (const request of due) {
+        const updated = await tx.staffingVendorRequest.update({ where: { id: request.id }, data: { escalatedAt: new Date() } });
+        await this.audit(tx, identity, request.id, 'deadline_escalated', request, updated, 'Response deadline passed without a commitment.');
+        const notice = await tx.venueNotice.create({ data: { organizationId: identity.tenantId, venueId: request.venueId, recipientSubject: request.requesterSubject, kind: 'vendor.deadline_escalated', title: 'Vendor deadline passed', body: 'A vendor staffing request passed its deadline without a commitment. The gap is still open.' } });
+        notices.push(notice);
+      }
+      return { escalated: due.length, notices };
+    });
+    if (!result.replayed) {
+      for (const notice of result.value.notices) this.deliver(identity, { id: notice.id, kind: notice.kind, recipientSubject: notice.recipientSubject });
+    }
+    return { escalated: result.value.escalated };
+  }
+
   async resolve(identity: Identity, eventId: string, requestId: string, state: 'CANCELLED' | 'FULFILLED', reason: string, key: string) {
     assertScope(identity, 'operations:write', eventId);
     const normalized = reason.trim();

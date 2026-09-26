@@ -13,7 +13,7 @@ const vendor: Identity = { ...manager, subject: 'idp|vendor-a', capabilities: ['
 
 function serviceFor(tx: Record<string, unknown>) {
   const prisma = { withTenant: vi.fn((_identity, work) => work(tx)) } as unknown as PrismaService;
-  return new VendorStaffingService(prisma, { deliver: vi.fn() } as never);
+  return new VendorStaffingService(prisma, { deliver: vi.fn().mockResolvedValue(undefined) } as never);
 }
 
 describe('VendorStaffingService', () => {
@@ -35,6 +35,22 @@ describe('VendorStaffingService', () => {
     const service = serviceFor(tx);
     await expect(service.respond(vendor, eventId, requestId, { decision: 'COMMITTED', committedHeadcount: 1, reason: 'We can staff this shift.' }, 'vendor-response-idempotency-key')).rejects.toBeInstanceOf(ForbiddenException);
     expect(tx.staffingVendorRequest.update).not.toHaveBeenCalled();
+  });
+
+  it('escalates only unanswered requests past their deadline and does not fill the gap', async () => {
+    const overdue = { id: requestId, eventId, organizationId: tenantId, venueId, requesterSubject: manager.subject, state: 'SENT', responseDueAt: new Date('2020-01-01T00:00:00.000Z') };
+    const tx = {
+      $queryRaw: vi.fn().mockResolvedValue([]),
+      commandReceipt: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn() },
+      event: { findFirst: vi.fn().mockResolvedValue({ id: eventId, venueId }) },
+      staffingVendorRequest: { findMany: vi.fn().mockResolvedValue([overdue]), update: vi.fn().mockResolvedValue({ ...overdue, escalatedAt: new Date() }) },
+      staffingVendorRequestAudit: { create: vi.fn().mockResolvedValue({}) },
+      venueNotice: { create: vi.fn().mockResolvedValue({ id: 'notice-1', kind: 'vendor.deadline_escalated', recipientSubject: manager.subject }) },
+    };
+    const result = await serviceFor(tx).escalateOverdue(manager, eventId, 'vendor-escalate-overdue-01');
+    expect(result).toEqual({ escalated: 1 });
+    expect(tx.staffingVendorRequest.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ escalatedAt: expect.any(Date) }) }));
+    expect(tx.staffingVendorRequest.update.mock.calls[0][0].data).not.toHaveProperty('state');
   });
 
   it('rejects a manager request if the vendor identity is outside their assignment scope', async () => {

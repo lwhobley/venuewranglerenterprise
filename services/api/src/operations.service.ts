@@ -174,8 +174,31 @@ export class OperationsService {
         resourceId: venueId,
         changedFields: ['lifecycle_state', 'activated_at', 'activated_by'],
       } });
+      if (action === 'activate') await this.notifyVenueRecipients(tx, identity, venueId, 'venue.activated', 'Venue activated', `${updated.name} is active. Confirm the venue clock, locations, and first event before event day.`);
       return updated;
     });
+  }
+
+  async assignVenueNoticeRecipient(identity: Identity, venueId: string, subject: string, key: string) {
+    assertVenueAdmin(identity, venueId);
+    const input = { venueId, subject: subject.trim() };
+    return this.command(identity, key, 'venue-notice-recipient.assign', input, async (tx) => {
+      const person = await tx.person.findFirst({ where: { organizationId: identity.tenantId, externalSubject: input.subject, active: true }, select: { externalSubject: true } });
+      if (!person) throw new NotFoundException('The notice recipient must be an active person in this organization.');
+      const existing = await tx.venueNoticeRecipient.findUnique({ where: { organizationId_venueId_subject: { organizationId: identity.tenantId, venueId, subject: input.subject } } });
+      if (existing) return existing;
+      const created = await tx.venueNoticeRecipient.create({ data: { organizationId: identity.tenantId, venueId, subject: input.subject, assignedBy: identity.subject } });
+      await tx.tenantSetupAuditEvent.create({ data: { organizationId: identity.tenantId, actorId: identity.subject, action: 'created', resourceType: 'venue_notice_recipient', resourceId: created.id, changedFields: ['subject'] } });
+      return created;
+    });
+  }
+
+  private async notifyVenueRecipients(tx: Prisma.TransactionClient, identity: Identity, venueId: string, kind: string, title: string, body: string) {
+    const recipients = await tx.venueNoticeRecipient.findMany({ where: { organizationId: identity.tenantId, venueId }, select: { subject: true } });
+    for (const recipient of recipients) {
+      if (recipient.subject === identity.subject) continue;
+      await tx.venueNotice.create({ data: { organizationId: identity.tenantId, venueId, recipientSubject: recipient.subject, kind, title, body } });
+    }
   }
 
   async createLocation(identity: Identity, dto: CreateLocationDto, key: string) {

@@ -154,6 +154,8 @@ model Organization {
   integrationCheckpoints       IntegrationSourceCheckpoint[]
   integrationDeadLetters       IntegrationDeadLetter[]
   integrationFieldOwnership    IntegrationFieldOwnership[]
+  venueNoticeRecipients        VenueNoticeRecipient[]
+  venueNotices                 VenueNotice[]
   venueDepartments             VenueDepartment[]
   venueServiceAreas            VenueServiceArea[]
   venueTemplates               VenueTemplate[]
@@ -204,6 +206,8 @@ model Venue {
   departments                 VenueDepartment[]
   serviceAreas                VenueServiceArea[]
   scheduleViews               ScheduleSavedView[]
+  noticeRecipients            VenueNoticeRecipient[]
+  notices                     VenueNotice[]
 
   @@unique([id, organizationId])
   @@index([organizationId])
@@ -329,6 +333,7 @@ model StaffingVendorRequest {
   createdAt          DateTime                     @default(now()) @map("created_at")
   updatedAt          DateTime                     @updatedAt @map("updated_at")
   respondedAt        DateTime?                    @map("responded_at")
+  escalatedAt        DateTime?                    @map("escalated_at")
   fulfilledAt        DateTime?                    @map("fulfilled_at")
   cancelledAt        DateTime?                    @map("cancelled_at")
   organization       Organization                 @relation(fields: [organizationId], references: [id])
@@ -463,6 +468,7 @@ model Person {
   auditEvents            PersonAuditEvent[]
   qualifications         PersonQualification[]
   vendorStaffingRequests StaffingVendorRequest[]
+  venueNoticeRecipients  VenueNoticeRecipient[]
   organization           Organization            @relation(fields: [organizationId], references: [id])
 
   @@unique([organizationId, externalSubject])
@@ -1198,6 +1204,38 @@ model IntegrationFieldOwnership {
 
   @@unique([organizationId, domain])
   @@map("integration_field_ownership")
+}
+
+model VenueNoticeRecipient {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  venueId        String       @map("venue_id") @db.Uuid
+  subject        String
+  assignedBy     String       @map("assigned_by")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  venue          Venue        @relation(fields: [venueId, organizationId], references: [id, organizationId])
+  person         Person       @relation(fields: [organizationId, subject], references: [organizationId, externalSubject])
+
+  @@unique([organizationId, venueId, subject])
+  @@map("venue_notice_recipients")
+}
+
+model VenueNotice {
+  id               String       @id @default(uuid()) @db.Uuid
+  organizationId   String       @map("organization_id") @db.Uuid
+  venueId          String       @map("venue_id") @db.Uuid
+  recipientSubject String       @map("recipient_subject")
+  kind             String
+  title            String
+  body             String
+  createdAt        DateTime     @default(now()) @map("created_at")
+  readAt           DateTime?    @map("read_at")
+  organization     Organization @relation(fields: [organizationId], references: [id])
+  venue            Venue        @relation(fields: [venueId, organizationId], references: [id, organizationId])
+
+  @@index([organizationId, recipientSubject, readAt, createdAt(sort: Desc)])
+  @@map("venue_notices")
 }
 
 model PushDevice {
