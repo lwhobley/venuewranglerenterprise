@@ -1,6 +1,6 @@
 # Signed integration event ingestion
 
-`POST /api/v1/integrations/events` is the provider-neutral ingestion seam for labor, POS, ticketing, and inventory adapters. It stores a normalized event envelope in the tenant-scoped event ledger. `operations.task.upserted` also creates or updates an API-backed task for use in Plan, Staffing, Service, or Stock. It does not call a vendor API or replace any system of record; each customer/vendor still needs an adapter and agreed field mapping.
+`POST /api/v1/integrations/events` is the provider-neutral aggregation seam for labor, POS, ticketing, inventory, and other source adapters. It stores a normalized event envelope in the tenant-scoped event ledger. `operations.task.upserted` also creates or updates an API-backed task for use in Plan, Staffing, Service, or Stock. It does not call a vendor API or replace any system of record; each customer/vendor still needs an adapter and agreed field mapping.
 
 ## Configure a source
 
@@ -19,6 +19,21 @@ Store `INTEGRATION_PROVIDERS_JSON` in Google Secret Manager and pin the version 
 
 Use a different random secret for every integration. Rotate by creating a new pinned Secret Manager version and coordinating the sender before disabling the old credential. `id` is recorded as the event source. An integration ID maps to one tenant and cannot choose a tenant in the request.
 
+## Configure external identifiers
+
+A tenant administrator can register source-specific venue, event, and location identifiers with `PUT /api/v1/integrations/identifiers` using a bearer token. The source must already be configured for that tenant. Example:
+
+```json
+{
+  "source": "arena-labor",
+  "kind": "EVENT",
+  "externalId": "game-88421",
+  "internalId": "20000000-0000-4000-8000-000000000001"
+}
+```
+
+Use `kind` values `VENUE`, `EVENT`, or `LOCATION`. `GET /api/v1/integrations/identifiers` lists the tenant's mappings. Each mapping is scoped to its tenant and source; the API validates that the internal target belongs to the tenant. Registering the same mapping again is safe. To prevent silent rerouting of incoming data, a different target for an existing external identifier returns a conflict. Correcting a mistaken mapping requires an explicit administrative migration; no generic remap endpoint is exposed.
+
 ## Request signature
 
 Send `Content-Type: application/json` and these headers:
@@ -33,19 +48,19 @@ The API accepts timestamps within five minutes and compares signatures in consta
 
 ```json
 {
-  "venueEventId": "20000000-0000-4000-8000-000000000001",
+  "externalVenueId": "arena-17",
+  "externalEventId": "game-88421",
   "externalId": "vendor-record-2026-09-24-001",
   "eventType": "labor.shift.updated",
   "occurredAt": "2026-09-24T18:30:00Z",
   "payload": {
-    "externalVenueId": "arena-17",
     "department": "guest-services",
     "status": "filled"
   }
 }
 ```
 
-Map the external event/venue to the canonical Venue Wrangler event UUID before sending. `externalId` is stable per source and idempotent per tenant. Retrying the same exact payload returns the existing ledger record; reusing the ID for different bytes returns a conflict. Use a fresh timestamp and signature for retries. `GET /api/v1/integrations/events/:eventId` uses the signed-in user's bearer token and requires `operations:read` plus event scope.
+The sender may supply `venueEventId` directly or use a previously configured `externalEventId` mapping. `externalVenueId` is optional and, when present, must map to the resolved event's venue. If both internal and external event IDs are sent, they must resolve to the same event. Unknown or conflicting identifiers are rejected before the event is recorded. `externalId` is stable per source and idempotent per tenant. Retrying the same exact payload returns the existing ledger record; reusing the ID for different bytes returns a conflict. Use a fresh timestamp and signature for retries. `GET /api/v1/integrations/events/:eventId` uses the signed-in user's bearer token and requires `operations:read` plus event scope.
 
 ## Create or refresh an operational task
 
@@ -57,14 +72,14 @@ For task-shaped updates, send `eventType: "operations.task.upserted"` and use a 
   "kind": "STAFFING",
   "title": "Fill guest services shift",
   "description": "Gate 4, event staffing plan",
-  "locationId": "30000000-0000-4000-8000-000000000001",
+  "externalLocationId": "gate-4",
   "dueAt": "2026-09-24T18:00:00Z",
   "expectedQuantity": 12,
   "unit": "staff"
 }
 ```
 
-`externalTaskId` is the stable vendor task key; it must be unique within the configured source and tenant. Supported `kind` values are `PLAN`, `STAFFING`, `SERVICE`, and `STOCK`. A new task starts `OPEN`. Refreshes can change source-owned descriptive, timing, quantity, and location fields, but keep the existing workflow state and assignee under venue control. Only an existing task created by that same integration source can be refreshed; a source cannot claim a human-created task or move its task to another event. Locations must belong to the mapped event's venue. Every import creates an append-only operational-task audit record under the integration identity in the same database transaction as the event ledger write.
+`externalTaskId` is the stable vendor task key; it must be unique within the configured source and tenant. Supported `kind` values are `PLAN`, `STAFFING`, `SERVICE`, and `STOCK`. A new task starts `OPEN`. Refreshes can change source-owned descriptive, timing, quantity, and location fields, but keep the existing workflow state and assignee under venue control. Only an existing task created by that same integration source can be refreshed; a source cannot claim a human-created task or move its task to another event. `externalLocationId` is resolved through the source's location mapping; a direct `locationId` is also accepted. If both are present, they must match. Locations must belong to the mapped event's venue. Every import creates an append-only operational-task audit record under the integration identity in the same database transaction as the event ledger write.
 
 This is a normalized adapter contract, not a ready-made UKG, POS, inventory, or ticketing connector. Build and validate the vendor-specific authentication, polling/webhook handling, ID mapping, and field mapping before enabling a source in a customer tenant.
 

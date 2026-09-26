@@ -148,6 +148,7 @@ model Organization {
   notifications                UserNotification[]
   attachments                  IssueAttachment[]
   integrationEvents            ExternalIntegrationEvent[]
+  integrationIdentifiers       IntegrationIdentifier[]
   pushDevices                  PushDevice[]
   setupAuditEvents             TenantSetupAuditEvent[]
   staffShifts                  StaffShift[]
@@ -1014,6 +1015,24 @@ model ExternalIntegrationEvent {
   @@unique([organizationId, source, externalId])
   @@index([organizationId, eventId, occurredAt(sort: Desc)])
   @@map("external_integration_events")
+}
+
+model IntegrationIdentifier {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  source         String
+  kind           String
+  externalId     String       @map("external_id")
+  internalId     String       @map("internal_id") @db.Uuid
+  createdBy      String       @map("created_by")
+  updatedBy      String       @map("updated_by")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+  organization   Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([organizationId, source, kind, externalId])
+  @@index([organizationId, source, kind, internalId])
+  @@map("integration_identifiers")
 }
 
 model PushDevice {

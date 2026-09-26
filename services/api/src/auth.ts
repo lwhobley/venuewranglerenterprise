@@ -5,8 +5,8 @@ import { createRemoteJWKSet, decodeJwt, jwtVerify, type JWTVerifyGetKey } from '
 import { AuthProvidersService, type SsoProviderConfig } from './auth-providers';
 import { PrismaService } from './prisma.service';
 
-export type Capability = 'issue:report' | 'issue:read' | 'issue:evidence' | 'issue:triage' | 'issue:escalate' | 'issue:resolve' | 'issue:verify' | 'issue:close' | 'operations:read' | 'operations:write' | 'event:closeout' | 'vendor:staffing' | 'hospitality:order' | 'hospitality:fulfill' | 'notification:read' | 'tenant:admin';
-const capabilities = new Set<Capability>(['issue:report', 'issue:read', 'issue:evidence', 'issue:triage', 'issue:escalate', 'issue:resolve', 'issue:verify', 'issue:close', 'operations:read', 'operations:write', 'event:closeout', 'vendor:staffing', 'hospitality:order', 'hospitality:fulfill', 'notification:read', 'tenant:admin']);
+export type Capability = 'issue:report' | 'issue:read' | 'issue:evidence' | 'issue:triage' | 'issue:escalate' | 'issue:resolve' | 'issue:verify' | 'issue:close' | 'operations:read' | 'operations:write' | 'event:closeout' | 'vendor:staffing' | 'hospitality:order' | 'hospitality:fulfill' | 'notification:read' | 'venue:admin' | 'tenant:admin';
+const capabilities = new Set<Capability>(['issue:report', 'issue:read', 'issue:evidence', 'issue:triage', 'issue:escalate', 'issue:resolve', 'issue:verify', 'issue:close', 'operations:read', 'operations:write', 'event:closeout', 'vendor:staffing', 'hospitality:order', 'hospitality:fulfill', 'notification:read', 'venue:admin', 'tenant:admin']);
 const uuidClaimPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export interface Identity {
@@ -108,6 +108,13 @@ export function assertAssignable(identity: Identity, userId: string) {
 
 export function assertTenantAdmin(identity: Identity) {
   if (!identity.capabilities.includes('tenant:admin')) throw new ForbiddenException('Tenant administrator access is required.');
+}
+
+export function assertVenueAdmin(identity: Identity, venueId: string) {
+  if (identity.capabilities.includes('tenant:admin')) return;
+  if (!identity.capabilities.includes('venue:admin') || !identity.venueIds.includes(venueId)) {
+    throw new ForbiddenException('Venue administrator access is required for this venue.');
+  }
 }
 
 export function assertCapability(identity: Identity, capability: Capability) {

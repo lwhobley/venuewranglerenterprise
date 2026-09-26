@@ -2,7 +2,8 @@ import { BadRequestException, ConflictException, Injectable, UnauthorizedExcepti
 import { ConfigService } from '@nestjs/config';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { OperationalTaskKind, Prisma, type OperationalTask } from '@prisma/client';
-import { assertScope, type Identity } from './auth';
+import { assertScope, assertTenantAdmin, type Identity } from './auth';
+import { PutIntegrationIdentifierDto } from './integration.dto';
 import { PrismaService } from './prisma.service';
 
 interface IntegrationProvider {
@@ -40,6 +41,46 @@ export class IntegrationService {
     });
   }
 
+  async identifiers(identity: Identity) {
+    assertTenantAdmin(identity);
+    return this.prisma.withTenant(identity, (tx) => tx.integrationIdentifier.findMany({
+      where: { organizationId: identity.tenantId },
+      orderBy: [{ source: 'asc' }, { kind: 'asc' }, { externalId: 'asc' }],
+    }));
+  }
+
+  async putIdentifier(identity: Identity, dto: PutIntegrationIdentifierDto) {
+    assertTenantAdmin(identity);
+    if (!this.providers.some((provider) => provider.id === dto.source && provider.tenantId === identity.tenantId)) {
+      throw new BadRequestException('The source is not configured for this tenant.');
+    }
+    return this.prisma.withTenant(identity, async (tx) => {
+      const where = { id: dto.internalId, organizationId: identity.tenantId };
+      const target = dto.kind === 'VENUE'
+        ? await tx.venue.findFirst({ where, select: { id: true } })
+        : dto.kind === 'EVENT'
+          ? await tx.event.findFirst({ where, select: { id: true } })
+          : await tx.location.findFirst({ where, select: { id: true } });
+      if (!target) throw new BadRequestException('The identifier target does not exist in this tenant.');
+      const unique = { organizationId_source_kind_externalId: {
+        organizationId: identity.tenantId, source: dto.source, kind: dto.kind, externalId: dto.externalId,
+      } };
+      const mapping = await tx.integrationIdentifier.upsert({
+        where: unique,
+        create: {
+          organizationId: identity.tenantId,
+          source: dto.source, kind: dto.kind, externalId: dto.externalId,
+          internalId: dto.internalId, createdBy: identity.subject, updatedBy: identity.subject,
+        },
+        update: {},
+      });
+      if (mapping.internalId !== dto.internalId) {
+        throw new ConflictException('This external identifier already maps to another target. Resolve the mapping before changing it.');
+      }
+      return mapping;
+    });
+  }
+
   async ingest(providerId: string | undefined, timestamp: string | undefined, signature: string | undefined, rawBody: Buffer | undefined, body: unknown) {
     const provider = this.authenticate(providerId, timestamp, signature, rawBody);
     if (!rawBody || rawBody.length === 0 || rawBody.length > 65536) throw new BadRequestException('Integration event body must be between 1 and 65536 bytes.');
@@ -57,8 +98,20 @@ export class IntegrationService {
     const bodySha256 = createHmac('sha256', 'venue-wrangler-integration-event-fingerprint-v1').update(rawBody).digest('hex');
     try {
       const event = await this.prisma.withTenant(identity, async (tx) => {
-        const venueEvent = await tx.event.findFirst({ where: { id: envelope.venueEventId, organizationId: provider.tenantId } });
-        if (!venueEvent) throw new BadRequestException('venueEventId must identify an event in the configured tenant.');
+        const mappedEvent = envelope.externalEventId ? await tx.integrationIdentifier.findUnique({
+          where: { organizationId_source_kind_externalId: { organizationId: provider.tenantId, source: provider.id, kind: 'EVENT', externalId: envelope.externalEventId } },
+        }) : null;
+        if (envelope.externalEventId && !mappedEvent) throw new BadRequestException('externalEventId has no configured mapping for this source.');
+        const resolvedEventId = mappedEvent?.internalId ?? envelope.venueEventId;
+        const venueEvent = await tx.event.findFirst({ where: { id: resolvedEventId, organizationId: provider.tenantId } });
+        if (!venueEvent) throw new BadRequestException('The resolved event does not exist in the configured tenant.');
+        if (envelope.venueEventId && mappedEvent && envelope.venueEventId !== mappedEvent.internalId) throw new ConflictException('Event identifiers resolve to different events.');
+        if (envelope.externalVenueId) {
+          const mappedVenue = await tx.integrationIdentifier.findUnique({
+            where: { organizationId_source_kind_externalId: { organizationId: provider.tenantId, source: provider.id, kind: 'VENUE', externalId: envelope.externalVenueId } },
+          });
+          if (!mappedVenue || mappedVenue.internalId !== venueEvent.venueId) throw new BadRequestException('externalVenueId does not map to the resolved event venue.');
+        }
         const recordedEvent = await tx.externalIntegrationEvent.create({
           data: {
             organizationId: provider.tenantId,
@@ -89,6 +142,17 @@ export class IntegrationService {
 
   private async upsertOperationalTask(tx: Prisma.TransactionClient, identity: Identity, source: string, eventId: string, venueId: string, payload: Record<string, unknown>) {
     const snapshot = this.operationalTaskSnapshot(payload);
+    if (payload.externalLocationId !== undefined && (typeof payload.externalLocationId !== 'string' || payload.externalLocationId.length < 1 || payload.externalLocationId.length > 240)) {
+      throw new BadRequestException('externalLocationId must be 1 to 240 characters.');
+    }
+    if (typeof payload.externalLocationId === 'string') {
+      const mapping = await tx.integrationIdentifier.findUnique({
+        where: { organizationId_source_kind_externalId: { organizationId: identity.tenantId, source, kind: 'LOCATION', externalId: payload.externalLocationId } },
+      });
+      if (!mapping) throw new BadRequestException('externalLocationId has no configured mapping for this source.');
+      if (snapshot.locationId && snapshot.locationId !== mapping.internalId) throw new ConflictException('Location identifiers resolve to different locations.');
+      snapshot.locationId = mapping.internalId;
+    }
     await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`task:${identity.tenantId}:${source}:${snapshot.externalTaskId}`}, 0))`;
     if (snapshot.locationId && !await tx.location.findFirst({ where: { id: snapshot.locationId, organizationId: identity.tenantId, venueId } })) {
       throw new BadRequestException('The task location must belong to the mapped venue event.');
@@ -203,12 +267,18 @@ export class IntegrationService {
   private envelope(input: unknown) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new BadRequestException('Integration event must be a JSON object.');
     const value = input as Record<string, unknown>;
-    if (typeof value.venueEventId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.venueEventId)) throw new BadRequestException('venueEventId must be a canonical Venue Wrangler event UUID.');
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (value.venueEventId !== undefined && (typeof value.venueEventId !== 'string' || !uuid.test(value.venueEventId))) throw new BadRequestException('venueEventId must be a canonical Venue Wrangler event UUID.');
+    if (typeof value.externalEventId !== 'string' && value.venueEventId === undefined) throw new BadRequestException('venueEventId or externalEventId is required.');
+    for (const field of ['externalEventId', 'externalVenueId']) {
+      const identifier = value[field];
+      if (identifier !== undefined && (typeof identifier !== 'string' || identifier.length < 1 || identifier.length > 240)) throw new BadRequestException(`${field} must be 1 to 240 characters.`);
+    }
     if (typeof value.externalId !== 'string' || !value.externalId.trim() || value.externalId.trim().length > 240) throw new BadRequestException('externalId must be 1 to 240 characters.');
     if (typeof value.eventType !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,119}$/.test(value.eventType)) throw new BadRequestException('eventType must be a short event name.');
     if (typeof value.occurredAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T/.test(value.occurredAt) || !Number.isFinite(Date.parse(value.occurredAt))) throw new BadRequestException('occurredAt must be an ISO 8601 timestamp.');
     if (!value.payload || typeof value.payload !== 'object' || Array.isArray(value.payload)) throw new BadRequestException('payload must be a JSON object.');
     if (Buffer.byteLength(JSON.stringify(value.payload), 'utf8') > 60000) throw new BadRequestException('payload must be at most 60000 bytes when normalized.');
-    return { venueEventId: value.venueEventId, externalId: value.externalId.trim(), eventType: value.eventType, occurredAt: new Date(value.occurredAt), payload: value.payload as Record<string, unknown> };
+    return { venueEventId: value.venueEventId as string | undefined, externalEventId: value.externalEventId as string | undefined, externalVenueId: value.externalVenueId as string | undefined, externalId: value.externalId.trim(), eventType: value.eventType, occurredAt: new Date(value.occurredAt), payload: value.payload as Record<string, unknown> };
   }
 }

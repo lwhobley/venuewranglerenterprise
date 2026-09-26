@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, Injectable,
 import { formatVenueLocal, isAbsoluteInstant, venueLocalToUtc } from './venue-time';
 import { Prisma } from '@prisma/client';
 import { createHash } from 'node:crypto';
-import { assertScope, assertTenantAdmin, Identity } from './auth';
+import { assertScope, assertTenantAdmin, assertVenueAdmin, Identity } from './auth';
 import { CreateEventDto, CreateLocationDto, CreateOperationalTaskDto, CreateVenueDto, UpdateEventDto, UpdateLocationDto, UpdateOperationalTaskDto, UpdateVenueDto, UpsertPersonDto } from './operations.dto';
 import { PrismaService } from './prisma.service';
 import { GrantPersonQualificationDto } from './qualification.dto';
@@ -55,9 +55,10 @@ export class OperationsService {
         await this.auditPersonMutation(tx, identity, person.id, previousPerson ? 'updated' : 'created', changedFields);
       }
       const admin = identity.capabilities.includes('tenant:admin');
+      const venueAdmin = identity.capabilities.includes('venue:admin');
       const venues = await tx.venue.findMany({ where: admin ? { organizationId: identity.tenantId } : { id: { in: identity.venueIds }, organizationId: identity.tenantId }, orderBy: { name: 'asc' } });
-      const events = (await tx.event.findMany({ where: admin ? { organizationId: identity.tenantId } : { id: { in: identity.eventIds }, venueId: { in: identity.venueIds }, organizationId: identity.tenantId }, include: { closeout: { select: { state: true } } }, orderBy: { startsAt: 'asc' } })).map((event) => this.presentEvent(event, venues.find((venue) => venue.id === event.venueId)?.timeZone));
-      const locations = await tx.location.findMany({ where: admin ? { organizationId: identity.tenantId } : { id: { in: identity.locationIds }, venueId: { in: identity.venueIds }, organizationId: identity.tenantId }, orderBy: { name: 'asc' } });
+      const events = (await tx.event.findMany({ where: admin ? { organizationId: identity.tenantId } : { ...(venueAdmin ? {} : { id: { in: identity.eventIds } }), venueId: { in: identity.venueIds }, organizationId: identity.tenantId }, include: { closeout: { select: { state: true } } }, orderBy: { startsAt: 'asc' } })).map((event) => this.presentEvent(event, venues.find((venue) => venue.id === event.venueId)?.timeZone));
+      const locations = await tx.location.findMany({ where: admin ? { organizationId: identity.tenantId } : { ...(venueAdmin ? {} : { id: { in: identity.locationIds } }), venueId: { in: identity.venueIds }, organizationId: identity.tenantId }, orderBy: { name: 'asc' } });
       const people = await tx.person.findMany({ where: { organizationId: identity.tenantId, ...(!admin ? { active: true, externalSubject: { in: identity.assignableUserIds } } : {}) }, include: { qualifications: { where: { revokedAt: null }, select: { id: true, code: true, name: true, expiresAt: true, revokedAt: true, ...(admin ? { evidenceStatus: true, evidenceFileName: true, evidenceContentType: true, evidenceSizeBytes: true, evidenceUploadedAt: true, evidenceReviewedAt: true, evidenceReviewReason: true } : {}) }, orderBy: [{ code: 'asc' }] } }, orderBy: { displayName: 'asc' } });
       const directory = people.map(({ provisioningSource, ...person }) => admin ? { ...person, provisioningSource } : person);
       return { organization: { id: org.id, slug: org.slug, name: org.name }, identity: { subject: identity.subject, capabilities: identity.capabilities, assignableUserIds: identity.assignableUserIds }, venues, events, locations, people: directory };
@@ -103,7 +104,7 @@ export class OperationsService {
   }
 
   async updateVenue(identity: Identity, venueId: string, dto: UpdateVenueDto, key: string) {
-    assertTenantAdmin(identity);
+    assertVenueAdmin(identity, venueId);
     const input = this.setupPatch({ name: dto.name?.trim(), timeZone: dto.timeZone?.trim() });
     if (input.timeZone !== undefined) this.requireTimeZone(input.timeZone);
     return this.command(identity, key, 'venue.update', { venueId, ...input }, async (tx) => {
@@ -121,7 +122,7 @@ export class OperationsService {
   }
 
   async venueReadiness(identity: Identity, venueId: string) {
-    assertTenantAdmin(identity);
+    assertVenueAdmin(identity, venueId);
     return this.prisma.withTenant(identity, async (tx) => {
       const venue = await tx.venue.findFirst({
         where: { id: venueId, organizationId: identity.tenantId },
@@ -170,7 +171,7 @@ export class OperationsService {
   }
 
   async createLocation(identity: Identity, dto: CreateLocationDto, key: string) {
-    assertTenantAdmin(identity);
+    assertVenueAdmin(identity, dto.venueId);
     const input = { venueId: dto.venueId, name: dto.name.trim() };
     return this.command(identity, key, 'location.create', input, async (tx) => {
       const venue = await tx.venue.findFirst({ where: { id: dto.venueId, organizationId: identity.tenantId } });
@@ -189,11 +190,15 @@ export class OperationsService {
   }
 
   async updateLocation(identity: Identity, locationId: string, dto: UpdateLocationDto, key: string) {
-    assertTenantAdmin(identity);
+    const scopedLocation = await this.prisma.withTenant(identity, (tx) =>
+      tx.location.findFirst({ where: { id: locationId, organizationId: identity.tenantId }, select: { venueId: true } }));
+    if (!scopedLocation) throw new NotFoundException('Location not found in this organization.');
+    assertVenueAdmin(identity, scopedLocation.venueId);
     const input = this.setupPatch({ name: dto.name?.trim() });
     return this.command(identity, key, 'location.update', { locationId, ...input }, async (tx) => {
       const current = await tx.location.findFirst({ where: { id: locationId, organizationId: identity.tenantId } });
       if (!current) throw new NotFoundException('Location not found in this organization.');
+      assertVenueAdmin(identity, current.venueId);
       const changedFields = Object.keys(input).filter((field) => current[field as keyof typeof current] !== input[field as keyof typeof input]);
       if (changedFields.length === 0) return current;
       const updated = await tx.location.update({ where: { id: locationId }, data: input });
@@ -203,7 +208,7 @@ export class OperationsService {
   }
 
   async createEvent(identity: Identity, dto: CreateEventDto, key: string) {
-    assertTenantAdmin(identity);
+    assertVenueAdmin(identity, dto.venueId);
     const input = { venueId: dto.venueId, name: dto.name.trim(), startsAt: dto.startsAt, startsAtLocal: dto.startsAtLocal };
     return this.command(identity, key, 'event.create', input, async (tx) => {
       const venue = await tx.venue.findFirst({
@@ -230,7 +235,10 @@ export class OperationsService {
   }
 
   async updateEvent(identity: Identity, eventId: string, dto: UpdateEventDto, key: string) {
-    assertTenantAdmin(identity);
+    const scopedEvent = await this.prisma.withTenant(identity, (tx) =>
+      tx.event.findFirst({ where: { id: eventId, organizationId: identity.tenantId }, select: { venueId: true } }));
+    if (!scopedEvent) throw new NotFoundException('Event not found in this organization.');
+    assertVenueAdmin(identity, scopedEvent.venueId);
     const input = this.setupPatch({ name: dto.name?.trim(), startsAt: dto.startsAt, startsAtLocal: dto.startsAtLocal });
     return this.command(identity, key, 'event.update', { eventId, ...input }, async (tx) => {
       await tx.$queryRaw`SELECT id FROM events WHERE id = ${eventId}::uuid AND organization_id = ${identity.tenantId}::uuid FOR UPDATE`;
@@ -239,6 +247,7 @@ export class OperationsService {
         include: { closeout: { select: { state: true } } },
       });
       if (!current) throw new NotFoundException('Event not found in this organization.');
+      assertVenueAdmin(identity, current.venueId);
       if (current.closeout?.state === 'CLOSED') throw new ConflictException('A finalized event cannot be edited. Add a post-close correction instead.');
       const venue = await tx.venue.findFirst({ where: { id: current.venueId, organizationId: identity.tenantId }, select: { timeZone: true } });
       const startsAt = dto.startsAt !== undefined || dto.startsAtLocal !== undefined ? this.resolveEventStart(dto, venue?.timeZone ?? '') : undefined;

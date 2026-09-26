@@ -291,7 +291,9 @@ List<String> liveTabsForCapabilities(Set<String> capabilities) => [
           capabilities.contains('tenant:admin'))
         'Vendors',
       if (capabilities.contains('event:closeout')) 'Closeout',
-      if (capabilities.contains('tenant:admin')) 'Setup',
+      if (capabilities.contains('tenant:admin') ||
+          capabilities.contains('venue:admin'))
+        'Setup',
     ];
 
 String notificationTargetTab(Map<String, dynamic> notification) {
@@ -414,6 +416,7 @@ class _LiveOperationsHome extends ConsumerWidget {
           .state = event['id'] as String);
     }
     final isAdmin = caps.contains('tenant:admin');
+    final isVenueAdmin = caps.contains('venue:admin');
     final tabs = liveTabsForCapabilities(caps);
     final selectedTab =
         ref.watch(_liveTabProvider).clamp(0, tabs.length - 1).toInt();
@@ -426,8 +429,9 @@ class _LiveOperationsHome extends ConsumerWidget {
             ?.where((row) => (row as Map)['readAt'] == null)
             .length ??
         0;
-    final page = tabs[selectedTab] == 'Setup' && isAdmin
+    final page = tabs[selectedTab] == 'Setup' && (isAdmin || isVenueAdmin)
         ? _TenantSetupPage(
+            isTenantAdmin: isAdmin,
             organization: org,
             venues: venues,
             locations: locations,
@@ -440,7 +444,7 @@ class _LiveOperationsHome extends ConsumerWidget {
             onSaved: () => ref.invalidate(operationsBootstrapProvider))
         : event == null
             ? _NoEventsPage(
-                isAdmin: isAdmin,
+                isAdmin: isAdmin || isVenueAdmin,
                 onSetup: () => ref.read(_liveTabProvider.notifier).state =
                     tabs.indexOf('Setup'))
             : switch (tabs[selectedTab]) {
@@ -500,6 +504,7 @@ class _LiveOperationsHome extends ConsumerWidget {
                         .map((e) => Map<String, dynamic>.from(e))
                         .toList()),
                 'Setup' => _TenantSetupPage(
+                    isTenantAdmin: isAdmin,
                     organization: org,
                     venues: venues,
                     locations: locations,
@@ -538,7 +543,7 @@ class _LiveOperationsHome extends ConsumerWidget {
     final isCompact = MediaQuery.sizeOf(context).width < 600;
     final isDesktop = MediaQuery.sizeOf(context).width >= 1024;
     final mobilePrimaryTabs = <String>['Today'];
-    if (isAdmin) mobilePrimaryTabs.add('Setup');
+    if (isAdmin || isVenueAdmin) mobilePrimaryTabs.add('Setup');
     if (caps.contains('vendor:staffing') &&
         !caps.contains('operations:write')) {
       mobilePrimaryTabs.add('Vendors');
@@ -900,8 +905,7 @@ class _NoEventsPage extends StatelessWidget {
                 textAlign: TextAlign.center),
             if (isAdmin) ...[
               const SizedBox(height: 16),
-              FilledButton(
-                  onPressed: onSetup, child: const Text('Set up organization'))
+              FilledButton(onPressed: onSetup, child: const Text('Open setup'))
             ]
           ])));
 }
@@ -5141,13 +5145,15 @@ Future<void> _newLiveShift(
 
 class _TenantSetupPage extends StatelessWidget {
   const _TenantSetupPage(
-      {required this.organization,
+      {required this.isTenantAdmin,
+      required this.organization,
       required this.venues,
       required this.locations,
       required this.events,
       required this.people,
       required this.api,
       required this.onSaved});
+  final bool isTenantAdmin;
   final Map<String, dynamic> organization;
   final List<Map<String, dynamic>> venues;
   final List<Map<String, dynamic>> locations;
@@ -5157,37 +5163,40 @@ class _TenantSetupPage extends StatelessWidget {
   final VoidCallback onSaved;
   @override
   Widget build(BuildContext context) => ListView(children: [
-        Text('Organization setup',
+        Text(isTenantAdmin ? 'Organization setup' : 'Venue setup',
             style: Theme.of(context)
                 .textTheme
                 .headlineSmall
                 ?.copyWith(fontWeight: FontWeight.w800)),
         const SizedBox(height: 8),
-        const Text(
-            'Your organization identity comes from the verified sign-in tenant. Staff profiles come from Okta, Microsoft Entra ID, or SCIM; first sign-in provisions a profile automatically.'),
-        const SizedBox(height: 12),
-        Card(
-            child: ListTile(
-          leading: const Icon(Icons.business_outlined),
-          title: Text(organization['name'] as String? ?? 'Organization'),
-          subtitle: Text(
-              'Organization display name · ${organization['slug'] ?? 'Managed by identity configuration'}'),
-          trailing: IconButton(
-              tooltip: 'Edit organization display name',
-              icon: const Icon(Icons.edit_outlined),
-              onPressed: () => _editOrganization(context)),
-        )),
+        if (isTenantAdmin) ...[
+          const Text(
+              'Your organization identity comes from the verified sign-in tenant. Staff profiles come from Okta, Microsoft Entra ID, or SCIM; first sign-in provisions a profile automatically.'),
+          const SizedBox(height: 12),
+          Card(
+              child: ListTile(
+            leading: const Icon(Icons.business_outlined),
+            title: Text(organization['name'] as String? ?? 'Organization'),
+            subtitle: Text(
+                'Organization display name · ${organization['slug'] ?? 'Managed by identity configuration'}'),
+            trailing: IconButton(
+                tooltip: 'Edit organization display name',
+                icon: const Icon(Icons.edit_outlined),
+                onPressed: () => _editOrganization(context)),
+          )),
+        ],
         const SizedBox(height: 8),
         const Text('Configure the venue structure used by event operations.'),
         const SizedBox(height: 8),
-        OutlinedButton.icon(
-            onPressed: () => showModalBottomSheet<void>(
-                context: context,
-                isScrollControlled: true,
-                builder: (_) => FractionallySizedBox(
-                    heightFactor: 0.82, child: _AuditTrail(api: api))),
-            icon: const Icon(Icons.history),
-            label: const Text('View audit history')),
+        if (isTenantAdmin)
+          OutlinedButton.icon(
+              onPressed: () => showModalBottomSheet<void>(
+                  context: context,
+                  isScrollControlled: true,
+                  builder: (_) => FractionallySizedBox(
+                      heightFactor: 0.82, child: _AuditTrail(api: api))),
+              icon: const Icon(Icons.history),
+              label: const Text('View audit history')),
         const SizedBox(height: 16),
         ...venues.map((v) {
           final state = v['lifecycleState'] as String? ?? 'DRAFT';
@@ -5203,14 +5212,15 @@ class _TenantSetupPage extends StatelessWidget {
                     tooltip: 'Edit venue',
                     icon: const Icon(Icons.edit_outlined),
                     onPressed: () => _editVenue(context, v))),
-            Align(
-                alignment: AlignmentDirectional.centerEnd,
-                child: TextButton.icon(
-                    onPressed: () => _reviewVenue(context, v),
-                    icon: const Icon(Icons.fact_check_outlined),
-                    label: Text(state == 'ACTIVE'
-                        ? 'Review / suspend'
-                        : 'Review readiness'))),
+            if (isTenantAdmin)
+              Align(
+                  alignment: AlignmentDirectional.centerEnd,
+                  child: TextButton.icon(
+                      onPressed: () => _reviewVenue(context, v),
+                      icon: const Icon(Icons.fact_check_outlined),
+                      label: Text(state == 'ACTIVE'
+                          ? 'Review / suspend'
+                          : 'Review readiness'))),
           ]));
         }),
         if (locations.isNotEmpty) ...[
@@ -5268,10 +5278,11 @@ class _TenantSetupPage extends StatelessWidget {
         ],
         const SizedBox(height: 12),
         Wrap(spacing: 8, runSpacing: 8, children: [
-          FilledButton.icon(
-              onPressed: () => _create(context, 'venue'),
-              icon: const Icon(Icons.add),
-              label: const Text('Add venue')),
+          if (isTenantAdmin)
+            FilledButton.icon(
+                onPressed: () => _create(context, 'venue'),
+                icon: const Icon(Icons.add),
+                label: const Text('Add venue')),
           OutlinedButton.icon(
               onPressed:
                   venues.isEmpty ? null : () => _create(context, 'location'),
@@ -5283,144 +5294,150 @@ class _TenantSetupPage extends StatelessWidget {
                   : null,
               icon: const Icon(Icons.event_outlined),
               label: const Text('Add event')),
-          OutlinedButton.icon(
-              onPressed: () => _create(context, 'person'),
-              icon: const Icon(Icons.person_add_alt),
-              label: const Text('Add person')),
-          OutlinedButton.icon(
-              onPressed: () => _configureRestPolicy(context),
-              icon: const Icon(Icons.schedule_outlined),
-              label: const Text('Staffing rest policy'))
+          if (isTenantAdmin)
+            OutlinedButton.icon(
+                onPressed: () => _create(context, 'person'),
+                icon: const Icon(Icons.person_add_alt),
+                label: const Text('Add person')),
+          if (isTenantAdmin)
+            OutlinedButton.icon(
+                onPressed: () => _configureRestPolicy(context),
+                icon: const Icon(Icons.schedule_outlined),
+                label: const Text('Staffing rest policy'))
         ]),
-        const SizedBox(height: 24),
-        Text('People directory (${people.length})',
-            style: Theme.of(context)
-                .textTheme
-                .titleMedium
-                ?.copyWith(fontWeight: FontWeight.w800)),
-        ...people.map((person) {
-          final qualifications = (person['qualifications'] as List? ?? const [])
-              .map((item) => Map<String, dynamic>.from(item as Map))
-              .toList();
-          return Card(
-              child: Column(children: [
-            ListTile(
-              leading: const Icon(Icons.person_outline),
-              title: Text(person['displayName'] as String? ?? 'Person'),
-              subtitle: Text(
-                  '${person['email'] as String? ?? ''}${person['active'] == false ? ' · Deactivated' : ''}'),
-              trailing: PopupMenuButton<String>(
-                tooltip: 'Manage person',
-                onSelected: (action) {
-                  if (action == 'qualification') {
-                    _grantQualification(context, person);
-                  }
-                  if (action == 'activate' || action == 'deactivate') {
-                    _setPersonActive(context, person, action == 'activate');
-                  }
-                },
-                itemBuilder: (_) => [
-                  const PopupMenuItem(
-                      value: 'qualification',
-                      child: ListTile(
-                          leading: Icon(Icons.workspace_premium_outlined),
-                          title: Text('Grant qualification'))),
-                  if (person['provisioningSource'] == 'scim')
+        if (isTenantAdmin) ...[
+          const SizedBox(height: 24),
+          Text('People directory (${people.length})',
+              style: Theme.of(context)
+                  .textTheme
+                  .titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w800)),
+          ...people.map((person) {
+            final qualifications =
+                (person['qualifications'] as List? ?? const [])
+                    .map((item) => Map<String, dynamic>.from(item as Map))
+                    .toList();
+            return Card(
+                child: Column(children: [
+              ListTile(
+                leading: const Icon(Icons.person_outline),
+                title: Text(person['displayName'] as String? ?? 'Person'),
+                subtitle: Text(
+                    '${person['email'] as String? ?? ''}${person['active'] == false ? ' · Deactivated' : ''}'),
+                trailing: PopupMenuButton<String>(
+                  tooltip: 'Manage person',
+                  onSelected: (action) {
+                    if (action == 'qualification') {
+                      _grantQualification(context, person);
+                    }
+                    if (action == 'activate' || action == 'deactivate') {
+                      _setPersonActive(context, person, action == 'activate');
+                    }
+                  },
+                  itemBuilder: (_) => [
                     const PopupMenuItem(
-                        enabled: false,
+                        value: 'qualification',
                         child: ListTile(
-                            leading: Icon(Icons.sync_lock_outlined),
-                            title: Text('Status managed by SCIM')))
-                  else if (person['provisioningSource'] == 'unknown')
-                    const PopupMenuItem(
-                        enabled: false,
-                        child: ListTile(
-                            leading: Icon(Icons.help_outline),
-                            title: Text('Roster source needs review')))
-                  else
-                    PopupMenuItem(
-                        value: person['active'] == false
-                            ? 'activate'
-                            : 'deactivate',
-                        child: ListTile(
-                            leading: Icon(person['active'] == false
-                                ? Icons.person_add_alt
-                                : Icons.person_off_outlined),
-                            title: Text(person['active'] == false
-                                ? 'Reactivate account'
-                                : 'Deactivate account'))),
-                ],
-              ),
-            ),
-            ...qualifications.map((qualification) {
-              final expiry = DateTime.tryParse(
-                  qualification['expiresAt'] as String? ?? '');
-              final expired = expiry != null && expiry.isBefore(DateTime.now());
-              final evidenceStatus =
-                  qualification['evidenceStatus'] as String? ?? 'NONE';
-              return Column(children: [
-                ListTile(
-                  dense: true,
-                  leading: Icon(expired || evidenceStatus == 'REJECTED'
-                      ? Icons.warning_amber
-                      : evidenceStatus == 'VERIFIED'
-                          ? Icons.verified
-                          : evidenceStatus == 'PENDING_REVIEW'
-                              ? Icons.pending_outlined
-                              : Icons.workspace_premium_outlined),
-                  title: Text(
-                      '${qualification['name']} · ${qualification['code']}'),
-                  subtitle: Text(
-                      '${expiry == null ? 'No expiry recorded' : '${expired ? 'Expired' : 'Valid through'} ${expiry.month}/${expiry.day}/${expiry.year}'} · Evidence: ${evidenceStatus.replaceAll('_', ' ').toLowerCase()}${qualification['evidenceFileName'] == null ? '' : '\n${qualification['evidenceFileName']}'}${qualification['evidenceReviewReason'] == null ? '' : '\nReview: ${qualification['evidenceReviewReason']}'}'),
-                  trailing: IconButton(
-                      tooltip: 'Revoke qualification',
-                      icon: const Icon(Icons.remove_circle_outline),
-                      onPressed: () async {
-                        try {
-                          await api.revokeQualification(
-                              qualification['id'] as String);
-                          onSaved();
-                        } catch (error) {
-                          if (context.mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                                content: Text(
-                                    'Could not revoke credential: $error')));
-                          }
-                        }
-                      }),
+                            leading: Icon(Icons.workspace_premium_outlined),
+                            title: Text('Grant qualification'))),
+                    if (person['provisioningSource'] == 'scim')
+                      const PopupMenuItem(
+                          enabled: false,
+                          child: ListTile(
+                              leading: Icon(Icons.sync_lock_outlined),
+                              title: Text('Status managed by SCIM')))
+                    else if (person['provisioningSource'] == 'unknown')
+                      const PopupMenuItem(
+                          enabled: false,
+                          child: ListTile(
+                              leading: Icon(Icons.help_outline),
+                              title: Text('Roster source needs review')))
+                    else
+                      PopupMenuItem(
+                          value: person['active'] == false
+                              ? 'activate'
+                              : 'deactivate',
+                          child: ListTile(
+                              leading: Icon(person['active'] == false
+                                  ? Icons.person_add_alt
+                                  : Icons.person_off_outlined),
+                              title: Text(person['active'] == false
+                                  ? 'Reactivate account'
+                                  : 'Deactivate account'))),
+                  ],
                 ),
-                Align(
-                    alignment: Alignment.centerLeft,
-                    child: Wrap(spacing: 4, children: [
-                      if (evidenceStatus == 'NONE' ||
-                          evidenceStatus == 'UPLOADING' ||
-                          evidenceStatus == 'REJECTED')
-                        TextButton.icon(
-                            onPressed: () => _uploadQualificationEvidence(
-                                context, qualification),
-                            icon: const Icon(Icons.upload_file_outlined),
-                            label: Text(evidenceStatus == 'UPLOADING'
-                                ? 'Retry upload'
-                                : 'Upload photo')),
-                      if (evidenceStatus == 'PENDING_REVIEW' ||
-                          evidenceStatus == 'VERIFIED' ||
-                          evidenceStatus == 'REJECTED')
-                        TextButton.icon(
-                            onPressed: () => _openQualificationEvidence(
-                                context, qualification),
-                            icon: const Icon(Icons.open_in_new),
-                            label: const Text('Open evidence')),
-                      if (evidenceStatus == 'PENDING_REVIEW')
-                        FilledButton.tonalIcon(
-                            onPressed: () => _reviewQualificationEvidence(
-                                context, qualification),
-                            icon: const Icon(Icons.fact_check_outlined),
-                            label: const Text('Review')),
-                    ])),
-              ]);
-            }),
-          ]));
-        })
+              ),
+              ...qualifications.map((qualification) {
+                final expiry = DateTime.tryParse(
+                    qualification['expiresAt'] as String? ?? '');
+                final expired =
+                    expiry != null && expiry.isBefore(DateTime.now());
+                final evidenceStatus =
+                    qualification['evidenceStatus'] as String? ?? 'NONE';
+                return Column(children: [
+                  ListTile(
+                    dense: true,
+                    leading: Icon(expired || evidenceStatus == 'REJECTED'
+                        ? Icons.warning_amber
+                        : evidenceStatus == 'VERIFIED'
+                            ? Icons.verified
+                            : evidenceStatus == 'PENDING_REVIEW'
+                                ? Icons.pending_outlined
+                                : Icons.workspace_premium_outlined),
+                    title: Text(
+                        '${qualification['name']} · ${qualification['code']}'),
+                    subtitle: Text(
+                        '${expiry == null ? 'No expiry recorded' : '${expired ? 'Expired' : 'Valid through'} ${expiry.month}/${expiry.day}/${expiry.year}'} · Evidence: ${evidenceStatus.replaceAll('_', ' ').toLowerCase()}${qualification['evidenceFileName'] == null ? '' : '\n${qualification['evidenceFileName']}'}${qualification['evidenceReviewReason'] == null ? '' : '\nReview: ${qualification['evidenceReviewReason']}'}'),
+                    trailing: IconButton(
+                        tooltip: 'Revoke qualification',
+                        icon: const Icon(Icons.remove_circle_outline),
+                        onPressed: () async {
+                          try {
+                            await api.revokeQualification(
+                                qualification['id'] as String);
+                            onSaved();
+                          } catch (error) {
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                                  content: Text(
+                                      'Could not revoke credential: $error')));
+                            }
+                          }
+                        }),
+                  ),
+                  Align(
+                      alignment: Alignment.centerLeft,
+                      child: Wrap(spacing: 4, children: [
+                        if (evidenceStatus == 'NONE' ||
+                            evidenceStatus == 'UPLOADING' ||
+                            evidenceStatus == 'REJECTED')
+                          TextButton.icon(
+                              onPressed: () => _uploadQualificationEvidence(
+                                  context, qualification),
+                              icon: const Icon(Icons.upload_file_outlined),
+                              label: Text(evidenceStatus == 'UPLOADING'
+                                  ? 'Retry upload'
+                                  : 'Upload photo')),
+                        if (evidenceStatus == 'PENDING_REVIEW' ||
+                            evidenceStatus == 'VERIFIED' ||
+                            evidenceStatus == 'REJECTED')
+                          TextButton.icon(
+                              onPressed: () => _openQualificationEvidence(
+                                  context, qualification),
+                              icon: const Icon(Icons.open_in_new),
+                              label: const Text('Open evidence')),
+                        if (evidenceStatus == 'PENDING_REVIEW')
+                          FilledButton.tonalIcon(
+                              onPressed: () => _reviewQualificationEvidence(
+                                  context, qualification),
+                              icon: const Icon(Icons.fact_check_outlined),
+                              label: const Text('Review')),
+                      ])),
+                ]);
+              }),
+            ]));
+          })
+        ]
       ]);
   Future<void> _setPersonActive(
       BuildContext context, Map<String, dynamic> person, bool active) async {
