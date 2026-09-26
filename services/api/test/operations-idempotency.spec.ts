@@ -268,6 +268,24 @@ describe('tenant setup command idempotency', () => {
     }, 'event-create-draft-key-01')).rejects.toThrow('Activate this venue');
   });
 
+  it('stores a venue-local event start instead of treating it as UTC', async () => {
+    const tx = setupUpdateTx({ venue: {
+      findFirst: vi.fn().mockResolvedValue({
+        id: 'venue-1', organizationId: admin.tenantId, lifecycleState: 'ACTIVE',
+        timeZone: 'America/Chicago', _count: { locations: 1 },
+      }),
+    }, event: { create: vi.fn().mockImplementation(({ data }) => ({ id: 'event-1', ...data })) } });
+    const service = new OperationsService(setupUpdatePrisma(tx));
+
+    await service.createEvent(admin, {
+      venueId: 'venue-1', name: 'Opening Night', startsAtLocal: '2027-01-01T20:00',
+    }, 'event-create-local-key-01');
+
+    expect(tx.event.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+      startsAt: new Date('2027-01-02T02:00:00.000Z'),
+    }) });
+  });
+
   it('updates a location without allowing its venue scope to be changed', async () => {
     const updatedLocation = { id: 'location-1', organizationId: admin.tenantId, venueId: 'venue-1', name: 'West Concourse' };
     const tx = setupUpdateTx({ location: {

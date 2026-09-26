@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { formatVenueLocal, isAbsoluteInstant, venueLocalToUtc } from './venue-time';
 import { Prisma } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { assertScope, assertTenantAdmin, Identity } from './auth';
@@ -55,7 +56,7 @@ export class OperationsService {
       }
       const admin = identity.capabilities.includes('tenant:admin');
       const venues = await tx.venue.findMany({ where: admin ? { organizationId: identity.tenantId } : { id: { in: identity.venueIds }, organizationId: identity.tenantId }, orderBy: { name: 'asc' } });
-      const events = await tx.event.findMany({ where: admin ? { organizationId: identity.tenantId } : { id: { in: identity.eventIds }, venueId: { in: identity.venueIds }, organizationId: identity.tenantId }, include: { closeout: { select: { state: true } } }, orderBy: { startsAt: 'asc' } });
+      const events = (await tx.event.findMany({ where: admin ? { organizationId: identity.tenantId } : { id: { in: identity.eventIds }, venueId: { in: identity.venueIds }, organizationId: identity.tenantId }, include: { closeout: { select: { state: true } } }, orderBy: { startsAt: 'asc' } })).map((event) => this.presentEvent(event, venues.find((venue) => venue.id === event.venueId)?.timeZone));
       const locations = await tx.location.findMany({ where: admin ? { organizationId: identity.tenantId } : { id: { in: identity.locationIds }, venueId: { in: identity.venueIds }, organizationId: identity.tenantId }, orderBy: { name: 'asc' } });
       const people = await tx.person.findMany({ where: { organizationId: identity.tenantId, ...(!admin ? { active: true, externalSubject: { in: identity.assignableUserIds } } : {}) }, include: { qualifications: { where: { revokedAt: null }, select: { id: true, code: true, name: true, expiresAt: true, revokedAt: true, ...(admin ? { evidenceStatus: true, evidenceFileName: true, evidenceContentType: true, evidenceSizeBytes: true, evidenceUploadedAt: true, evidenceReviewedAt: true, evidenceReviewReason: true } : {}) }, orderBy: [{ code: 'asc' }] } }, orderBy: { displayName: 'asc' } });
       const directory = people.map(({ provisioningSource, ...person }) => admin ? { ...person, provisioningSource } : person);
@@ -203,7 +204,7 @@ export class OperationsService {
 
   async createEvent(identity: Identity, dto: CreateEventDto, key: string) {
     assertTenantAdmin(identity);
-    const input = { venueId: dto.venueId, name: dto.name.trim(), startsAt: new Date(dto.startsAt).toISOString() };
+    const input = { venueId: dto.venueId, name: dto.name.trim(), startsAt: dto.startsAt, startsAtLocal: dto.startsAtLocal };
     return this.command(identity, key, 'event.create', input, async (tx) => {
       const venue = await tx.venue.findFirst({
         where: { id: dto.venueId, organizationId: identity.tenantId },
@@ -213,7 +214,8 @@ export class OperationsService {
       if (venue.lifecycleState !== 'ACTIVE' || !this.isValidTimeZone(venue.timeZone) || venue._count.locations === 0) {
         throw new ConflictException('Activate this venue after adding a location and setting a valid time zone before creating events.');
       }
-      const event = await tx.event.create({ data: { organizationId: identity.tenantId, venueId: venue.id, name: dto.name.trim(), startsAt: new Date(input.startsAt) } });
+      const startsAt = this.resolveEventStart(dto, venue.timeZone!);
+      const event = await tx.event.create({ data: { organizationId: identity.tenantId, venueId: venue.id, name: dto.name.trim(), startsAt } });
       await tx.tenantSetupAuditEvent.create({ data: {
         organizationId: identity.tenantId,
         actorId: identity.subject,
@@ -223,13 +225,13 @@ export class OperationsService {
         eventId: event.id,
         changedFields: ['name', 'starts_at', 'venue_id'],
       } });
-      return event;
+      return this.presentEvent(event, venue.timeZone);
     });
   }
 
   async updateEvent(identity: Identity, eventId: string, dto: UpdateEventDto, key: string) {
     assertTenantAdmin(identity);
-    const input = this.setupPatch({ name: dto.name?.trim(), startsAt: dto.startsAt ? new Date(dto.startsAt).toISOString() : undefined });
+    const input = this.setupPatch({ name: dto.name?.trim(), startsAt: dto.startsAt, startsAtLocal: dto.startsAtLocal });
     return this.command(identity, key, 'event.update', { eventId, ...input }, async (tx) => {
       await tx.$queryRaw`SELECT id FROM events WHERE id = ${eventId}::uuid AND organization_id = ${identity.tenantId}::uuid FOR UPDATE`;
       const current = await tx.event.findFirst({
@@ -238,14 +240,16 @@ export class OperationsService {
       });
       if (!current) throw new NotFoundException('Event not found in this organization.');
       if (current.closeout?.state === 'CLOSED') throw new ConflictException('A finalized event cannot be edited. Add a post-close correction instead.');
+      const venue = await tx.venue.findFirst({ where: { id: current.venueId, organizationId: identity.tenantId }, select: { timeZone: true } });
+      const startsAt = dto.startsAt !== undefined || dto.startsAtLocal !== undefined ? this.resolveEventStart(dto, venue?.timeZone ?? '') : undefined;
       const changedFields = [
         ...(input.name !== undefined && current.name !== input.name ? ['name'] : []),
-        ...(input.startsAt !== undefined && current.startsAt.toISOString() !== input.startsAt ? ['starts_at'] : []),
+        ...(startsAt !== undefined && current.startsAt.toISOString() !== startsAt.toISOString() ? ['starts_at'] : []),
       ];
-      if (changedFields.length === 0) return current;
-      const updated = await tx.event.update({ where: { id: eventId }, data: { name: input.name, startsAt: input.startsAt ? new Date(input.startsAt) : undefined } });
+      if (changedFields.length === 0) return this.presentEvent(current, venue?.timeZone);
+      const updated = await tx.event.update({ where: { id: eventId }, data: { name: input.name, startsAt } });
       await tx.tenantSetupAuditEvent.create({ data: { organizationId: identity.tenantId, actorId: identity.subject, action: 'updated', resourceType: 'event', resourceId: eventId, eventId, changedFields } });
-      return updated;
+      return this.presentEvent(updated, venue?.timeZone);
     });
   }
 
@@ -458,6 +462,26 @@ export class OperationsService {
         changedFields,
       },
     });
+  }
+
+  private resolveEventStart(dto: { startsAt?: string; startsAtLocal?: string }, timeZone: string): Date {
+    const hasInstant = dto.startsAt !== undefined;
+    const hasLocal = dto.startsAtLocal !== undefined;
+    if (hasInstant === hasLocal) throw new BadRequestException('Provide either an absolute startsAt instant or a venue-local startsAtLocal time, not both.');
+    if (hasLocal) {
+      if (!this.isValidTimeZone(timeZone)) throw new ConflictException('Set a valid venue time zone before scheduling an event.');
+      try {
+        return venueLocalToUtc(dto.startsAtLocal!, timeZone);
+      } catch (error) {
+        throw new ConflictException(error instanceof Error ? error.message : 'That event time is not valid in the venue time zone.');
+      }
+    }
+    if (!isAbsoluteInstant(dto.startsAt!)) throw new BadRequestException('startsAt must include a UTC Z or numeric offset. Send startsAtLocal for a time on the venue clock.');
+    return new Date(dto.startsAt!);
+  }
+
+  private presentEvent<T extends { startsAt: Date }>(event: T, timeZone: string | null | undefined) {
+    return { ...event, timeZone: timeZone ?? null, startsAtLocal: this.isValidTimeZone(timeZone) ? formatVenueLocal(event.startsAt, timeZone!) : null };
   }
 
   private isValidTimeZone(timeZone: string | null | undefined): boolean {

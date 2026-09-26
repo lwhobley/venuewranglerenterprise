@@ -15,6 +15,7 @@ import 'features/hospitality/hospitality_page.dart';
 import 'features/issues/issue_outbox.dart';
 import 'features/issues/secure_evidence_store.dart';
 import 'features/operations/operations_api.dart';
+import 'features/operations/venue_wall_time.dart';
 import 'features/operations/workspace_command_palette.dart';
 import 'features/notifications/push_notifications.dart';
 import 'features/operations/event_closeout_page.dart';
@@ -3132,8 +3133,7 @@ class _LiveStaffingPage extends ConsumerWidget {
                 _TeamAvailabilityPanel(
                   eventId: eventId,
                   initialDate:
-                      DateTime.tryParse(event['startsAt'] as String? ?? '')
-                              ?.toLocal() ??
+                      venueWallCarrier(event['startsAtLocal'] as String?) ??
                           DateTime.now(),
                 ),
               if (canWrite)
@@ -3141,8 +3141,7 @@ class _LiveStaffingPage extends ConsumerWidget {
                   eventId: eventId,
                   venueId: event['venueId'] as String? ?? '',
                   initialDate:
-                      DateTime.tryParse(event['startsAt'] as String? ?? '')
-                              ?.toLocal() ??
+                      venueWallCarrier(event['startsAtLocal'] as String?) ??
                           DateTime.now(),
                   locations: locations,
                 ),
@@ -5249,16 +5248,15 @@ class _TenantSetupPage extends StatelessWidget {
             final venue = venues
                 .where((item) => item['id'] == event['venueId'])
                 .firstOrNull;
-            final startsAt =
-                DateTime.tryParse(event['startsAt'] as String? ?? '')
-                    ?.toLocal();
             final closed = (event['closeout'] as Map?)?['state'] == 'CLOSED';
+            final timeZone =
+                (event['timeZone'] ?? venue?['timeZone']) as String?;
             return Card(
                 child: ListTile(
               leading: const Icon(Icons.event_outlined),
               title: Text(event['name'] as String? ?? 'Event'),
               subtitle: Text(
-                  '${venue?['name'] ?? 'Venue'}${startsAt == null ? '' : ' · ${MaterialLocalizations.of(context).formatMediumDate(startsAt)} ${MaterialLocalizations.of(context).formatTimeOfDay(TimeOfDay.fromDateTime(startsAt))}'}${closed ? ' · Closed' : ''}'),
+                  '${venue?['name'] ?? 'Venue'} · ${venueWallLabel(event['startsAtLocal'] as String?, timeZone)}${closed ? ' · Closed' : ''}'),
               trailing: IconButton(
                   tooltip: closed
                       ? 'Finalized events cannot be edited'
@@ -5657,9 +5655,9 @@ class _TenantSetupPage extends StatelessWidget {
   Future<void> _editEvent(
       BuildContext context, Map<String, dynamic> event) async {
     final name = TextEditingController(text: event['name'] as String? ?? '');
+    final timeZone = event['timeZone'] as String? ?? 'venue time';
     var startsAt =
-        DateTime.tryParse(event['startsAt'] as String? ?? '')?.toLocal() ??
-            DateTime.now();
+        venueWallCarrier(event['startsAtLocal'] as String?) ?? DateTime.now();
     try {
       final accepted = await showDialog<bool>(
           context: context,
@@ -5678,7 +5676,7 @@ class _TenantSetupPage extends StatelessWidget {
                           leading: const Icon(Icons.schedule_outlined),
                           title: const Text('Event start'),
                           subtitle: Text(
-                              '${MaterialLocalizations.of(context).formatMediumDate(startsAt)} · ${MaterialLocalizations.of(context).formatTimeOfDay(TimeOfDay.fromDateTime(startsAt))}'),
+                              '${venueWallLabel(venueWallTime(startsAt), timeZone)}\nEntered on the venue clock, not this device\'s time zone.'),
                           onTap: () async {
                             final date = await showDatePicker(
                                 context: context,
@@ -5690,7 +5688,7 @@ class _TenantSetupPage extends StatelessWidget {
                                 context: context,
                                 initialTime: TimeOfDay.fromDateTime(startsAt));
                             if (time != null) {
-                              setDialogState(() => startsAt = DateTime(
+                              setDialogState(() => startsAt = venueWallDate(
                                   date.year,
                                   date.month,
                                   date.day,
@@ -5710,7 +5708,7 @@ class _TenantSetupPage extends StatelessWidget {
                   )));
       if (accepted == true) {
         await api.updateEvent(event['id'] as String,
-            name: name.text.trim(), startsAt: startsAt);
+            name: name.text.trim(), startsAtLocal: venueWallTime(startsAt));
         onSaved();
         if (context.mounted) {
           ScaffoldMessenger.of(context)
@@ -6050,6 +6048,11 @@ class _TenantSetupPage extends StatelessWidget {
         if (!context.mounted) return;
         final venue = await _chooseVenue(context, activeOnly: true);
         if (venue != null && context.mounted) {
+          final zone = venue['timeZone'] as String? ?? 'the venue time zone';
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text('Enter the event start on the $zone clock.')));
+          }
           final date = await showDatePicker(
               context: context,
               firstDate: DateTime.now().subtract(const Duration(days: 365)),
@@ -6061,10 +6064,10 @@ class _TenantSetupPage extends StatelessWidget {
                   initialTime: const TimeOfDay(hour: 19, minute: 0))
               : null;
           if (date == null || time == null) return;
-          final startsAt =
-              DateTime(date.year, date.month, date.day, time.hour, time.minute);
+          final startsAt = venueWallDate(
+              date.year, date.month, date.day, time.hour, time.minute);
           await api.createEvent(
-              venue['id'] as String, name.text.trim(), startsAt);
+              venue['id'] as String, name.text.trim(), venueWallTime(startsAt));
         }
       }
       if (type == 'person') {

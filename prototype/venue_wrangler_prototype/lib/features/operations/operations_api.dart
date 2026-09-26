@@ -1495,40 +1495,37 @@ class OperationsApi {
                   'Idempotency-Key': key,
                 }),
               ));
-  Future<void> createEvent(
-          String venueId, String name, DateTime startsAt) async =>
+  Future<void> createEvent(String venueId, String name, String startsAtLocal) async =>
       _command<void>(
           {
             'action': 'event.create',
             'venueId': venueId,
             'name': name.trim(),
-            'startsAt': startsAt.toUtc().toIso8601String()
+            'startsAtLocal': startsAtLocal,
           },
           (token, key) => _dio.post<void>('/api/v1/admin/events',
               data: {
                 'venueId': venueId,
                 'name': name,
-                'startsAt': startsAt.toUtc().toIso8601String()
+                'startsAtLocal': startsAtLocal,
               },
               options: Options(headers: {
                 'Authorization': 'Bearer $token',
                 'Idempotency-Key': key,
               })));
   Future<void> updateEvent(String eventId,
-          {String? name, DateTime? startsAt}) async =>
+          {String? name, String? startsAtLocal}) async =>
       _command<void>(
           {
             'action': 'event.update',
             'eventId': eventId,
             if (name != null) 'name': name.trim(),
-            if (startsAt != null)
-              'startsAt': startsAt.toUtc().toIso8601String(),
+            if (startsAtLocal != null) 'startsAtLocal': startsAtLocal,
           },
           (token, key) => _dio.put<void>('/api/v1/admin/events/$eventId',
               data: {
                 if (name != null) 'name': name.trim(),
-                if (startsAt != null)
-                  'startsAt': startsAt.toUtc().toIso8601String(),
+                if (startsAtLocal != null) 'startsAtLocal': startsAtLocal,
               },
               options: Options(headers: {
                 'Authorization': 'Bearer $token',
