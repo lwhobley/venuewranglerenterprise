@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'operations_api.dart';
 
 class StaffingScheduleGrid extends StatefulWidget {
@@ -12,7 +13,8 @@ class StaffingScheduleGrid extends StatefulWidget {
       required this.people,
       required this.canWrite,
       required this.canShare,
-      required this.onChanged});
+      required this.onChanged,
+      this.savedViews});
   final OperationsApi api;
   final String eventId;
   final List<Map<String, dynamic>> shifts;
@@ -22,20 +24,21 @@ class StaffingScheduleGrid extends StatefulWidget {
   final bool canWrite;
   final bool canShare;
   final VoidCallback onChanged;
+  final List<Map<String, dynamic>>? savedViews;
 
   @override
   State<StaffingScheduleGrid> createState() => _StaffingScheduleGridState();
 }
 
 class _StaffingScheduleGridState extends State<StaffingScheduleGrid> {
-  late Future<List<Map<String, dynamic>>> _views =
-      widget.api.scheduleViews(widget.eventId);
+  late Future<List<Map<String, dynamic>>> _views = _loadViews();
   String? _viewId;
   String? _role;
   String? _areaId;
   String? _worker;
   DateTime? _day;
   final Set<String> _selected = {};
+  int _focusIndex = 0;
   bool _busy = false;
 
   @override
@@ -48,9 +51,13 @@ class _StaffingScheduleGridState extends State<StaffingScheduleGrid> {
       _areaId = null;
       _worker = null;
       _day = null;
-      _views = widget.api.scheduleViews(widget.eventId);
+      _views = _loadViews();
     }
   }
+
+  Future<List<Map<String, dynamic>>> _loadViews() => widget.savedViews == null
+      ? widget.api.scheduleViews(widget.eventId)
+      : Future.value(widget.savedViews!);
 
   String? _areaFor(Map<String, dynamic> shift) {
     final location = widget.locations
@@ -94,7 +101,17 @@ class _StaffingScheduleGridState extends State<StaffingScheduleGrid> {
         .toList()
       ..sort();
     final visible = _visible;
-    return SingleChildScrollView(
+    if (_focusIndex >= visible.length) _focusIndex = 0;
+    final focused = visible.isEmpty ? null : visible[_focusIndex];
+    return CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.arrowDown): () => _moveFocus(1, visible.length),
+          const SingleActivator(LogicalKeyboardKey.arrowUp): () => _moveFocus(-1, visible.length),
+          const SingleActivator(LogicalKeyboardKey.space): () => _toggleFocused(focused),
+        },
+        child: Focus(
+            autofocus: true,
+            child: SingleChildScrollView(
         child: Card(
             child: Padding(
                 padding: const EdgeInsets.all(12),
@@ -109,6 +126,11 @@ class _StaffingScheduleGridState extends State<StaffingScheduleGrid> {
                             const Text('Schedule grid',
                                 style: TextStyle(
                                     fontSize: 20, fontWeight: FontWeight.w800)),
+                            Text(
+                                focused == null
+                                    ? 'No shifts in this view'
+                                    : 'Focused shift ${_focusIndex + 1} of ${visible.length}: ${focused['role'] ?? 'Role'}',
+                                key: const Key('schedule-grid-focus')),
                             FutureBuilder<List<Map<String, dynamic>>>(
                                 future: _views,
                                 builder: (context, snapshot) {
@@ -282,8 +304,10 @@ class _StaffingScheduleGridState extends State<StaffingScheduleGrid> {
                                       DataColumn(label: Text('Worker')),
                                       DataColumn(label: Text('State'))
                                     ],
-                                    rows: visible.take(150).map((shift) {
-                                      final id = shift['id'] as String;
+                                     rows: visible.take(150).toList().asMap().entries.map((entry) {
+                                       final shift = entry.value;
+                                       final id = shift['id'] as String;
+                                       final focusedRow = entry.key == _focusIndex;
                                       final location = widget.locations
                                           .where((item) =>
                                               item['id'] == shift['locationId'])
@@ -295,7 +319,9 @@ class _StaffingScheduleGridState extends State<StaffingScheduleGrid> {
                                           .firstOrNull;
                                       final start = DateTime.tryParse(
                                           shift['startsAt'] as String? ?? '');
-                                      return DataRow(cells: [
+                                       return DataRow(
+                                           selected: focusedRow,
+                                           cells: [
                                         DataCell(Checkbox(
                                             value: _selected.contains(id),
                                             onChanged: widget.canWrite
@@ -326,7 +352,24 @@ class _StaffingScheduleGridState extends State<StaffingScheduleGrid> {
                       if (visible.length > 150)
                         Text(
                             'Showing the first 150 of ${visible.length} shifts. Narrow the view to see more.'),
-                    ]))));
+                      ]))))));
+  }
+
+  void _moveFocus(int delta, int length) {
+    if (length == 0) return;
+    setState(() => _focusIndex = (_focusIndex + delta + length) % length);
+  }
+
+  void _toggleFocused(Map<String, dynamic>? shift) {
+    if (!widget.canWrite || shift == null) return;
+    final id = shift['id'] as String;
+    setState(() {
+      if (_selected.contains(id)) {
+        _selected.remove(id);
+      } else {
+        _selected.add(id);
+      }
+    });
   }
 
   Future<void> _saveView() async {
@@ -388,7 +431,7 @@ class _StaffingScheduleGridState extends State<StaffingScheduleGrid> {
       if (mounted) {
         setState(() {
           _viewId = null;
-          _views = widget.api.scheduleViews(widget.eventId);
+      _views = _loadViews();
         });
       }
     } catch (error) {

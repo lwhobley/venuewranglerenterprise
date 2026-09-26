@@ -4,8 +4,8 @@ This list tracks repository work needed before a customer pilot. Code completed 
 
 ## 1. Finish tenant and venue administration
 
-- Verify the new `venue:admin` authorization matrix against assigned and unassigned venues, including replayed idempotency keys and bootstrap visibility. Confirm IdP claim mapping with a customer tenant. The API and Flutter changes are local only.
-- Venue departments, service areas, location assignment, onboarding checklist, and versioned templates with preview and additive apply are implemented locally. They still need migration replay, CI, and a customer IdP claim check.
+- `venue:admin` is limited to signed venue IDs. Unit tests cover assigned updates, unassigned rejection, idempotency replay, and bootstrap visibility. Customer IdP claim mapping is still an external check.
+- Departments, service areas, templates, the schedule grid, and generic integration transport are in commit `bf3095b`. CI run 36256493458 replayed those migrations and passed tenant isolation. Staging and customer acceptance remain open.
 
 ## 2. Build a source-agnostic aggregation platform
 
@@ -17,7 +17,7 @@ This list tracks repository work needed before a customer pilot. Code completed 
 
 ## 3. Complete planning and staffing at desktop scale
 
-- The desktop schedule grid, saved views, and bulk publish/cancel/assign/move actions are implemented locally. A repeated bulk key now conflicts if the payload changes and replays the stored result when it matches. Keyboard access, customer acceptance, and CI for the new migrations are still open.
+- The desktop schedule grid supports arrow-key focus and space to select. Saved views and bulk actions are in the same commit as the CI run above. Customer acceptance of the grid remains open.
 - Decide with the pilot venue whether automatic assignment or optimization is required. Keep suggestions reviewable and recheck all labor rules at write time.
 
 ## 4. Prove the release and customer environment
