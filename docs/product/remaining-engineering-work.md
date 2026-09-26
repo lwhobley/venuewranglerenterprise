@@ -2,6 +2,8 @@
 
 Repository engineering that can be completed without a customer environment is done through commit `a2a1a01` plus the venue-notice and vendor-deadline work that follows it. Passing CI is not a pilot. The items below require a customer, an operator, legal, or an independent assessor.
 
+The latest commit `cc4221e` failed CI because its venue-activation test fixture omitted the new notice-recipient query. That fixture is corrected in the next commit; verify its CI run before treating the latest code as green.
+
 ## Finished in the repository
 
 - Tenant and venue administration, including signed `venue:admin` scope, departments, service areas, templates, and venue-clock event times.

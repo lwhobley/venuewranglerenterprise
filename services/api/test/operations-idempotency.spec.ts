@@ -203,7 +203,7 @@ describe('tenant setup command idempotency', () => {
         timeZone: 'America/Chicago', _count: { locations: 1 },
       }),
       update: vi.fn().mockResolvedValue(activated),
-    } });
+    }, venueNoticeRecipient: { findMany: vi.fn().mockResolvedValue([]) } });
     const service = new OperationsService(setupUpdatePrisma(tx));
 
     const result = await service.updateVenueLifecycle(admin, 'venue-1', 'activate', 'venue-activate-key-001');
