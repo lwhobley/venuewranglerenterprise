@@ -62,6 +62,6 @@ This checklist separates code in the repository from controls that require a cus
 ## Release verification still required
 
 - Local API build and 158 tests passed, and Flutter analysis reported no issues, before the venue-structure, schedule-grid, and integration-transport commit. Those checks do not include a migration replay or runtime-role isolation for migrations `20261031` through `20261105`. CI must verify that chain. Local evidence does not count as customer or staging evidence.
-- Latest verified CI before this commit is [run 36247199499](https://github.com/lwhobley/venuewranglerenterprise/actions/runs/36247199499). It does not cover the new venue-administration, schedule, or integration-transport migrations.
+- Latest verified CI is [run 36256493458](https://github.com/lwhobley/venuewranglerenterprise/actions/runs/36256493458) on commit `bf3095b`, passed on 2026-09-26. It replayed migrations through `20261105000000_integration_transport`, passed runtime-role tenant isolation, API build/tests, and Flutter analysis/tests. It does not prove a customer deployment, live vendor connection, or staging acceptance.
 - No customer-database migration, API deployment, authenticated customer IdP login, Cloud Storage validation, App Store Connect upload, or physical-device validation was performed as part of this change.
 - Run the migration replay and runtime-role isolation suite against the approved disposable staging database and verify the `tenant:admin` and task authorization matrix before exposing these endpoints to a customer.
