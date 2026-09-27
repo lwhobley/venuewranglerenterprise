@@ -17,6 +17,7 @@ class _SignInPageState extends ConsumerState<SignInPage> {
   final _testEmail = TextEditingController(text: 'tester@venuewrangler.invalid');
   final _testPassword = TextEditingController();
   List<AuthProviderOption>? _providers;
+  bool _localTestSelected = false;
   bool _loading = false;
   String? _error;
 
@@ -38,6 +39,19 @@ class _SignInPageState extends ConsumerState<SignInPage> {
     final slug = _organization.text.trim().toLowerCase();
     if (!RegExp(r'^[a-z0-9][a-z0-9-]{1,62}$').hasMatch(slug)) {
       setState(() => _error = 'Enter your organization access code.');
+      return;
+    }
+    if (slug == 'venue-test-lab') {
+      if (!ApiConfiguration.isLocalDevelopment) {
+        setState(() => _error =
+            'Venue Test Lab is available only in the local Android test build.');
+        return;
+      }
+      setState(() {
+        _localTestSelected = true;
+        _providers = null;
+        _error = null;
+      });
       return;
     }
     setState(() {
@@ -131,7 +145,7 @@ class _SignInPageState extends ConsumerState<SignInPage> {
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.bodyLarge),
                   const SizedBox(height: 32),
-                  TextField(
+                  if (!_localTestSelected) TextField(
                     controller: _organization,
                     textInputAction: TextInputAction.go,
                     autocorrect: false,
@@ -143,8 +157,8 @@ class _SignInPageState extends ConsumerState<SignInPage> {
                       border: OutlineInputBorder(),
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  FilledButton(
+                  if (!_localTestSelected) const SizedBox(height: 12),
+                  if (!_localTestSelected) FilledButton(
                     onPressed: _loading ? null : _continue,
                     child: _loading && _providers == null
                         ? const SizedBox.square(
@@ -152,7 +166,7 @@ class _SignInPageState extends ConsumerState<SignInPage> {
                             child: CircularProgressIndicator(strokeWidth: 2))
                         : const Text('Continue'),
                   ),
-                  if (_providers != null) ...[
+                  if (!_localTestSelected && _providers != null) ...[
                     const SizedBox(height: 26),
                     Text('Choose your sign-in provider',
                         style: Theme.of(context)
@@ -176,10 +190,14 @@ class _SignInPageState extends ConsumerState<SignInPage> {
                           'Federated sign-in is currently configured for the iOS and Android apps.',
                           style: Theme.of(context).textTheme.bodySmall),
                   ],
-                  if (ApiConfiguration.isLocalDevelopment) ...[
+                  if (_localTestSelected) ...[
+                    TextButton.icon(
+                        onPressed: _loading
+                            ? null
+                            : () => setState(() => _localTestSelected = false),
+                        icon: const Icon(Icons.arrow_back),
+                        label: const Text('Choose another organization')),
                     const SizedBox(height: 28),
-                    const Divider(),
-                    const SizedBox(height: 12),
                     Text('Local test organization',
                         style: Theme.of(context).textTheme.titleMedium),
                     const SizedBox(height: 8),
